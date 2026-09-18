@@ -739,6 +739,13 @@ fn desktop_app_credential_source() -> Option<CredentialSource> {
     claude_desktop::config_path().map(CredentialSource::DesktopApp)
 }
 
+/// Whether the CLI credentials file at `path` holds a usable token. When it
+/// does not, the default profile is answered from the desktop app's cache
+/// (see `poll_account`), and credential watching has to follow it there.
+pub(super) fn windows_file_has_token(path: &Path) -> bool {
+    read_windows_credentials(path).is_some()
+}
+
 pub(super) fn native_credential_path() -> Option<PathBuf> {
     match windows_credential_source()? {
         CredentialSource::Windows(path) if read_windows_credentials(&path).is_some() => Some(path),

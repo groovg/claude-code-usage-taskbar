@@ -1514,6 +1514,21 @@ fn compact_fluent_quad_widget_respects_usage_direction() {
                     remaining: 24.1,
                     total: 40.83,
                 }),
+                // The Claude model cap and session context rows follow the
+                // direction too.
+                scoped: vec![crate::models::ScopedLimit {
+                    label: "Fable".into(),
+                    active: true,
+                    percentage: 25.0,
+                    resets_at: None,
+                }],
+                context: Some(crate::models::ContextSection {
+                    tokens: 250_000,
+                    window: 1_000_000,
+                    percentage: 25.0,
+                    model: None,
+                    updated_at: None,
+                }),
                 ..Default::default()
             },
         )
@@ -2557,7 +2572,7 @@ fn claude_model_caps_and_session_context_are_available_to_templates() {
             Some(&usage),
             ThemeRuntime::new(true, false, false)
         ),
-        (217 + 109 + 4 + 90 + 3, 46)
+        (217 + 109 + 4 + 100 + 3, 46)
     );
     assert_eq!(
         resolve_surface_size(
@@ -2566,7 +2581,7 @@ fn claude_model_caps_and_session_context_are_available_to_templates() {
             Some(&usage),
             ThemeRuntime::new(true, true, false)
         ),
-        (285 + 54 + 4 + 90 + 3, 46)
+        (285 + 54 + 4 + 100 + 3, 46)
     );
     let plain = crate::models::AppUsageData::from_iter([(
         ProviderId::Claude,

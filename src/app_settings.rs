@@ -23,6 +23,31 @@ pub const POLL_1_HOUR: u32 = POLL_1_HOUR_SECONDS * 1_000;
 // SetTimer clamps longer intervals to USER_TIMER_MAXIMUM (i32::MAX ms).
 pub const MAX_POLL_MINUTES: u32 = i32::MAX as u32 / POLL_1_MIN;
 
+/// Which end of the taskbar the built-in widgets dock to. Custom themes keep
+/// the placement set in Theme Studio.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WidgetPosition {
+    /// Left edge of the taskbar: Windows 11 centres its buttons and leaves
+    /// that side empty.
+    #[default]
+    Left,
+    /// Beside the notification area, where the widget started out.
+    Right,
+}
+
+impl WidgetPosition {
+    pub const ALL: [Self; 2] = [Self::Left, Self::Right];
+
+    /// English catalogue key resolved through the localization layer.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Left => "Left",
+            Self::Right => "Right",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SettingsFile {
     #[serde(default)]
@@ -64,6 +89,8 @@ pub struct SettingsFile {
     /// the widget counts down towards a limit rather than up from zero.
     #[serde(default)]
     pub usage_countdown: bool,
+    #[serde(default)]
+    pub widget_position: WidgetPosition,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_theme_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -91,6 +118,7 @@ impl Default for SettingsFile {
             show_cursor: false,
             custom_theme_enabled: true,
             usage_countdown: false,
+            widget_position: WidgetPosition::Left,
             active_theme_path: None,
             dashboard_width: None,
             dashboard_height: None,
@@ -446,6 +474,12 @@ mod tests {
         let counting_down = decode_settings(r#"{"usage_countdown":true}"#).unwrap();
         assert!(counting_down.usage_countdown);
         assert_eq!(settings_json(&counting_down)["usage_countdown"], true);
+
+        // Older files carry no position and dock left; the choice round-trips.
+        assert_eq!(counting_down.widget_position, WidgetPosition::Left);
+        assert_eq!(settings_json(&counting_down)["widget_position"], "left");
+        let docked_right = decode_settings(r#"{"widget_position":"right"}"#).unwrap();
+        assert_eq!(docked_right.widget_position, WidgetPosition::Right);
     }
 
     #[test]

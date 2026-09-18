@@ -74,6 +74,40 @@ fn is_builtin_theme_id(id: &str) -> bool {
         .any(|(builtin_id, _)| id == *builtin_id)
 }
 
+/// Dock a built-in theme's taskbar surface at the chosen end of the taskbar.
+/// Custom themes are left alone: their placement is the author's, set in
+/// Theme Studio.
+pub fn apply_widget_position(
+    theme: &ThemeDocument,
+    position: crate::app_settings::WidgetPosition,
+) -> ThemeDocument {
+    let mut theme = theme.clone();
+    if !is_builtin_theme_id(&theme.id) {
+        return theme;
+    }
+    for surface in &mut theme.surfaces {
+        let placement = &mut surface.placement;
+        if placement.nest.resolve(placement.reference.region) != SurfaceNest::Taskbar {
+            continue;
+        }
+        match position {
+            crate::app_settings::WidgetPosition::Left => {
+                placement.reference.region = ReferenceRegion::Taskbar;
+                placement.horizontal = HorizontalAnchor::Left;
+                placement.surface_horizontal = Some(HorizontalAnchor::Left);
+                placement.offset_x = 8;
+            }
+            crate::app_settings::WidgetPosition::Right => {
+                placement.reference.region = ReferenceRegion::SystemTray;
+                placement.horizontal = HorizontalAnchor::Left;
+                placement.surface_horizontal = Some(HorizontalAnchor::Right);
+                placement.offset_x = 0;
+            }
+        }
+    }
+    theme
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ThemeDocument {
     #[serde(default = "schema_version")]
@@ -1622,6 +1656,16 @@ impl DataContext {
         }));
         for (key, label, percentage, reset, active, available) in windows {
             self.insert_string(&format!("{key}.label"), label);
+            // What fits beside a bar: the first word, at most eight characters
+            // ("Sonnet 4.5" -> "Sonnet").
+            let short: String = label
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(8)
+                .collect();
+            self.insert_string(&format!("{key}.short_label"), short);
             self.insert(&format!("{key}.percentage"), percentage);
             self.insert(&format!("{key}.remaining"), 100.0 - percentage);
             self.insert(&format!("{key}.display"), display(percentage));

@@ -113,6 +113,29 @@ impl StudioApp {
                 setting_separator(ui);
                 setting_row(
                     ui,
+                    language.text("Widget position"),
+                    language.text("Which end of the taskbar the built-in themes dock to"),
+                    |ui| {
+                        let position = &mut self.settings.widget_position;
+                        Dropdown::from_id_salt("widget_position")
+                            .width(220.0)
+                            .selected_text(language.text(position.label()))
+                            .show_ui(ui, |ui| {
+                                for candidate in crate::app_settings::WidgetPosition::ALL {
+                                    changed |= dropdown_selectable_value(
+                                        ui,
+                                        position,
+                                        candidate,
+                                        language.text(candidate.label()),
+                                    )
+                                    .changed();
+                                }
+                            });
+                    },
+                );
+                setting_separator(ui);
+                setting_row(
+                    ui,
                     language.text("Language"),
                     language.text("Language used by the app and widget"),
                     |ui| {

@@ -19,7 +19,7 @@
         "offset_x": 8,
         "offset_y": 0
       },
-      "width": "42 + providers.count * (ceil(10 / max(1, providers.count)) * 11 - 1 + 4 + 62) + max(0, providers.count - 1) * 3 + (providers.opencode.enabled + providers.cursor.enabled) * 28 + (providers.claude.enabled && (claude.scoped.available || claude.context.available)) * (ceil(10 / max(1, providers.count)) * 11 - 1 + 4 + 90 + 3)",
+      "width": "42 + providers.count * (ceil(10 / max(1, providers.count)) * 11 - 1 + 4 + 62) + max(0, providers.count - 1) * 3 + (providers.opencode.enabled + providers.cursor.enabled) * 28 + (providers.claude.enabled && (claude.scoped.available || claude.context.available)) * (ceil(10 / max(1, providers.count)) * 11 - 1 + 4 + 100 + 3)",
       "height": "46",
       "mouse_events": {
         "right_click": "show_context_menu(\"classic-v1\")"
@@ -621,7 +621,7 @@
           "name": "Claude Code model cap and session context",
           "render": "providers.claude.enabled && (claude.scoped.available || claude.context.available)",
           "parent": "provider-row",
-          "width": "ceil(10 / max(1, providers.count)) * 11 - 1 + 4 + 90",
+          "width": "ceil(10 / max(1, providers.count)) * 11 - 1 + 4 + 100",
           "height": "46"
         },
         {
@@ -655,11 +655,11 @@
           "parent": "claude-extras",
           "x": "ceil(10 / max(1, providers.count)) * 11 - 1 + 4",
           "y": "5",
-          "width": "90",
+          "width": "100",
           "height": "13",
           "content": {
             "type": "text",
-            "template": "{claude.scoped.label} {claude.scoped.display:usage_line}",
+            "template": "{claude.scoped.short_label} {claude.scoped.display:usage_line}",
             "font_family": "Segoe UI",
             "font_size": "12",
             "weight": "medium",
@@ -702,11 +702,11 @@
           "parent": "claude-extras",
           "x": "ceil(10 / max(1, providers.count)) * 11 - 1 + 4",
           "y": "5",
-          "width": "90",
+          "width": "100",
           "height": "13",
           "content": {
             "type": "text",
-            "template": "{claude.scoped.label} {claude.scoped.display:usage_line}",
+            "template": "{claude.scoped.short_label} {claude.scoped.display:usage_line}",
             "font_family": "Segoe UI",
             "font_size": "12",
             "weight": "medium",
@@ -749,7 +749,7 @@
           "parent": "claude-extras",
           "x": "ceil(10 / max(1, providers.count)) * 11 - 1 + 4",
           "y": "28",
-          "width": "90",
+          "width": "100",
           "height": "13",
           "content": {
             "type": "text",
@@ -796,7 +796,7 @@
           "parent": "claude-extras",
           "x": "ceil(10 / max(1, providers.count)) * 11 - 1 + 4",
           "y": "28",
-          "width": "90",
+          "width": "100",
           "height": "13",
           "content": {
             "type": "text",

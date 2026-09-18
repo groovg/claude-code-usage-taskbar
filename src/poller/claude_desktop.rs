@@ -66,6 +66,14 @@ pub(super) fn read_token(config_path: &Path) -> Option<DesktopToken> {
     }
     let key = os_crypt_key(&local_state_path(config_path))?;
 
+    // The app writes both caches and does not always refresh both, so an
+    // expired V2 entry must not mask a live legacy one: take the best across
+    // all caches rather than the first that parses.
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or(0);
+    let mut best: Option<DesktopToken> = None;
     for (name, cache) in &caches {
         let Some(plaintext) = decrypt_os_crypt_value(cache, &key) else {
             diagnose::log(format!("unable to decrypt Claude desktop {name}"));
@@ -75,15 +83,32 @@ pub(super) fn read_token(config_path: &Path) -> Option<DesktopToken> {
             diagnose::log(format!("Claude desktop {name} was not valid UTF-8"));
             continue;
         };
-        if let Some(token) = select_token(&plaintext) {
-            return Some(token);
+        let Some(token) = select_token(&plaintext) else {
+            diagnose::log(format!(
+                "Claude desktop {name} held no usable inference token"
+            ));
+            continue;
+        };
+        if best
+            .as_ref()
+            .is_none_or(|current| token_rank(&token, now_ms) > token_rank(current, now_ms))
+        {
+            best = Some(token);
         }
-        diagnose::log(format!(
-            "Claude desktop {name} held no usable inference token"
-        ));
     }
 
-    None
+    best
+}
+
+/// Live before expired, then the later expiry. A token without an expiry is
+/// taken at its word.
+fn token_rank(token: &DesktopToken, now_ms: i64) -> (bool, i64) {
+    (
+        token
+            .expires_at
+            .is_none_or(|expires_at| expires_at > now_ms),
+        token.expires_at.unwrap_or(i64::MAX),
+    )
 }
 
 /// Signature over the encrypted cache rather than the file's mtime: the

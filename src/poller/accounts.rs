@@ -16,7 +16,26 @@ impl Target {
             return String::new();
         }
         match &self.path {
-            Ok(Some(path)) => file_signature(path),
+            Ok(Some(path)) => {
+                let mut signature = file_signature(path);
+                // A tokenless default CLI file sends the poll to the desktop
+                // app's cache; a re-login there must count as a change too, or
+                // an auth pause never lifts.
+                let is_default = self.provider == ProviderId::Claude
+                    && crate::accounts::default_credential_path(ProviderId::Claude).is_some_and(
+                        |default| {
+                            crate::accounts::source_key(&default)
+                                == crate::accounts::source_key(path)
+                        },
+                    );
+                if is_default && !claude::windows_file_has_token(path) {
+                    if let Some(config) = claude_desktop::config_path() {
+                        signature.push('|');
+                        signature.push_str(&claude_desktop::watch_signature(&config));
+                    }
+                }
+                signature
+            }
             Ok(None) => fingerprint(&format!(
                 "{:?}",
                 credential_watch_snapshot(CredentialWatchMode::ActiveSource(self.provider))

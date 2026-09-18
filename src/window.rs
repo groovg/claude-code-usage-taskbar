@@ -145,6 +145,7 @@ struct AppState {
 
     custom_theme_enabled: bool,
     usage_countdown: bool,
+    widget_position: crate::app_settings::WidgetPosition,
     active_theme_path: Option<PathBuf>,
     active_theme: Option<ThemeDocument>,
     theme_clock_interval: Option<Duration>,
@@ -525,7 +526,8 @@ fn poll_display_state(
 
 fn effective_theme_from_state(state: &AppState) -> Option<ThemeDocument> {
     state.active_theme.as_ref().map(|theme| {
-        theme_engine::apply_mouse_action_overrides(theme, &state.mouse_action_overrides)
+        let theme = theme_engine::apply_widget_position(theme, state.widget_position);
+        theme_engine::apply_mouse_action_overrides(&theme, &state.mouse_action_overrides)
     })
 }
 
@@ -1910,6 +1912,7 @@ pub fn run() {
                 drag_start_offset: 0,
                 custom_theme_enabled,
                 usage_countdown: settings.usage_countdown,
+                widget_position: settings.widget_position,
                 active_theme_path,
                 active_theme,
                 theme_clock_interval,
@@ -2503,6 +2506,7 @@ fn reload_external_settings(hwnd: HWND) {
         state.poll_interval_ms = settings.poll_interval_ms;
         state.providers = settings.enabled_providers();
         state.usage_countdown = settings.usage_countdown;
+        state.widget_position = settings.widget_position;
         state.taskbar_index = settings.taskbar_index;
         apply_language_to_state(state, language_override);
     }

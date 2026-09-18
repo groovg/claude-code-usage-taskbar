@@ -54,6 +54,8 @@ Use the dashboard to select providers, change the refresh interval, choose a dis
 
 Theme authors can opt in with `.display` bindings, including `{claude.session.display:usage_line}` and `{claude.session.display:usage_badge}`. Existing `.percentage`, `.remaining`, and unsuffixed usage summaries keep their meaning; warning thresholds should continue to use `.percentage`.
 
+**Settings > Display > Widget position** docks the built-in themes at the left edge of the taskbar (the default; Windows 11 centres its buttons and leaves that side empty) or beside the notification area. Custom themes keep the placement set in Theme Studio.
+
 ### Model caps and session context (Claude Code)
 
 Anthropic reports model-scoped weekly caps (Fable today) in the `limits` array of the usage endpoint. The Classic theme appends a column for them next to the Claude Code bars whenever the account reports one. Bindings:
