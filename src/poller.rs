@@ -18,6 +18,18 @@ impl PollError {
     pub fn is_auth(self) -> bool {
         matches!(self, Self::AuthRequired | Self::TokenExpired)
     }
+
+    /// One line for a tooltip: what went wrong and what fixes it.
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::AuthRequired => "the service rejected the login; sign in again",
+            Self::NoCredentials => "no login found; sign in with the CLI or desktop app",
+            Self::TokenExpired => {
+                "the login expired and could not be renewed; run the CLI once to refresh it"
+            }
+            Self::RequestFailed => "the usage service could not be reached; retrying",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -174,10 +186,17 @@ fn merge_poll_results(
 mod accounts;
 mod antigravity;
 mod claude;
+mod claude_context;
 mod claude_desktop;
 mod codex;
 mod cursor;
 mod opencode;
+
+/// Context-window usage of the newest local Claude Code session. Cheap enough
+/// to call between API polls: a directory listing and one file tail.
+pub fn claude_session_context() -> Option<crate::models::ContextSection> {
+    claude_context::read()
+}
 
 struct ProviderPoller {
     id: ProviderId,
@@ -437,7 +456,12 @@ pub fn is_past_reset(data: &UsageData) -> bool {
     }
     let now = SystemTime::now();
     let past = |s: &UsageSection| matches!(s.resets_at, Some(t) if now.duration_since(t).is_ok());
-    past(&data.session) || past(&data.weekly)
+    past(&data.session)
+        || past(&data.weekly)
+        || data
+            .scoped
+            .iter()
+            .any(|limit| matches!(limit.resets_at, Some(t) if now.duration_since(t).is_ok()))
 }
 
 pub fn app_is_past_reset(data: &AppUsageData) -> bool {

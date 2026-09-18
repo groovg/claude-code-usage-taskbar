@@ -184,6 +184,60 @@ pub(super) const TEXT_TEMPLATE_VALUES: &[TextTemplateValue] = &[
         kind: TextTemplateValueKind::Duration,
     },
     TextTemplateValue {
+        group: "Claude Code",
+        label: "Model cap name (Fable)",
+        expression: "claude.scoped.label",
+        kind: TextTemplateValueKind::Text,
+    },
+    TextTemplateValue {
+        group: "Claude Code",
+        label: "Model cap summary",
+        expression: "claude.scoped",
+        kind: TextTemplateValueKind::UsageSummary,
+    },
+    TextTemplateValue {
+        group: "Claude Code",
+        label: "Model cap used",
+        expression: "claude.scoped.percentage",
+        kind: TextTemplateValueKind::Percentage,
+    },
+    TextTemplateValue {
+        group: "Claude Code",
+        label: "Model cap shown",
+        expression: "claude.scoped.display",
+        kind: TextTemplateValueKind::DisplayPercentage,
+    },
+    TextTemplateValue {
+        group: "Claude Code",
+        label: "Model cap reset",
+        expression: "claude.scoped.reset.seconds",
+        kind: TextTemplateValueKind::Duration,
+    },
+    TextTemplateValue {
+        group: "Claude Code",
+        label: "Session context summary",
+        expression: "claude.context",
+        kind: TextTemplateValueKind::UsageSummary,
+    },
+    TextTemplateValue {
+        group: "Claude Code",
+        label: "Session context used",
+        expression: "claude.context.percentage",
+        kind: TextTemplateValueKind::Percentage,
+    },
+    TextTemplateValue {
+        group: "Claude Code",
+        label: "Session context tokens",
+        expression: "claude.context.tokens",
+        kind: TextTemplateValueKind::Number,
+    },
+    TextTemplateValue {
+        group: "Claude Code",
+        label: "Session context window",
+        expression: "claude.context.window",
+        kind: TextTemplateValueKind::Number,
+    },
+    TextTemplateValue {
         group: "Codex",
         label: "Session summary",
         expression: "codex.session",
@@ -1183,10 +1237,11 @@ pub(super) fn expression_variables_panel(
                         .map(|descriptor| (descriptor.display_name, descriptor.key)),
                 ) {
                     let mut names = vec![format!("{provider}.available")];
-                    let windows = if matches!(provider, "active" | "codex") {
-                        &["session", "five_hour", "weekly", "monthly"][..]
-                    } else {
-                        &["session", "weekly", "monthly"][..]
+                    let windows = match provider {
+                        "active" => &["session", "five_hour", "weekly", "monthly", "scoped"][..],
+                        "codex" => &["session", "five_hour", "weekly", "monthly"][..],
+                        "claude" => &["session", "weekly", "monthly", "scoped"][..],
+                        _ => &["session", "weekly", "monthly"][..],
                     };
                     for window in windows {
                         for metric in ["available", "percentage", "remaining", "display"] {
@@ -1194,6 +1249,21 @@ pub(super) fn expression_variables_panel(
                         }
                         for unit in ["unix", "seconds", "minutes", "hours", "days"] {
                             names.push(format!("{provider}.{window}.reset.{unit}"));
+                        }
+                    }
+                    // Model caps and the session context have no reset window.
+                    if matches!(provider, "active" | "claude") {
+                        names.push(format!("{provider}.scoped.active"));
+                        names.push(format!("{provider}.scoped.count"));
+                        for metric in [
+                            "available",
+                            "percentage",
+                            "remaining",
+                            "display",
+                            "tokens",
+                            "window",
+                        ] {
+                            names.push(format!("{provider}.context.{metric}"));
                         }
                     }
                     let names: Vec<&str> = names.iter().map(String::as_str).collect();

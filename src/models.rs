@@ -55,6 +55,52 @@ pub struct CreditsSection {
     pub total: f64,
 }
 
+/// A model-scoped weekly cap reported inside the usage endpoint's `limits`
+/// array: Fable today, whatever Anthropic gates next. It is a slice of the
+/// weekly allowance, not a third independent window.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ScopedLimit {
+    /// Model display name as reported, e.g. "Fable".
+    pub label: String,
+    /// The API flags the limit that currently binds the account.
+    #[serde(default)]
+    pub active: bool,
+    pub percentage: f64,
+    pub resets_at: Option<SystemTime>,
+}
+
+impl ScopedLimit {
+    /// Stable theme key for `{provider}.model.<slug>.*`: lower case, runs of
+    /// anything but ASCII letters and digits folded to a single underscore.
+    pub fn slug(&self) -> String {
+        let mut slug = String::with_capacity(self.label.len());
+        for byte in self.label.bytes() {
+            if byte.is_ascii_alphanumeric() {
+                slug.push(byte.to_ascii_lowercase() as char);
+            } else if !slug.ends_with('_') {
+                slug.push('_');
+            }
+        }
+        slug.trim_matches('_').to_string()
+    }
+}
+
+/// Context-window usage of the newest local Claude Code session, read from its
+/// transcript rather than any API.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ContextSection {
+    /// Input plus cache tokens of the last assistant turn: what the next turn
+    /// starts from.
+    pub tokens: u64,
+    /// Context window the session runs against.
+    pub window: u64,
+    pub percentage: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// When the transcript last changed.
+    pub updated_at: Option<SystemTime>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct UsageData {
     pub session: UsageSection,
@@ -65,12 +111,31 @@ pub struct UsageData {
     /// Kept separate from `weekly` so themes can choose how to display it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub monthly: Option<UsageSection>,
+    /// Model-scoped weekly caps (Claude Code: Fable). Empty for accounts and
+    /// providers without one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scoped: Vec<ScopedLimit>,
+    /// Context-window usage of the newest local Claude Code session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ContextSection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credits: Option<CreditsSection>,
     /// True when this reading was carried over from an earlier poll because
     /// the provider failed this cycle. The figures are real, just not current.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stale: bool,
+}
+
+impl UsageData {
+    /// The model cap that matters right now: the one the API marks active,
+    /// otherwise the fullest. `None` when the account reports no model caps.
+    pub fn binding_scoped(&self) -> Option<&ScopedLimit> {
+        self.scoped.iter().find(|limit| limit.active).or_else(|| {
+            self.scoped
+                .iter()
+                .max_by(|a, b| a.percentage.total_cmp(&b.percentage))
+        })
+    }
 }
 
 /// Codex reports a credit balance with no ceiling, so the denominator has to
@@ -220,6 +285,30 @@ impl AppUsageData {
                     .any(|profile| profile.enabled && *profile == account.profile)
             })
         });
+    }
+
+    /// Replace the session context on every Claude reading, the provider slot
+    /// and the accounts alike. Returns whether anything changed, so a timer
+    /// can skip the redraw when the transcript has not moved.
+    pub fn set_claude_context(&mut self, context: Option<ContextSection>) -> bool {
+        let mut changed = false;
+        let slots = self
+            .providers
+            .get_mut(&ProviderId::Claude)
+            .into_iter()
+            .chain(
+                self.accounts
+                    .iter_mut()
+                    .filter(|account| account.provider == ProviderId::Claude)
+                    .filter_map(|account| account.usage.as_mut()),
+            );
+        for usage in slots {
+            if usage.context != context {
+                usage.context = context.clone();
+                changed = true;
+            }
+        }
+        changed
     }
 
     pub fn selected_account_name(&self, provider: ProviderId) -> Option<&str> {

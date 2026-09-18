@@ -30,10 +30,32 @@ use crate::diagnose;
 use crate::localization::{self, LanguageId, Strings};
 use crate::models::AppUsageData;
 use crate::native_interop::{
-    self, TIMER_CLOCK, TIMER_COUNTDOWN, TIMER_MOUSE_CLICK, TIMER_POLL, TIMER_RESET_POLL,
-    TIMER_TRAY_HOVER, TIMER_UPDATE_CHECK, TIMER_WINDOW_STATE, WM_APP_OPEN_DASHBOARD, WM_APP_QUIT,
-    WM_APP_REFRESH_NOW, WM_APP_SETTINGS_UPDATED, WM_APP_TRAY, WM_APP_USAGE_UPDATED,
+    self, TIMER_CLOCK, TIMER_CONTEXT, TIMER_COUNTDOWN, TIMER_MOUSE_CLICK, TIMER_POLL,
+    TIMER_RESET_POLL, TIMER_TRAY_HOVER, TIMER_UPDATE_CHECK, TIMER_WINDOW_STATE,
+    WM_APP_OPEN_DASHBOARD, WM_APP_QUIT, WM_APP_REFRESH_NOW, WM_APP_SETTINGS_UPDATED, WM_APP_TRAY,
+    WM_APP_USAGE_UPDATED,
 };
+
+/// How often the newest Claude Code transcript is re-read between API polls.
+const CONTEXT_REFRESH_MS: u32 = 5_000;
+
+/// Re-read the session context and fold it into the current reading. Only
+/// worth a redraw when the transcript actually moved.
+fn refresh_session_context() -> bool {
+    let claude_enabled = lock_state()
+        .as_ref()
+        .is_some_and(|s| s.providers.contains(crate::providers::ProviderId::Claude));
+    if !claude_enabled {
+        return false;
+    }
+    // Read before taking the lock: the file walk must not stall the UI state.
+    let context = poller::claude_session_context();
+    let mut state = lock_state();
+    state
+        .as_mut()
+        .and_then(|s| s.data.as_mut())
+        .is_some_and(|data| data.set_claude_context(context))
+}
 use crate::poller;
 use crate::providers::{ProviderId, ProviderSet};
 use crate::theme;
@@ -104,6 +126,9 @@ struct AppState {
     auth_watch_mode: poller::CredentialWatchMode,
     auth_watch_snapshot: poller::CredentialWatchSnapshot,
     last_poll_ok: bool,
+    /// Why the last poll failed, for the tray tooltip: an expired login and
+    /// an unreachable service both blank the bars, and look the same otherwise.
+    last_error: Option<poller::PollFailure>,
     update_status: UpdateStatus,
     last_update_check_unix: Option<u64>,
 
@@ -592,7 +617,7 @@ fn tray_usage_summary_lines(
                 .weekly_label
                 .as_deref()
                 .unwrap_or(strings.weekly_window);
-            Some(format!(
+            let mut line = format!(
                 "{} {}: {:.0}% | {}: {:.0}%",
                 match data.selected_account_name(provider) {
                     Some(name) => format!("{} ({name})", language.text(descriptor.display_name)),
@@ -602,7 +627,14 @@ fn tray_usage_summary_lines(
                 shown(usage.session.percentage),
                 weekly_label,
                 shown(usage.weekly.percentage),
-            ))
+            );
+            if let Some(cap) = usage.binding_scoped() {
+                line.push_str(&format!(" | {}: {:.0}%", cap.label, shown(cap.percentage)));
+            }
+            if let Some(context) = &usage.context {
+                line.push_str(&format!(" | ctx: {:.0}%", context.percentage));
+            }
+            Some(line)
         })
         .collect()
 }
@@ -624,10 +656,23 @@ fn tray_usage_summary_from_state() -> Option<String> {
 
 fn tray_icon_tooltip_from_state() -> String {
     tray_usage_summary_from_state().unwrap_or_else(|| {
-        lock_state()
-            .as_ref()
-            .map(|state| state.language.strings().window_title.to_string())
-            .unwrap_or_else(|| "Claude Code Usage Monitor".to_string())
+        let state = lock_state();
+        let Some(state) = state.as_ref() else {
+            return "Claude Code Usage Monitor".to_string();
+        };
+        let title = state.language.strings().window_title;
+        // Say why the bars are blank; "!" alone sent people chasing proxies
+        // and firewalls when the login had merely expired (#72).
+        match state.last_error {
+            Some(failure) => format!(
+                "{title}\n{}: {}",
+                state
+                    .language
+                    .text(failure.provider.descriptor().display_name),
+                state.language.text(failure.error.description())
+            ),
+            None => title.to_string(),
+        }
     })
 }
 
@@ -1834,6 +1879,7 @@ pub fn run() {
                 ),
                 auth_watch_snapshot: Vec::new(),
                 last_poll_ok: false,
+                last_error: None,
                 update_status: UpdateStatus::Idle,
                 last_update_check_unix: settings.last_update_check_unix,
                 taskbar_index: settings.taskbar_index,
@@ -1891,6 +1937,9 @@ pub fn run() {
                 .unwrap_or(POLL_15_MIN)
         };
         SetTimer(Some(hwnd), TIMER_POLL, initial_poll_ms, None);
+        // Session context moves with every Claude Code turn, the usage API is
+        // asked every 15 minutes: re-read the local transcript in between.
+        SetTimer(Some(hwnd), TIMER_CONTEXT, CONTEXT_REFRESH_MS, None);
         sync_window_state_timer(hwnd);
 
         // Watch for explorer.exe restarts so we can re-embed and re-add the tray
@@ -2164,6 +2213,7 @@ fn do_poll_once(hwnd: HWND) {
 
                 s.data = Some(data);
                 s.last_poll_ok = true;
+                s.last_error = None;
 
                 // Recovered from errors — restore normal poll interval
                 if s.retry_count > 0 {
@@ -2240,6 +2290,7 @@ fn do_poll_once(hwnd: HWND) {
                         }
                     }
                     s.last_poll_ok = false;
+                    s.last_error = Some(failure);
                     match auth_watch {
                         Some((watch_mode, watch_snapshot)) => {
                             // Only show the balloon on the first failure so it doesn't spam.

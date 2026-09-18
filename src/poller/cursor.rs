@@ -231,6 +231,8 @@ fn cursor_usage_from_summary(response: CursorUsageSummaryResponse) -> Option<Usa
         weekly: section(plan.api_percent_used),
         weekly_label: Some("API".into()),
         monthly: None,
+        scoped: Vec::new(),
+        context: None,
         credits: None,
         stale: false,
     })

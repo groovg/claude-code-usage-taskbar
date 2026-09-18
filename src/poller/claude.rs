@@ -11,7 +11,7 @@ use super::{
     PollError,
 };
 use crate::diagnose;
-use crate::models::{CreditsSection, UsageData};
+use crate::models::{CreditsSection, ScopedLimit, UsageData};
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -23,6 +23,30 @@ struct UsageResponse {
     five_hour: Option<UsageBucket>,
     seven_day: Option<UsageBucket>,
     spend: Option<SpendResponse>,
+    /// Per-limit breakdown. Model-scoped weekly caps (Fable) only appear here;
+    /// the legacy `seven_day_opus` / `seven_day_sonnet` fields are null now.
+    #[serde(default)]
+    limits: Vec<UsageLimit>,
+}
+
+#[derive(Deserialize)]
+struct UsageLimit {
+    kind: Option<String>,
+    percent: Option<f64>,
+    resets_at: Option<String>,
+    #[serde(default)]
+    is_active: bool,
+    scope: Option<UsageLimitScope>,
+}
+
+#[derive(Deserialize)]
+struct UsageLimitScope {
+    model: Option<UsageLimitModel>,
+}
+
+#[derive(Deserialize)]
+struct UsageLimitModel {
+    display_name: Option<String>,
 }
 
 /// Paid credits that carry the account past its plan limits. Amounts are
@@ -127,6 +151,14 @@ fn desktop_credentials_for_default_path(path: &Path) -> Option<Credentials> {
 }
 
 pub(super) fn fetch_usage_with_fallback(token: &str) -> Result<UsageData, PollError> {
+    let mut data = fetch_remote_usage(token)?;
+    // Local, so it rides along with every reading; the window refreshes it on
+    // its own between polls.
+    data.context = super::claude_context::read();
+    Ok(data)
+}
+
+fn fetch_remote_usage(token: &str) -> Result<UsageData, PollError> {
     // Try the dedicated usage endpoint first
     if let Some(data) = try_usage_endpoint(token)? {
         // If reset timers are missing, fill them in from the Messages API
@@ -211,8 +243,34 @@ fn usage_from_response(response: UsageResponse) -> UsageData {
         .spend
         .as_ref()
         .and_then(|spend| claude_credits(spend, &data));
+    data.scoped = scoped_limits(&response.limits);
 
     data
+}
+
+/// Every `weekly_scoped` entry with a model name, in the order reported. The
+/// model is identified by its display name only; `scope.model.id` is null.
+fn scoped_limits(limits: &[UsageLimit]) -> Vec<ScopedLimit> {
+    limits
+        .iter()
+        .filter(|limit| limit.kind.as_deref() == Some("weekly_scoped"))
+        .filter_map(|limit| {
+            let label = limit
+                .scope
+                .as_ref()?
+                .model
+                .as_ref()?
+                .display_name
+                .as_deref()?
+                .trim();
+            (!label.is_empty()).then(|| ScopedLimit {
+                label: label.to_string(),
+                active: limit.is_active,
+                percentage: limit.percent.unwrap_or(0.0).clamp(0.0, 100.0),
+                resets_at: parse_iso8601(limit.resets_at.as_deref()),
+            })
+        })
+        .collect()
 }
 
 /// What a failed call to the usage endpoint actually tells us.
@@ -997,6 +1055,54 @@ mod tests {
             classify_usage_failure(&status_error(404)),
             UsageEndpointFailure::Unsupported
         );
+    }
+
+    #[test]
+    fn model_scoped_weekly_limits_are_read_from_the_limits_array() {
+        // Shape taken from a live /api/oauth/usage response (issue #56).
+        let data = usage_from_json(
+            r#"{
+                "five_hour": {"utilization": 29.0, "resets_at": "2026-09-18T05:00:00.365223+00:00"},
+                "seven_day": {"utilization": 26.0, "resets_at": "2026-09-18T06:00:00.365254+00:00"},
+                "seven_day_opus": null,
+                "seven_day_sonnet": null,
+                "limits": [
+                    {"kind": "session", "percent": 29, "resets_at": null, "scope": null, "is_active": false},
+                    {"kind": "weekly_all", "percent": 26, "resets_at": null, "scope": null, "is_active": false},
+                    {"kind": "weekly_scoped", "percent": 43, "resets_at": "2026-09-18T06:00:00.365581+00:00",
+                     "scope": {"model": {"id": null, "display_name": "Fable"}}, "is_active": true},
+                    {"kind": "weekly_scoped", "percent": 5, "resets_at": null,
+                     "scope": {"model": {"id": null, "display_name": ""}}, "is_active": false}
+                ]
+            }"#,
+        );
+
+        assert_eq!(data.scoped.len(), 1, "{:?}", data.scoped);
+        let fable = &data.scoped[0];
+        assert_eq!(fable.label, "Fable");
+        assert_eq!(fable.slug(), "fable");
+        assert!(fable.active);
+        assert_eq!(fable.percentage, 43.0);
+        assert!(fable.resets_at.is_some());
+        assert_eq!(
+            data.binding_scoped().map(|limit| limit.label.as_str()),
+            Some("Fable")
+        );
+        assert_eq!(data.weekly.percentage, 26.0);
+    }
+
+    #[test]
+    fn accounts_without_model_caps_report_none() {
+        let data = usage_from_json(r#"{"seven_day": {"utilization": 1.0}}"#);
+        assert!(data.scoped.is_empty());
+        assert!(data.binding_scoped().is_none());
+
+        // Legacy responses without a `limits` array at all.
+        let data = usage_from_json(
+            r#"{"five_hour": {"utilization": 9.0, "resets_at": null},
+                "limits": [{"kind": "session", "percent": 9, "scope": null}]}"#,
+        );
+        assert!(data.scoped.is_empty());
     }
 
     #[test]

@@ -495,6 +495,12 @@ pub(super) fn format_usage_line(base: &str, context: &DataContext) -> Option<Str
         .map(|base| (base, "display"))
         .unwrap_or((base, "percentage"));
     let (provider, window) = base.rsplit_once('.')?;
+    // `claude.model.fable` splits one segment too far: fold the slug back.
+    let (provider, window) = match provider.strip_suffix(".model") {
+        Some(provider) => (provider, format!("model.{window}")),
+        None => (provider, window.to_string()),
+    };
+    let window = window.as_str();
     let named_account = provider
         .strip_prefix("accounts.")
         .and_then(|path| path.split_once('.'))
@@ -508,10 +514,10 @@ pub(super) fn format_usage_line(base: &str, context: &DataContext) -> Option<Str
             provider,
             "active" | "claude" | "codex" | "antigravity" | "opencode" | "cursor"
         ))
-        || !matches!(
+        || !(matches!(
             window,
-            "session" | "five_hour" | "weekly" | "monthly" | "credits"
-        )
+            "session" | "five_hour" | "weekly" | "monthly" | "credits" | "scoped" | "context"
+        ) || window.starts_with("model."))
     {
         return None;
     }

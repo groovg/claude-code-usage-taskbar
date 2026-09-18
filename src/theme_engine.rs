@@ -1531,10 +1531,13 @@ impl DataContext {
         // The single figure a badge should show: whatever is closest to its
         // limit. A provider can switch a window off entirely -- Codex has its
         // five-hour window disabled -- so binding a badge to one window alone
-        // leaves it reporting 0% while another allowance is spent.
+        // leaves it reporting 0% while another allowance is spent. A model
+        // cap (Fable) blocks that model on its own, so it counts too.
+        let binding = usage.and_then(|usage| usage.binding_scoped());
+        let scoped_percentage = binding.map(|limit| limit.percentage).unwrap_or(0.0);
         let headline = match credits {
             Some(credits) => credits.percentage,
-            None => five_hour.max(weekly),
+            None => five_hour.max(weekly).max(scoped_percentage),
         };
         self.insert(&format!("{name}.headline.percentage"), headline);
         self.insert(&format!("{name}.headline.remaining"), 100.0 - headline);
@@ -1592,6 +1595,78 @@ impl DataContext {
             self.insert(&format!("{name}.{window}.reset.hours"), seconds / 3600.0);
             self.insert(&format!("{name}.{window}.reset.days"), seconds / 86400.0);
         }
+        // Model-scoped weekly caps. `scoped.*` is the one that matters now --
+        // flagged active by the API, else the fullest -- so a theme can show
+        // "Fable 43% · 2d" without naming the model. Every reported cap is
+        // also reachable by name as `model.<slug>.*` (`model.fable.*`) for
+        // themes that want a bar per model. Gate on `.available`: most
+        // accounts report none.
+        let scoped = usage.map(|usage| usage.scoped.as_slice()).unwrap_or(&[]);
+        let windows = std::iter::once((
+            format!("{name}.scoped"),
+            binding.map(|limit| limit.label.as_str()).unwrap_or(""),
+            scoped_percentage,
+            binding.and_then(|limit| limit.resets_at),
+            binding.is_some_and(|limit| limit.active),
+            binding.is_some(),
+        ))
+        .chain(scoped.iter().map(|limit| {
+            (
+                format!("{name}.model.{}", limit.slug()),
+                limit.label.as_str(),
+                limit.percentage,
+                limit.resets_at,
+                limit.active,
+                true,
+            )
+        }));
+        for (key, label, percentage, reset, active, available) in windows {
+            self.insert_string(&format!("{key}.label"), label);
+            self.insert(&format!("{key}.percentage"), percentage);
+            self.insert(&format!("{key}.remaining"), 100.0 - percentage);
+            self.insert(&format!("{key}.display"), display(percentage));
+            self.insert(&format!("{key}.active"), active as u8 as f64);
+            self.insert(&format!("{key}.available"), available as u8 as f64);
+            let (unix, seconds) = reset_value(reset);
+            self.insert(&format!("{key}.reset.unix"), unix);
+            self.insert(&format!("{key}.reset.seconds"), seconds);
+            self.insert(&format!("{key}.reset.minutes"), seconds / 60.0);
+            self.insert(&format!("{key}.reset.hours"), seconds / 3600.0);
+            self.insert(&format!("{key}.reset.days"), seconds / 86400.0);
+        }
+        self.insert(&format!("{name}.scoped.count"), scoped.len() as f64);
+        // Context window of the newest local Claude Code session: a share of
+        // the window, not of any allowance, and it has no reset.
+        let context = usage.and_then(|usage| usage.context.as_ref());
+        let context_percentage = context.map(|context| context.percentage).unwrap_or(0.0);
+        self.insert_string(&format!("{name}.context.label"), "ctx");
+        self.insert_string(
+            &format!("{name}.context.model"),
+            context
+                .and_then(|context| context.model.as_deref())
+                .unwrap_or(""),
+        );
+        self.insert(&format!("{name}.context.percentage"), context_percentage);
+        self.insert(
+            &format!("{name}.context.remaining"),
+            100.0 - context_percentage,
+        );
+        self.insert(
+            &format!("{name}.context.display"),
+            display(context_percentage),
+        );
+        self.insert(
+            &format!("{name}.context.tokens"),
+            context.map(|context| context.tokens as f64).unwrap_or(0.0),
+        );
+        self.insert(
+            &format!("{name}.context.window"),
+            context.map(|context| context.window as f64).unwrap_or(0.0),
+        );
+        self.insert(
+            &format!("{name}.context.available"),
+            context.is_some() as u8 as f64,
+        );
     }
 
     pub fn insert(&mut self, name: &str, value: f64) {

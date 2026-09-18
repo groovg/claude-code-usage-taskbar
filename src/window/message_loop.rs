@@ -73,6 +73,10 @@ pub(super) unsafe extern "system" fn wnd_proc(
                     sync_tray_icon(hwnd);
                     schedule_countdown_timer();
                 }
+                TIMER_CONTEXT if refresh_session_context() => {
+                    render_layered();
+                    sync_tray_icon(hwnd);
+                }
                 TIMER_CLOCK => {
                     render_layered();
                     let refresh_tray = lock_state()

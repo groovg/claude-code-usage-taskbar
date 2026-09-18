@@ -54,6 +54,15 @@ Use the dashboard to select providers, change the refresh interval, choose a dis
 
 Theme authors can opt in with `.display` bindings, including `{claude.session.display:usage_line}` and `{claude.session.display:usage_badge}`. Existing `.percentage`, `.remaining`, and unsuffixed usage summaries keep their meaning; warning thresholds should continue to use `.percentage`.
 
+### Model caps and session context (Claude Code)
+
+Anthropic reports model-scoped weekly caps (Fable today) in the `limits` array of the usage endpoint. The Classic theme appends a column for them next to the Claude Code bars whenever the account reports one. Bindings:
+
+- `{claude.scoped.*}` — the cap that matters now: the one the API marks active, otherwise the fullest. `.label` (`Fable`), `.percentage`, `.remaining`, `.display`, `.reset.*`, `.active`, `.available`, `.count`, and `{claude.scoped:usage_line}` (`43% · 2d`).
+- `{claude.model.<slug>.*}` — every reported cap by name, for a bar per model: `{claude.model.fable.percentage}`. The slug is the display name in lower case with runs of punctuation and spaces folded to `_`.
+
+The same column shows the context window of the newest local Claude Code session, read from its transcript under `~/.claude/projects` every five seconds: `{claude.context.percentage}`, `.remaining`, `.display`, `.tokens`, `.window`, `.model`, `.available`, and `{claude.context:usage_line}` (`14%`). The window is 1M tokens when the model in `~/.claude/settings.json` carries the `[1m]` suffix, 200k otherwise. Nothing is sent anywhere; it works with the terminal CLI and the VS Code extension alike.
+
 In the default theme, left-click a provider tray icon to show or hide the widget and right-click it to open the menu.
 
 ## Provider setup

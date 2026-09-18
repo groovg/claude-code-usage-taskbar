@@ -10,6 +10,8 @@ fn usage_with_session_percent(percentage: f64) -> UsageData {
         weekly: UsageSection::default(),
         weekly_label: None,
         monthly: None,
+        scoped: Vec::new(),
+        context: None,
         credits: None,
         stale: false,
     }

@@ -172,6 +172,8 @@ pub(super) fn fetch_antigravity_usage_from_endpoint(
         weekly,
         weekly_label: None,
         monthly: None,
+        scoped: Vec::new(),
+        context: None,
         credits: None,
         stale: false,
     })

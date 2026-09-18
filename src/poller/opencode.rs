@@ -123,6 +123,8 @@ fn poll_dashboard(credentials: &DashboardCredentials) -> Result<UsageData, PollE
         // auto-selected `weekly` slot (which prefers the more constrained
         // of the two windows, as before).
         monthly: usage.monthly.as_ref().map(section_from_window),
+        scoped: Vec::new(),
+        context: None,
         credits: None,
         stale: false,
     })

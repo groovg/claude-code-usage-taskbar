@@ -701,6 +701,8 @@ fn usage_lines_handle_loading_errors_missing_resets_and_language() {
             weekly: crate::models::UsageSection::default(),
             weekly_label: None,
             monthly: None,
+            scoped: Vec::new(),
+            context: None,
             credits: None,
             stale: false,
         },
@@ -761,9 +763,10 @@ fn starter_theme_round_trips_and_validates() {
         .collect::<Vec<_>>();
     // Classic contains separate light and dark progress layers so the
     // 1.4.9 palette follows the taskbar mode without runtime recolouring:
-    // five providers over two windows in two modes, plus a credit overlay on
-    // the weekly row of the two providers that report credits.
-    assert_eq!(segments, vec![10; 5 * 2 * 2 + 2 * 2]);
+    // five providers over two windows in two modes, plus the Claude model cap
+    // and session context rows in two modes, plus a credit overlay on the
+    // weekly row of the two providers that report credits.
+    assert_eq!(segments, vec![10; 5 * 2 * 2 + 2 * 2 + 2 * 2]);
     assert!(theme.surfaces[0]
         .children
         .iter()
@@ -876,6 +879,8 @@ fn reset_stats_and_duration_formats_are_available_to_every_provider() {
             weekly: crate::models::UsageSection::default(),
             weekly_label: None,
             monthly: None,
+            scoped: Vec::new(),
+            context: None,
             credits: None,
             stale: false,
         },
@@ -2433,4 +2438,140 @@ fn the_classic_theme_shows_one_badge_digit_group_in_both_usage_directions() {
             }
         }
     }
+}
+
+#[test]
+fn claude_model_caps_and_session_context_are_available_to_templates() {
+    let reset = std::time::SystemTime::now() + std::time::Duration::from_secs(259_200);
+    let usage = crate::models::AppUsageData::from_iter([(
+        ProviderId::Claude,
+        crate::models::UsageData {
+            session: crate::models::UsageSection {
+                available: true,
+                percentage: 9.0,
+                resets_at: Some(reset),
+            },
+            weekly: crate::models::UsageSection {
+                available: true,
+                percentage: 26.0,
+                resets_at: Some(reset),
+            },
+            scoped: vec![
+                crate::models::ScopedLimit {
+                    label: "Fable".into(),
+                    active: true,
+                    percentage: 43.0,
+                    resets_at: Some(reset),
+                },
+                crate::models::ScopedLimit {
+                    label: "Sonnet 4.5".into(),
+                    active: false,
+                    percentage: 2.0,
+                    resets_at: None,
+                },
+            ],
+            context: Some(crate::models::ContextSection {
+                tokens: 143_000,
+                window: 1_000_000,
+                percentage: 14.3,
+                model: Some("claude-fable-5-1".into()),
+                updated_at: None,
+            }),
+            ..Default::default()
+        },
+    )]);
+    let context = DataContext::from_usage(Some(&usage), &Canvas::default());
+    // `scoped` is the binding cap; every cap is also reachable by slug.
+    assert_eq!(evaluate("claude.scoped.available", &context).unwrap(), 1.0);
+    assert_eq!(
+        evaluate("claude.scoped.percentage", &context).unwrap(),
+        43.0
+    );
+    assert_eq!(evaluate("claude.scoped.active", &context).unwrap(), 1.0);
+    assert_eq!(evaluate("claude.scoped.count", &context).unwrap(), 2.0);
+    assert_eq!(
+        format_template("{claude.scoped.label} {claude.scoped:usage_line}", &context),
+        "Fable 43% · 3d"
+    );
+    assert_eq!(
+        evaluate("claude.model.fable.percentage", &context).unwrap(),
+        43.0
+    );
+    assert_eq!(
+        evaluate("claude.model.fable.available", &context).unwrap(),
+        1.0
+    );
+    assert_eq!(
+        evaluate("claude.model.sonnet_4_5.percentage", &context).unwrap(),
+        2.0
+    );
+    assert_eq!(
+        format_template("{claude.model.sonnet_4_5:usage_line}", &context),
+        "2%"
+    );
+    // The session context is a share of the window with no reset.
+    assert_eq!(evaluate("claude.context.available", &context).unwrap(), 1.0);
+    assert_eq!(
+        evaluate("claude.context.tokens", &context).unwrap(),
+        143_000.0
+    );
+    assert_eq!(
+        evaluate("claude.context.window", &context).unwrap(),
+        1_000_000.0
+    );
+    assert_eq!(
+        format_template(
+            "{claude.context.label} {claude.context:usage_line}",
+            &context
+        ),
+        "ctx 14%"
+    );
+    // The headline follows the fullest allowance, the model cap included.
+    assert_eq!(
+        evaluate("claude.headline.percentage", &context).unwrap(),
+        43.0
+    );
+    // Providers without caps or a transcript expose safe zeros.
+    assert_eq!(evaluate("codex.scoped.available", &context).unwrap(), 0.0);
+    assert_eq!(evaluate("codex.scoped.percentage", &context).unwrap(), 0.0);
+    assert_eq!(evaluate("codex.context.available", &context).unwrap(), 0.0);
+    assert_eq!(
+        format_template("{claude.model.opus:usage_line}", &context),
+        "0%"
+    );
+
+    // Classic appends the cap / context column only while there is something
+    // to show: bar + 4 + 90 wide plus the 3px row gap.
+    let theme = ThemeDocument::starter();
+    assert_eq!(
+        resolve_surface_size(
+            &theme,
+            0,
+            Some(&usage),
+            ThemeRuntime::new(true, false, false)
+        ),
+        (217 + 109 + 4 + 90 + 3, 46)
+    );
+    assert_eq!(
+        resolve_surface_size(
+            &theme,
+            0,
+            Some(&usage),
+            ThemeRuntime::new(true, true, false)
+        ),
+        (285 + 54 + 4 + 90 + 3, 46)
+    );
+    let plain = crate::models::AppUsageData::from_iter([(
+        ProviderId::Claude,
+        crate::models::UsageData::default(),
+    )]);
+    assert_eq!(
+        resolve_surface_size(
+            &theme,
+            0,
+            Some(&plain),
+            ThemeRuntime::new(true, false, false)
+        ),
+        (217, 46)
+    );
 }
