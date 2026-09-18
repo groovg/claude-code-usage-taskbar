@@ -40,6 +40,8 @@ Claude Code credentials can be detected from the CLI, Claude desktop app, or WSL
 
 Download `claude-code-usage-taskbar.exe` from [GitHub Releases](https://github.com/groovg/claude-code-usage-taskbar/releases) and run it. The app checks that repository for updates.
 
+The executable is not code-signed, so the first launch may show a SmartScreen prompt ("Windows protected your PC"): click **More info**, then **Run anyway**. If Smart App Control blocks it outright, the release page's checksum lets you verify the download before allowing it. A WinGet package is planned; the release workflow already publishes one once a `WINGETCREATE_GITHUB_TOKEN` secret is configured.
+
 ## Usage
 
 Start the monitor:

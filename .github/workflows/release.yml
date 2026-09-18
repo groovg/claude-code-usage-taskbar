@@ -25,10 +25,18 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
+      - name: Write SHA-256 checksum
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash target/release/claude-code-usage-taskbar.exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  claude-code-usage-taskbar.exe" | Set-Content -NoNewline target/release/claude-code-usage-taskbar.exe.sha256
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: target/release/claude-code-usage-taskbar.exe
+          files: |
+            target/release/claude-code-usage-taskbar.exe
+            target/release/claude-code-usage-taskbar.exe.sha256
           generate_release_notes: true
 
   winget:
