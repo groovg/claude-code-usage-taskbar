@@ -302,8 +302,15 @@ impl AppUsageData {
                     .filter(|account| account.provider == ProviderId::Claude)
                     .filter_map(|account| account.usage.as_mut()),
             );
+        // Every transcript write bumps `updated_at`; only the figures warrant
+        // a redraw.
+        let figures = |context: &Option<ContextSection>| {
+            context
+                .as_ref()
+                .map(|context| (context.tokens, context.window, context.model.clone()))
+        };
         for usage in slots {
-            if usage.context != context {
+            if figures(&usage.context) != figures(&context) {
                 usage.context = context.clone();
                 changed = true;
             }

@@ -49,12 +49,16 @@ fn refresh_session_context() -> bool {
         return false;
     }
     // Read before taking the lock: the file walk must not stall the UI state.
-    let context = poller::claude_session_context();
+    // A tail with no complete assistant line yet is not "no session": keep
+    // the last reading rather than collapsing the column until the next turn.
+    let Some(context) = poller::claude_session_context() else {
+        return false;
+    };
     let mut state = lock_state();
     state
         .as_mut()
         .and_then(|s| s.data.as_mut())
-        .is_some_and(|data| data.set_claude_context(context))
+        .is_some_and(|data| data.set_claude_context(Some(context)))
 }
 use crate::poller;
 use crate::providers::{ProviderId, ProviderSet};
@@ -632,7 +636,7 @@ fn tray_usage_summary_lines(
                 line.push_str(&format!(" | {}: {:.0}%", cap.label, shown(cap.percentage)));
             }
             if let Some(context) = &usage.context {
-                line.push_str(&format!(" | ctx: {:.0}%", context.percentage));
+                line.push_str(&format!(" | ctx: {:.0}%", shown(context.percentage)));
             }
             Some(line)
         })
@@ -662,15 +666,31 @@ fn tray_icon_tooltip_from_state() -> String {
         };
         let title = state.language.strings().window_title;
         // Say why the bars are blank; "!" alone sent people chasing proxies
-        // and firewalls when the login had merely expired (#72).
-        match state.last_error {
-            Some(failure) => format!(
-                "{title}\n{}: {}",
-                state
-                    .language
-                    .text(failure.provider.descriptor().display_name),
-                state.language.text(failure.error.description())
-            ),
+        // and firewalls when the login had merely expired (#72). With account
+        // profiles the poll succeeds as a whole and the failure sits on the
+        // account, so look there too.
+        let failure = state.last_error.or_else(|| {
+            state.data.as_ref()?.accounts.iter().find_map(|account| {
+                account.error.map(|error| poller::PollFailure {
+                    provider: account.provider,
+                    error,
+                })
+            })
+        });
+        match failure {
+            Some(failure) => {
+                let reason = if failure.error.is_auth() {
+                    state.language.provider_auth_error(failure.provider).1
+                } else {
+                    state.language.text(failure.error.description())
+                };
+                format!(
+                    "{title}\n{}: {reason}",
+                    state
+                        .language
+                        .text(failure.provider.descriptor().display_name)
+                )
+            }
             None => title.to_string(),
         }
     })
@@ -2391,8 +2411,12 @@ fn schedule_countdown_timer() {
 
     let min_delay = s.data.as_ref().and_then(|data| {
         data.all_usage()
-            .flat_map(|usage| [&usage.session, &usage.weekly])
-            .filter_map(|section| poller::time_until_display_change(section.resets_at))
+            .flat_map(|usage| {
+                [usage.session.resets_at, usage.weekly.resets_at]
+                    .into_iter()
+                    .chain(usage.scoped.iter().map(|limit| limit.resets_at))
+            })
+            .filter_map(poller::time_until_display_change)
             .min()
     });
 

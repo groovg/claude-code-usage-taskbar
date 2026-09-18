@@ -8,15 +8,15 @@
       "name": "Classic taskbar widget",
       "placement": {
         "reference": {
-          "region": "system_tray",
+          "region": "taskbar",
           "display": 0
         },
         "nest": "taskbar",
         "horizontal": "left",
         "vertical": "bottom",
-        "surface_horizontal": "right",
+        "surface_horizontal": "left",
         "surface_vertical": "bottom",
-        "offset_x": 0,
+        "offset_x": 8,
         "offset_y": 0
       },
       "width": "42 + providers.count * (ceil(10 / max(1, providers.count)) * 11 - 1 + 4 + 62) + max(0, providers.count - 1) * 3 + (providers.opencode.enabled + providers.cursor.enabled) * 28 + (providers.claude.enabled && (claude.scoped.available || claude.context.available)) * (ceil(10 / max(1, providers.count)) * 11 - 1 + 4 + 90 + 3)",

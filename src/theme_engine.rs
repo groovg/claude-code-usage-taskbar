@@ -1676,7 +1676,8 @@ impl DataContext {
     pub fn get(&self, name: &str) -> Option<f64> {
         let name = name.to_ascii_lowercase();
         self.values.get(&name).copied().or_else(|| {
-            let key = Self::account_default_key(&name)?;
+            let key =
+                Self::account_default_key(&name).or_else(|| Self::model_default_key(&name))?;
             let value = *Self::account_defaults().values.get(&key)?;
             Some(
                 if key.ends_with(".display")
@@ -1697,12 +1698,36 @@ impl DataContext {
     pub fn get_string(&self, name: &str) -> Option<&str> {
         let name = name.to_ascii_lowercase();
         self.strings.get(&name).map(String::as_str).or_else(|| {
-            let key = Self::account_default_key(&name)?;
+            let key =
+                Self::account_default_key(&name).or_else(|| Self::model_default_key(&name))?;
             Self::account_defaults()
                 .strings
                 .get(&key)
                 .map(String::as_str)
         })
+    }
+
+    // Model caps are keyed by whatever display name the API sends, so a theme
+    // can name a model the account does not report (`claude.model.fable.*` on
+    // a plan without Fable). Those read as an absent window rather than a typo.
+    fn model_default_key(name: &str) -> Option<String> {
+        let (provider, rest) = name.split_once(".model.")?;
+        let (slug, field) = rest.split_once('.')?;
+        let provider = provider
+            .strip_prefix("accounts.")
+            .map_or(provider, |account| {
+                account
+                    .split_once('.')
+                    .map_or(account, |(provider, _)| provider)
+            });
+        (matches!(
+            provider,
+            "active" | "claude" | "codex" | "antigravity" | "opencode" | "cursor"
+        ) && !slug.is_empty()
+            && slug
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'))
+        .then(|| format!("account.scoped.{field}"))
     }
 
     // Account IDs are dynamic, but their fields use the same schema as provider

@@ -1385,9 +1385,16 @@ fn starter_has_a_taskbar_widget_and_provider_tray_icons() {
     let theme = ThemeDocument::starter();
     assert!(theme.is_builtin_classic());
     assert_eq!(theme.surfaces[0].placement.nest, SurfaceNest::Taskbar);
+    // Left edge of the taskbar: Windows 11 centres its buttons and leaves that
+    // side empty, the tray side is where notifications and flyouts fight for
+    // room. Studio's Positioning panel moves it back beside the tray.
     assert_eq!(
         theme.surfaces[0].placement.reference.region,
-        ReferenceRegion::SystemTray
+        ReferenceRegion::Taskbar
+    );
+    assert_eq!(
+        theme.surfaces[0].placement.horizontal,
+        HorizontalAnchor::Left
     );
     assert_eq!(theme.surfaces.len(), 6);
     assert!(theme.surfaces[1..]

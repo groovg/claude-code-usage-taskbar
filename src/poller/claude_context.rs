@@ -7,6 +7,7 @@
 
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::SystemTime;
 
 use crate::models::ContextSection;
@@ -16,15 +17,29 @@ const TAIL_BYTES: u64 = 256 * 1024;
 const DEFAULT_WINDOW: u64 = 200_000;
 const LONG_WINDOW: u64 = 1_000_000;
 
+/// The last parse, keyed by transcript path and mtime: the window asks every
+/// five seconds, the file changes only when a turn completes.
+static LAST: Mutex<Option<(PathBuf, SystemTime, ContextSection)>> = Mutex::new(None);
+
 pub(super) fn read() -> Option<ContextSection> {
     let config = config_directory()?;
     let (transcript, updated_at) = newest_transcript(&config.join("projects"))?;
+    if let Ok(last) = LAST.lock() {
+        if let Some((path, modified, section)) = last.as_ref() {
+            if *path == transcript && *modified == updated_at {
+                return Some(section.clone());
+            }
+        }
+    }
     let tail = read_tail(&transcript, TAIL_BYTES)?;
     let mut section = context_from_transcript_tail(&tail)?;
     let settings = std::fs::read_to_string(config.join("settings.json")).unwrap_or_default();
     section.window = context_window(&settings);
     section.percentage = (section.tokens as f64 / section.window as f64 * 100.0).clamp(0.0, 100.0);
     section.updated_at = Some(updated_at);
+    if let Ok(mut last) = LAST.lock() {
+        *last = Some((transcript, updated_at, section.clone()));
+    }
     Some(section)
 }
 
@@ -68,9 +83,10 @@ fn read_tail(path: &Path, bytes: u64) -> Option<String> {
     Some(String::from_utf8_lossy(&buffer).into_owned())
 }
 
-/// The last complete assistant line, searched from the end. A line still being
-/// written fails to parse and is skipped, as is any earlier line that merely
-/// quotes the marker inside a tool result.
+/// The last complete assistant turn, searched from the end. Skipped: a line
+/// still being written (fails to parse), a line that merely quotes the marker
+/// inside a tool result, and the synthetic zero-usage entries Claude Code
+/// writes on API errors and interrupts, which say nothing about the context.
 fn context_from_transcript_tail(tail: &str) -> Option<ContextSection> {
     tail.rsplit('\n')
         .filter(|line| line.contains("\"type\":\"assistant\""))
@@ -82,23 +98,37 @@ fn context_from_transcript_tail(tail: &str) -> Option<ContextSection> {
             let message = value.get("message")?;
             let usage = message.get("usage")?;
             let count = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+            let tokens = count("input_tokens")
+                + count("cache_creation_input_tokens")
+                + count("cache_read_input_tokens");
+            let model = message
+                .get("model")
+                .and_then(|model| model.as_str())
+                .map(str::to_string);
+            if tokens == 0 || model.as_deref() == Some("<synthetic>") {
+                return None;
+            }
             Some(ContextSection {
-                tokens: count("input_tokens")
-                    + count("cache_creation_input_tokens")
-                    + count("cache_read_input_tokens"),
-                model: message
-                    .get("model")
-                    .and_then(|model| model.as_str())
-                    .map(str::to_string),
+                tokens,
+                model,
                 ..Default::default()
             })
         })
 }
 
 /// Claude Code marks the long-context variant with a `[1m]` suffix on the
-/// model in `settings.json`; anything else runs against the standard window.
+/// `model` in `settings.json`; anything else runs against the standard window.
 fn context_window(settings: &str) -> u64 {
-    if settings.contains("[1m]") {
+    let long_context = serde_json::from_str::<serde_json::Value>(settings)
+        .ok()
+        .and_then(|settings| {
+            settings
+                .get("model")?
+                .as_str()
+                .map(|model| model.contains("[1m]"))
+        })
+        .unwrap_or(false);
+    if long_context {
         LONG_WINDOW
     } else {
         DEFAULT_WINDOW
@@ -128,6 +158,16 @@ mod tests {
     }
 
     #[test]
+    fn synthetic_error_turns_do_not_reset_the_context() {
+        let tail = format!(
+            "{TAIL}\n{}\n",
+            r#"{"type":"assistant","message":{"model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0}}}"#
+        );
+        let section = context_from_transcript_tail(&tail).expect("the real turn before it");
+        assert_eq!(section.tokens, 32 + 2480 + 56847);
+    }
+
+    #[test]
     fn the_long_context_marker_selects_the_million_token_window() {
         assert_eq!(
             context_window(r#"{"model": "claude-fable-5-1[1m]"}"#),
@@ -135,6 +175,11 @@ mod tests {
         );
         assert_eq!(
             context_window(r#"{"model": "claude-fable-5-1"}"#),
+            DEFAULT_WINDOW
+        );
+        // Only the model key counts, not a `[1m]` elsewhere in the file.
+        assert_eq!(
+            context_window(r#"{"model": "claude-opus-5", "env": {"X": "[1m]"}}"#),
             DEFAULT_WINDOW
         );
         assert_eq!(context_window(""), DEFAULT_WINDOW);
