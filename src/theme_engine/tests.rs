@@ -2599,3 +2599,55 @@ fn claude_model_caps_and_session_context_are_available_to_templates() {
         (217, 46)
     );
 }
+
+#[test]
+fn widget_position_moves_only_built_in_taskbar_surfaces() {
+    use crate::app_settings::WidgetPosition;
+
+    let theme = ThemeDocument::starter();
+    let right = apply_widget_position(&theme, WidgetPosition::Right);
+    assert_eq!(
+        right.surfaces[0].placement.reference.region,
+        ReferenceRegion::SystemTray
+    );
+    assert_eq!(
+        right.surfaces[0].placement.surface_horizontal,
+        Some(HorizontalAnchor::Right)
+    );
+    assert_eq!(right.surfaces[0].placement.offset_x, 0);
+    // Tray icons are Explorer's to place.
+    assert!(right.surfaces[1..]
+        .iter()
+        .zip(&theme.surfaces[1..])
+        .all(|(moved, original)| moved.placement == original.placement));
+
+    let left = apply_widget_position(&right, WidgetPosition::Left);
+    assert_eq!(
+        left.surfaces[0].placement.reference.region,
+        ReferenceRegion::Taskbar
+    );
+    assert_eq!(
+        left.surfaces[0].placement.horizontal,
+        HorizontalAnchor::Left
+    );
+    assert_eq!(
+        left.surfaces[0].placement.surface_horizontal,
+        Some(HorizontalAnchor::Left)
+    );
+    assert_eq!(left.surfaces[0].placement.offset_x, 8);
+    // Automatic resolves to one of the two, never to nothing.
+    let auto = apply_widget_position(&theme, WidgetPosition::Auto);
+    assert!(matches!(
+        auto.surfaces[0].placement.reference.region,
+        ReferenceRegion::Taskbar | ReferenceRegion::SystemTray
+    ));
+
+    // A custom theme keeps its author's placement.
+    let mut custom = theme.clone();
+    custom.id = "my-theme".into();
+    let untouched = apply_widget_position(&custom, WidgetPosition::Right);
+    assert_eq!(
+        untouched.surfaces[0].placement,
+        custom.surfaces[0].placement
+    );
+}

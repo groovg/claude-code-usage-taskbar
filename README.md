@@ -13,7 +13,7 @@ Claude Code Usage Taskbar is a maintained continuation of [Claude Code Usage Mon
 
 - **Model caps (Fable).** Anthropic reports per-model weekly caps in the usage API's `limits` array; the widget shows the cap that binds you (`Fable 37% · 4h`) next to the weekly bar, and every cap is available to themes as `{claude.model.<slug>.*}`.
 - **Session context.** How full the context window of your current Claude Code session is (`ctx 41%`), read from the local transcript every 5 seconds. With several sessions open (say five editor windows, each with its own chat) it follows the one that spoke last, and the tray tooltip names its project folder. Works with the terminal CLI and the VS Code extension; nothing leaves your machine.
-- **Widget position.** Dock the widget at the left edge of the taskbar (the default, where Windows 11 leaves room) or beside the notification area.
+- **Widget position.** Dock the widget at the left edge of the taskbar or beside the notification area. The default follows your taskbar: the free left end when Windows centres its buttons, the tray side when they start at the left edge.
 - **Clearer failures.** The tray tooltip says why the bars are blank: an expired login, no login, or an unreachable service.
 - Desktop-app logins are picked up on machines without the CLI, including the app's newer token cache.
 
@@ -58,7 +58,7 @@ Use the dashboard to select providers, change the refresh interval, choose a dis
 
 Theme authors can opt in with `.display` bindings, including `{claude.session.display:usage_line}` and `{claude.session.display:usage_badge}`. Existing `.percentage`, `.remaining`, and unsuffixed usage summaries keep their meaning; warning thresholds should continue to use `.percentage`.
 
-**Settings > Display > Widget position** docks the built-in themes at the left edge of the taskbar (the default; Windows 11 centres its buttons and leaves that side empty) or beside the notification area. Custom themes keep the placement set in Theme Studio.
+**Settings > Display > Widget position** docks the built-in themes at the left edge of the taskbar or beside the notification area. **Automatic** (the default) picks the left edge when Windows centres its taskbar buttons (the Windows 11 default) and the tray side when they start at the left, where the Start button would otherwise be covered. Custom themes keep the placement set in Theme Studio.
 
 ### Model caps and session context (Claude Code)
 
@@ -67,7 +67,7 @@ Anthropic reports model-scoped weekly caps (Fable today) in the `limits` array o
 - `{claude.scoped.*}` — the cap that matters now: the one the API marks active, otherwise the fullest. `.label` (`Fable`), `.percentage`, `.remaining`, `.display`, `.reset.*`, `.active`, `.available`, `.count`, and `{claude.scoped:usage_line}` (`43% · 2d`).
 - `{claude.model.<slug>.*}` — every reported cap by name, for a bar per model: `{claude.model.fable.percentage}`. The slug is the display name in lower case with runs of punctuation and spaces folded to `_`.
 
-The same column shows the context window of a local Claude Code session, read from its transcript under `~/.claude/projects` every five seconds. Which session: the one whose transcript was written most recently, i.e. the chat that last sent or received a message. With several sessions open the figure switches to whichever you are actively using; sub-agent transcripts are ignored. Bindings: `{claude.context.percentage}`, `.remaining`, `.display`, `.tokens`, `.window`, `.model`, `.project` (last folder of the session's working directory), `.available`, and `{claude.context:usage_line}` (`14%`). The window is 1M tokens when the model in `~/.claude/settings.json` carries the `[1m]` suffix, 200k otherwise. Nothing is sent anywhere; it works with the terminal CLI and the VS Code extension alike.
+The same column shows the context window of a local Claude Code session, read from its transcript under `~/.claude/projects` every five seconds. Which session: the one whose transcript was written most recently, i.e. the chat that last sent or received a message. With several sessions open the figure switches to whichever you are actively using; sub-agent transcripts are ignored. Bindings: `{claude.context.percentage}`, `.remaining`, `.display`, `.tokens`, `.window`, `.model`, `.project` (last folder of the session's working directory), `.available`, and `{claude.context:usage_line}` (`14%`). The window is 1M tokens when the `model` setting carries the `[1m]` suffix, 200k otherwise; the session's `.claude/settings.local.json` and `.claude/settings.json` are consulted before `~/.claude/settings.json`, as Claude Code does. Nothing is sent anywhere; it works with the terminal CLI and the VS Code extension alike.
 
 In the default theme, left-click a provider tray icon to show or hide the widget and right-click it to open the menu.
 

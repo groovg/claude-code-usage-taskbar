@@ -28,22 +28,40 @@ pub const MAX_POLL_MINUTES: u32 = i32::MAX as u32 / POLL_1_MIN;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WidgetPosition {
-    /// Left edge of the taskbar: Windows 11 centres its buttons and leaves
-    /// that side empty.
+    /// Follow the taskbar: the free left end when Windows centres its buttons
+    /// (Windows 11 default), beside the tray when the buttons start at the
+    /// left edge (Windows 10, or Windows 11 set to "Left"), where a widget
+    /// would otherwise sit on the Start button.
     #[default]
+    Auto,
+    /// Left edge of the taskbar.
     Left,
     /// Beside the notification area, where the widget started out.
     Right,
 }
 
 impl WidgetPosition {
-    pub const ALL: [Self; 2] = [Self::Left, Self::Right];
+    pub const ALL: [Self; 3] = [Self::Auto, Self::Left, Self::Right];
 
     /// English catalogue key resolved through the localization layer.
     pub fn label(self) -> &'static str {
         match self {
+            Self::Auto => "Automatic",
             Self::Left => "Left",
             Self::Right => "Right",
+        }
+    }
+
+    /// The end of the taskbar to use right now: never `Auto`.
+    pub fn resolved(self) -> Self {
+        self.for_alignment(crate::theme::taskbar_buttons_centered())
+    }
+
+    pub fn for_alignment(self, buttons_centered: bool) -> Self {
+        match self {
+            Self::Auto if buttons_centered => Self::Left,
+            Self::Auto => Self::Right,
+            explicit => explicit,
         }
     }
 }
@@ -118,7 +136,7 @@ impl Default for SettingsFile {
             show_cursor: false,
             custom_theme_enabled: true,
             usage_countdown: false,
-            widget_position: WidgetPosition::Left,
+            widget_position: WidgetPosition::Auto,
             active_theme_path: None,
             dashboard_width: None,
             dashboard_height: None,
@@ -475,11 +493,31 @@ mod tests {
         assert!(counting_down.usage_countdown);
         assert_eq!(settings_json(&counting_down)["usage_countdown"], true);
 
-        // Older files carry no position and dock left; the choice round-trips.
-        assert_eq!(counting_down.widget_position, WidgetPosition::Left);
-        assert_eq!(settings_json(&counting_down)["widget_position"], "left");
+        // Older files carry no position and follow the taskbar; the choice
+        // round-trips.
+        assert_eq!(counting_down.widget_position, WidgetPosition::Auto);
+        assert_eq!(settings_json(&counting_down)["widget_position"], "auto");
         let docked_right = decode_settings(r#"{"widget_position":"right"}"#).unwrap();
         assert_eq!(docked_right.widget_position, WidgetPosition::Right);
+        assert_eq!(settings_json(&docked_right)["widget_position"], "right");
+    }
+
+    #[test]
+    fn automatic_position_follows_the_taskbar_alignment() {
+        // Centred buttons leave the left end free; left-aligned buttons put
+        // the Start button there, so the widget moves beside the tray.
+        assert_eq!(
+            WidgetPosition::Auto.for_alignment(true),
+            WidgetPosition::Left
+        );
+        assert_eq!(
+            WidgetPosition::Auto.for_alignment(false),
+            WidgetPosition::Right
+        );
+        for explicit in [WidgetPosition::Left, WidgetPosition::Right] {
+            assert_eq!(explicit.for_alignment(true), explicit);
+            assert_eq!(explicit.for_alignment(false), explicit);
+        }
     }
 
     #[test]

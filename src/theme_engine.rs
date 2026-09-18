@@ -85,24 +85,22 @@ pub fn apply_widget_position(
     if !is_builtin_theme_id(&theme.id) {
         return theme;
     }
+    let position = position.resolved();
     for surface in &mut theme.surfaces {
         let placement = &mut surface.placement;
         if placement.nest.resolve(placement.reference.region) != SurfaceNest::Taskbar {
             continue;
         }
-        match position {
-            crate::app_settings::WidgetPosition::Left => {
-                placement.reference.region = ReferenceRegion::Taskbar;
-                placement.horizontal = HorizontalAnchor::Left;
-                placement.surface_horizontal = Some(HorizontalAnchor::Left);
-                placement.offset_x = 8;
-            }
-            crate::app_settings::WidgetPosition::Right => {
-                placement.reference.region = ReferenceRegion::SystemTray;
-                placement.horizontal = HorizontalAnchor::Left;
-                placement.surface_horizontal = Some(HorizontalAnchor::Right);
-                placement.offset_x = 0;
-            }
+        if position == crate::app_settings::WidgetPosition::Left {
+            placement.reference.region = ReferenceRegion::Taskbar;
+            placement.horizontal = HorizontalAnchor::Left;
+            placement.surface_horizontal = Some(HorizontalAnchor::Left);
+            placement.offset_x = 8;
+        } else {
+            placement.reference.region = ReferenceRegion::SystemTray;
+            placement.horizontal = HorizontalAnchor::Left;
+            placement.surface_horizontal = Some(HorizontalAnchor::Right);
+            placement.offset_x = 0;
         }
     }
     theme
