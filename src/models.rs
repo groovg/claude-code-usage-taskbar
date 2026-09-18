@@ -97,6 +97,10 @@ pub struct ContextSection {
     pub percentage: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Last component of the session's working directory, so a reader with
+    /// several sessions open can tell whose context this is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     /// When the transcript last changed.
     pub updated_at: Option<SystemTime>,
 }

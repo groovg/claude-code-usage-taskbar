@@ -108,9 +108,15 @@ fn context_from_transcript_tail(tail: &str) -> Option<ContextSection> {
             if tokens == 0 || model.as_deref() == Some("<synthetic>") {
                 return None;
             }
+            let project = value
+                .get("cwd")
+                .and_then(|cwd| cwd.as_str())
+                .and_then(|cwd| cwd.rsplit(['\\', '/']).find(|part| !part.is_empty()))
+                .map(str::to_string);
             Some(ContextSection {
                 tokens,
                 model,
+                project,
                 ..Default::default()
             })
         })
@@ -142,7 +148,7 @@ mod tests {
     const TAIL: &str = concat!(
         r#"{"type":"user","message":{"role":"user","content":"hi"}}"#,
         "\n",
-        r#"{"type":"assistant","message":{"model":"claude-fable-5-1","usage":{"input_tokens":32,"cache_creation_input_tokens":2480,"cache_read_input_tokens":56847,"output_tokens":3676}}}"#,
+        r#"{"type":"assistant","cwd":"C:\\Users\\me\\work\\my-app","message":{"model":"claude-fable-5-1","usage":{"input_tokens":32,"cache_creation_input_tokens":2480,"cache_read_input_tokens":56847,"output_tokens":3676}}}"#,
         "\n",
         r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"log says \"type\":\"assistant\" here"}]}}"#,
         "\n",
@@ -154,6 +160,7 @@ mod tests {
         let section = context_from_transcript_tail(TAIL).expect("an assistant line");
         assert_eq!(section.tokens, 32 + 2480 + 56847);
         assert_eq!(section.model.as_deref(), Some("claude-fable-5-1"));
+        assert_eq!(section.project.as_deref(), Some("my-app"));
         assert!(context_from_transcript_tail("{\"type\":\"user\"}\n").is_none());
     }
 

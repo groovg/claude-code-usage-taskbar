@@ -639,6 +639,9 @@ fn tray_usage_summary_lines(
             }
             if let Some(context) = &usage.context {
                 line.push_str(&format!(" | ctx: {:.0}%", shown(context.percentage)));
+                if let Some(project) = &context.project {
+                    line.push_str(&format!(" ({project})"));
+                }
             }
             Some(line)
         })

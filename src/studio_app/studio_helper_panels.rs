@@ -238,6 +238,12 @@ pub(super) const TEXT_TEMPLATE_VALUES: &[TextTemplateValue] = &[
         kind: TextTemplateValueKind::Number,
     },
     TextTemplateValue {
+        group: "Claude Code",
+        label: "Session context project folder",
+        expression: "claude.context.project",
+        kind: TextTemplateValueKind::Text,
+    },
+    TextTemplateValue {
         group: "Codex",
         label: "Session summary",
         expression: "codex.session",

@@ -1690,6 +1690,12 @@ impl DataContext {
                 .and_then(|context| context.model.as_deref())
                 .unwrap_or(""),
         );
+        self.insert_string(
+            &format!("{name}.context.project"),
+            context
+                .and_then(|context| context.project.as_deref())
+                .unwrap_or(""),
+        );
         self.insert(&format!("{name}.context.percentage"), context_percentage);
         self.insert(
             &format!("{name}.context.remaining"),
