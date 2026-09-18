@@ -7,7 +7,7 @@ windows_font_name = "leelawadee-ui"
 windows_font_file = "LeelawUI.ttf"
 
 [strings]
-window_title = "ตัวติดตามการใช้งาน Claude Code"
+window_title = "Claude Code Usage Taskbar"
 refresh = "รีเฟรช"
 update_frequency = "ความถี่การอัปเดต"
 one_minute = "1 นาที"

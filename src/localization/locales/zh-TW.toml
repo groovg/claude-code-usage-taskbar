@@ -7,7 +7,7 @@ windows_font_name = "microsoft-jhenghei"
 windows_font_file = "msjh.ttc"
 
 [strings]
-window_title = "Claude Code 使用量監控"
+window_title = "Claude Code Usage Taskbar"
 refresh = "重新整理"
 update_frequency = "更新頻率"
 one_minute = "1 分鐘"

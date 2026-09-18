@@ -233,7 +233,7 @@ pub fn app_data_directory() -> PathBuf {
     let root = std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    root.join("ClaudeCodeUsageMonitor")
+    root.join("ClaudeCodeUsageTaskbar")
 }
 
 pub fn settings_path() -> PathBuf {

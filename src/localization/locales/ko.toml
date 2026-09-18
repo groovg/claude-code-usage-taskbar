@@ -7,7 +7,7 @@ windows_font_name = "malgun-gothic"
 windows_font_file = "malgun.ttf"
 
 [strings]
-window_title = "Claude Code 사용량 모니터"
+window_title = "Claude Code Usage Taskbar"
 refresh = "새로고침"
 update_frequency = "업데이트 주기"
 one_minute = "1분"

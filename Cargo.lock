@@ -257,8 +257,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "claude-code-usage-monitor"
-version = "2.11.29"
+name = "claude-code-usage-taskbar"
+version = "1.0.0"
 dependencies = [
  "dirs",
  "eframe",

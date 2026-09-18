@@ -19,7 +19,7 @@ pub fn init_append() -> Result<PathBuf, String> {
 }
 
 fn init_file(append: bool) -> Result<PathBuf, String> {
-    let path = std::env::temp_dir().join("claude-code-usage-monitor.log");
+    let path = std::env::temp_dir().join("claude-code-usage-taskbar.log");
     let mut options = OpenOptions::new();
     options.create(true);
     if append {

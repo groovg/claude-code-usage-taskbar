@@ -7,7 +7,7 @@ windows_font_name = "yu-gothic-ui"
 windows_font_file = "YuGothM.ttc"
 
 [strings]
-window_title = "Claude Code 使用量モニター"
+window_title = "Claude Code Usage Taskbar"
 refresh = "更新"
 update_frequency = "更新間隔"
 one_minute = "1分"

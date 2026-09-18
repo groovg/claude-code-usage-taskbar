@@ -832,7 +832,7 @@ impl StudioApp {
     }
 
     pub(super) fn shell(&mut self, ui: &mut egui::Ui) {
-        const GITHUB_URL: &str = "https://github.com/CodeZeno/Claude-Code-Usage-Monitor";
+        const GITHUB_URL: &str = "https://github.com/groovg/claude-code-usage-taskbar";
 
         let language = self.language();
         let full_height = ui.available_height();

@@ -5,7 +5,7 @@ order = 3
 update_via_winget = "Mettre à jour avec WinGet"
 
 [strings]
-window_title = "Moniteur d'utilisation Claude Code"
+window_title = "Claude Code Usage Taskbar"
 refresh = "Actualiser"
 update_frequency = "Fréquence de mise à jour"
 one_minute = "1 minute"

@@ -5,7 +5,7 @@ order = 9
 update_via_winget = "Обновить через WinGet"
 
 [strings]
-window_title = "Монитор использования Claude Code"
+window_title = "Claude Code Usage Taskbar"
 refresh = "Обновить"
 update_frequency = "Частота обновления"
 one_minute = "1 минута"

@@ -1,21 +1,21 @@
 [package]
-name = "claude-code-usage-monitor"
-version = "2.11.29"
+name = "claude-code-usage-taskbar"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.95"
 license = "MIT"
-description = "Claude Code Usage Monitor"
-homepage = "https://codezeno.com.au"
-repository = "https://github.com/CodeZeno/Claude-Code-Usage-Monitor"
+description = "Claude Code limits, Fable cap and session context in the Windows taskbar"
+homepage = "https://github.com/groovg/claude-code-usage-taskbar"
+repository = "https://github.com/groovg/claude-code-usage-taskbar"
 
 [package.metadata.winres]
-CompanyName = "Code Zeno Pty Ltd"
-ProductName = "Claude Code Usage Monitor"
-FileDescription = "Claude Code Usage Monitor"
-OriginalFilename = "claude-code-usage-monitor.exe"
-InternalName = "ClaudeCodeUsageMonitor"
-Comments = "https://codezeno.com.au"
-LegalCopyright = "Copyright (C) 2026 Code Zeno Pty Ltd"
+CompanyName = "groovg"
+ProductName = "Claude Code Usage Taskbar"
+FileDescription = "Claude Code Usage Taskbar"
+OriginalFilename = "claude-code-usage-taskbar.exe"
+InternalName = "ClaudeCodeUsageTaskbar"
+Comments = "https://github.com/groovg/claude-code-usage-taskbar"
+LegalCopyright = "Copyright (C) 2026 groovg. Based on Claude Code Usage Monitor, Copyright (C) 2025 Craig Constable"
 
 [dependencies]
 ureq = { version = "3.4", default-features = false, features = ["native-tls", "json"] }

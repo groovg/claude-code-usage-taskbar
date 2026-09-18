@@ -5,7 +5,7 @@ order = 1
 update_via_winget = "Bijwerken via WinGet"
 
 [strings]
-window_title = "Claude Code Gebruiksmonitor"
+window_title = "Claude Code Usage Taskbar"
 refresh = "Vernieuwen"
 update_frequency = "Updatefrequentie"
 one_minute = "1 minuut"

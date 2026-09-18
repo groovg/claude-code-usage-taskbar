@@ -664,7 +664,7 @@ fn tray_icon_tooltip_from_state() -> String {
     tray_usage_summary_from_state().unwrap_or_else(|| {
         let state = lock_state();
         let Some(state) = state.as_ref() else {
-            return "Claude Code Usage Monitor".to_string();
+            return "Claude Code Usage Taskbar".to_string();
         };
         let title = state.language.strings().window_title;
         // Say why the bars are blank; "!" alone sent people chasing proxies
@@ -1196,7 +1196,7 @@ fn begin_winget_update(hwnd: HWND) {
 }
 
 const STARTUP_REGISTRY_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-const STARTUP_REGISTRY_KEY: &str = "ClaudeCodeUsageMonitor";
+const STARTUP_REGISTRY_KEY: &str = "ClaudeCodeUsageTaskbar";
 
 /// Returns true only if the startup registry value points to this executable.
 pub(crate) fn is_startup_enabled() -> bool {
@@ -1671,9 +1671,9 @@ pub fn run() {
     // wait for the previous instance to release the mutex, then take over.
     let is_relaunch = std::env::var(ENV_RELAUNCH).is_ok();
     let mutex_name = native_interop::wide_str(&if allow_multiple {
-        format!("Global\\ClaudeCodeUsageMonitor-{}", std::process::id())
+        format!("Global\\ClaudeCodeUsageTaskbar-{}", std::process::id())
     } else {
-        "Global\\ClaudeCodeUsageMonitor".to_string()
+        "Global\\ClaudeCodeUsageTaskbar".to_string()
     });
     let _mutex = unsafe {
         let handle = CreateMutexW(None, true, PCWSTR::from_raw(mutex_name.as_ptr()));
@@ -1711,7 +1711,7 @@ pub fn run() {
         }
     };
 
-    let class_name = native_interop::wide_str("ClaudeCodeUsageMonitor");
+    let class_name = native_interop::wide_str("ClaudeCodeUsageTaskbar");
 
     unsafe {
         let hinstance = GetModuleHandleW(PCWSTR::null()).unwrap();

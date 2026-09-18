@@ -13,13 +13,13 @@ use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
 
 const GITHUB_API_ACCEPT: &str = "application/vnd.github+json";
 const GITHUB_API_VERSION: &str = "2022-11-28";
-const RELEASE_ASSET_NAME: &str = "claude-code-usage-monitor.exe";
+const RELEASE_ASSET_NAME: &str = "claude-code-usage-taskbar.exe";
 const HELPER_EXE_NAME: &str = "updater-helper.exe";
 const DOWNLOAD_EXE_NAME: &str = "update-download.exe";
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const CREATE_NEW_CONSOLE: u32 = 0x00000010;
 // Keep this aligned with the package identifier used in winget-pkgs.
-const WINGET_PACKAGE_ID: &str = "CodeZeno.ClaudeCodeUsageMonitor";
+const WINGET_PACKAGE_ID: &str = "groovg.ClaudeCodeUsageTaskbar";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InstallChannel {
@@ -337,11 +337,11 @@ fn wait_for_process_exit(pid: u32, timeout: Duration) -> Result<(), String> {
 
 fn updates_dir() -> Result<PathBuf, String> {
     dirs::data_local_dir()
-        .map(|dir| dir.join("ClaudeCodeUsageMonitor").join("updates"))
+        .map(|dir| dir.join("ClaudeCodeUsageTaskbar").join("updates"))
         .or_else(|| {
             Some(
                 std::env::temp_dir()
-                    .join("ClaudeCodeUsageMonitor")
+                    .join("ClaudeCodeUsageTaskbar")
                     .join("updates"),
             )
         })

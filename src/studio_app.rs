@@ -145,7 +145,7 @@ pub fn handle_cli_mode(args: &[String]) -> bool {
         ..Default::default()
     };
     if let Err(error) = eframe::run_native(
-        "ClaudeCodeUsageMonitor.Studio",
+        "ClaudeCodeUsageTaskbar.Studio",
         options,
         Box::new(move |context| Ok(Box::new(StudioApp::new(context, owner, initial_page)))),
     ) {

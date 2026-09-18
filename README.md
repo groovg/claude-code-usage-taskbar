@@ -1,11 +1,19 @@
-# Claude Code Usage Monitor
+# Claude Code Usage Taskbar
 
 ![Windows](https://img.shields.io/badge/platform-Windows-blue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A lightweight, open-source Windows taskbar widget for monitoring Claude Code usage limits and reset times. It can also display usage for Codex, Google Antigravity, OpenCode Go, and Cursor.
+A Windows taskbar widget that keeps your Claude Code limits in view: the 5-hour and weekly windows, the **Fable weekly cap**, and the **context window of the session you are working in right now**. It also shows Codex, Google Antigravity, OpenCode Go, and Cursor usage.
 
-![Claude Code Usage Monitor running in the Windows taskbar](.github/animation.gif)
+Claude Code Usage Taskbar is a maintained continuation of [Claude Code Usage Monitor](https://github.com/CodeZeno/Claude-Code-Usage-Monitor) by Craig Constable (MIT). It keeps that project's theme engine, Theme Studio, multi-account support and providers, and adds what Anthropic's newer plans and Claude Code's newer builds report. Upstream changes are merged as they land.
+
+## What is new here
+
+- **Model caps (Fable).** Anthropic reports per-model weekly caps in the usage API's `limits` array; the widget shows the cap that binds you (`Fable 37% · 4h`) next to the weekly bar, and every cap is available to themes as `{claude.model.<slug>.*}`.
+- **Session context.** The context window of the newest Claude Code session (`ctx 41%`), read from the local transcript every 5 seconds. Works with the terminal CLI and the VS Code extension; nothing leaves your machine.
+- **Widget position.** Dock the widget at the left edge of the taskbar (the default, where Windows 11 leaves room) or beside the notification area.
+- **Clearer failures.** The tray tooltip says why the bars are blank: an expired login, no login, or an unreachable service.
+- Desktop-app logins are picked up on machines without the CLI, including the app's newer token cache.
 
 ## Features
 
@@ -28,26 +36,20 @@ Claude Code credentials can be detected from the CLI, Claude desktop app, or WSL
 
 ## Installation
 
-Install the latest release with WinGet:
-
-```powershell
-winget install CodeZeno.ClaudeCodeUsageMonitor
-```
-
-Alternatively, download `claude-code-usage-monitor.exe` from [GitHub Releases](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/releases).
+Download `claude-code-usage-taskbar.exe` from [GitHub Releases](https://github.com/groovg/claude-code-usage-taskbar/releases) and run it. The app checks that repository for updates.
 
 ## Usage
 
 Start the monitor:
 
 ```powershell
-claude-code-usage-monitor
+claude-code-usage-taskbar
 ```
 
 Open the settings dashboard directly:
 
 ```powershell
-claude-code-usage-monitor --dashboard
+claude-code-usage-taskbar --dashboard
 ```
 
 Use the dashboard to select providers, change the refresh interval, choose a display, enable startup, or customize the widget. **Settings > Display > Usage direction** switches the default theme and other themes that support this setting between showing what has been used and what is left, with Used as the default. Selecting Remaining makes a fresh limit read 100% and drain as you work.
@@ -101,10 +103,10 @@ Credentials are read without modifying the provider files that contain them. Ope
 Run diagnostics with:
 
 ```powershell
-claude-code-usage-monitor --diagnose
+claude-code-usage-taskbar --diagnose
 ```
 
-The diagnostic log is written to `%TEMP%\claude-code-usage-monitor.log`. Application settings are stored in `%APPDATA%\ClaudeCodeUsageMonitor\settings.json`.
+The diagnostic log is written to `%TEMP%\claude-code-usage-taskbar.log`. Application settings are stored in `%APPDATA%\ClaudeCodeUsageTaskbar\settings.json`.
 
 ## Build from source
 
@@ -114,7 +116,7 @@ Install [Rust](https://www.rust-lang.org/tools/install) 1.95 or later, then run:
 cargo build --release
 ```
 
-The executable will be created at `target\release\claude-code-usage-monitor.exe`.
+The executable will be created at `target\release\claude-code-usage-taskbar.exe`.
 
 ## License
 

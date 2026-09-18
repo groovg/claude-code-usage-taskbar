@@ -7,7 +7,7 @@ windows_font_name = "microsoft-yahei"
 windows_font_file = "msyh.ttc"
 
 [strings]
-window_title = "Claude Code 使用量监控"
+window_title = "Claude Code Usage Taskbar"
 refresh = "刷新"
 update_frequency = "更新频率"
 one_minute = "1 分钟"
