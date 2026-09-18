@@ -75,6 +75,8 @@ jobs:
 
       - name: Submit WinGet manifest update
         if: env.WINGETCREATE_GITHUB_TOKEN != ''
+        # A rejected or premature WinGet submission must not fail the release.
+        continue-on-error: true
         shell: pwsh
         run: |
           .\wingetcreate.exe update `
