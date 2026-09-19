@@ -9,7 +9,7 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::context_menu::{self, ContextMenuDocument};
-use crate::theme_engine::{self, LayerBackground, ThemeDocument};
+use crate::theme_engine::{self, managed_asset_file_name, LayerBackground, ThemeDocument};
 
 const THEME_ENTRY: &str = "theme.json";
 const CONTEXT_MENU_ENTRY: &str = "context-menu.json";
@@ -39,19 +39,13 @@ pub fn is_theme_package(path: &Path) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
 }
 
-pub fn is_theme_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
-}
-
 pub fn export_package(
     destination: &Path,
     theme: &ThemeDocument,
     context_menu: &ContextMenuDocument,
 ) -> Result<usize, String> {
-    validate_theme(theme)?;
-    validate_context_menu(context_menu)?;
+    theme.check()?;
+    context_menu.check()?;
 
     let asset_paths = theme_asset_paths(theme);
     let theme_bytes = serde_json::to_vec_pretty(theme).map_err(|error| error.to_string())?;
@@ -66,7 +60,7 @@ pub fn export_package(
     let mut package_bytes = theme_bytes.len() as u64 + context_menu_bytes.len() as u64;
     let mut assets = Vec::with_capacity(asset_paths.len());
     for relative_path in &asset_paths {
-        let file_name = managed_asset_name(relative_path)?;
+        let file_name = managed_asset_file_name(relative_path)?;
         let source = theme_engine::assets_directory().join(file_name);
         let bytes = std::fs::read(&source).map_err(|error| {
             format!(
@@ -132,7 +126,11 @@ pub fn import_path(source: &Path) -> Result<ImportedTheme, String> {
         let file = File::open(source)
             .map_err(|error| format!("Unable to open '{}': {error}", source.display()))?;
         import_decoded(decode_package(file)?)
-    } else if is_theme_file(source) {
+    } else if source
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+    {
         let bytes = std::fs::read(source)
             .map_err(|error| format!("Unable to open '{}': {error}", source.display()))?;
         let theme = decode_theme(&bytes)?;
@@ -160,10 +158,16 @@ fn import_decoded(mut package: DecodedPackage) -> Result<ImportedTheme, String> 
 
     let mut imported_assets = 0;
     for (relative_path, bytes) in package.assets {
-        let file_name = managed_asset_name(&relative_path)?;
+        let file_name = managed_asset_file_name(&relative_path)?;
         let imported = theme_engine::import_asset_bytes(file_name, &bytes)?;
         if imported.relative_path != relative_path {
-            replace_theme_asset_path(&mut package.theme, &relative_path, &imported.relative_path);
+            for background in package.theme.backgrounds_mut() {
+                if let LayerBackground::Image { path, .. } = background {
+                    if *path == relative_path {
+                        *path = imported.relative_path.clone();
+                    }
+                }
+            }
         }
         imported_assets += 1;
     }
@@ -220,7 +224,7 @@ fn decode_package<R: Read + Seek>(reader: R) -> Result<DecodedPackage, String> {
             THEME_ENTRY => theme = Some(decode_theme(&bytes)?),
             CONTEXT_MENU_ENTRY => context_menu = Some(decode_context_menu(&bytes)?),
             _ if name.starts_with(ASSET_PREFIX) => {
-                managed_asset_name(&name)?;
+                managed_asset_file_name(&name)?;
                 assets.insert(name, bytes);
             }
             _ => return Err(format!("Unsupported theme package entry '{name}'")),
@@ -238,33 +242,15 @@ fn decode_theme(bytes: &[u8]) -> Result<ThemeDocument, String> {
     let mut theme: ThemeDocument =
         serde_json::from_slice(bytes).map_err(|error| format!("Invalid theme JSON: {error}"))?;
     theme.prepare_runtime();
-    validate_theme(&theme)?;
+    theme.check()?;
     Ok(theme)
 }
 
 fn decode_context_menu(bytes: &[u8]) -> Result<ContextMenuDocument, String> {
     let menu: ContextMenuDocument = serde_json::from_slice(bytes)
         .map_err(|error| format!("Invalid context menu JSON: {error}"))?;
-    validate_context_menu(&menu)?;
+    menu.check()?;
     Ok(menu)
-}
-
-fn validate_theme(theme: &ThemeDocument) -> Result<(), String> {
-    let errors = theme.validate();
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors.join("\n"))
-    }
-}
-
-fn validate_context_menu(menu: &ContextMenuDocument) -> Result<(), String> {
-    let errors = menu.validate();
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors.join("\n"))
-    }
 }
 
 fn persist_theme(mut theme: ThemeDocument) -> Result<(ThemeDocument, PathBuf), String> {
@@ -315,55 +301,14 @@ fn safe_entry_name(name: &str) -> Result<String, String> {
     Ok(name.to_string())
 }
 
-fn managed_asset_name(relative_path: &str) -> Result<&str, String> {
-    let file_name = relative_path
-        .strip_prefix(ASSET_PREFIX)
-        .ok_or_else(|| format!("Asset path '{relative_path}' must start with assets/"))?;
-    if file_name.is_empty()
-        || file_name.contains('/')
-        || file_name.contains('\\')
-        || Path::new(file_name)
-            .file_name()
-            .and_then(|name| name.to_str())
-            != Some(file_name)
-    {
-        return Err(format!("Unsafe asset path '{relative_path}'"));
-    }
-    Ok(file_name)
-}
-
 fn theme_asset_paths(theme: &ThemeDocument) -> BTreeSet<String> {
-    let mut paths = BTreeSet::new();
-    for surface in &theme.surfaces {
-        collect_background_asset(&surface.background, &mut paths);
-        for object in &surface.children {
-            collect_background_asset(&object.background, &mut paths);
-        }
-    }
-    paths
-}
-
-fn collect_background_asset(background: &LayerBackground, paths: &mut BTreeSet<String>) {
-    if let LayerBackground::Image { path, .. } = background {
-        paths.insert(path.clone());
-    }
-}
-
-fn replace_theme_asset_path(theme: &mut ThemeDocument, old: &str, new: &str) {
-    for surface in &mut theme.surfaces {
-        replace_background_asset(&mut surface.background, old, new);
-        for object in &mut surface.children {
-            replace_background_asset(&mut object.background, old, new);
-        }
-    }
-}
-
-fn replace_background_asset(background: &mut LayerBackground, old: &str, new: &str) {
-    if let LayerBackground::Image { path, .. } = background {
-        if path == old {
-            *path = new.to_string();
-        }
-    }
+    theme
+        .backgrounds()
+        .filter_map(|background| match background {
+            LayerBackground::Image { path, .. } => Some(path.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 #[cfg(test)]

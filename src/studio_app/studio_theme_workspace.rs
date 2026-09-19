@@ -852,9 +852,9 @@ impl StudioApp {
         let surface_index = match selection {
             Selection::Surface(surface) | Selection::Object(surface, _) => surface,
         };
-        let Some(surface) = self.theme.surfaces.get(surface_index) else {
+        if surface_index >= self.theme.surfaces.len() {
             return DataContext::default();
-        };
+        }
         let runtime = self.theme_runtime_for_surface(surface_index);
         let (width, height) = theme_engine::resolve_surface_size(
             &self.theme,
@@ -862,18 +862,7 @@ impl StudioApp {
             self.usage.as_ref(),
             runtime,
         );
-        let canvas = Canvas {
-            width,
-            width_expression: Some(surface.width.clone()),
-            height,
-            height_expression: Some(surface.height.clone()),
-            background: match &surface.background {
-                theme_engine::LayerBackground::Colour { colour } => colour.clone(),
-                theme_engine::LayerBackground::None
-                | theme_engine::LayerBackground::Gradient { .. }
-                | theme_engine::LayerBackground::Image { .. } => Paint::default(),
-            },
-        };
+        let canvas = Canvas { width, height };
         let mut context =
             DataContext::from_usage_with_runtime(self.usage.as_ref(), &canvas, runtime);
         if let Some(gap) = self

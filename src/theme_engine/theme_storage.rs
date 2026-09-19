@@ -134,21 +134,27 @@ pub fn import_asset_bytes(file_name: &str, source_bytes: &[u8]) -> Result<Manage
     })
 }
 
-pub(super) fn managed_asset_file_name(path: &str) -> Option<&str> {
-    let normalized = path.strip_prefix("assets/")?;
-    (!normalized.is_empty()
-        && !normalized.contains('/')
-        && !normalized.contains('\\')
-        && Path::new(normalized)
+/// The file an `assets/<name>` path names inside the managed asset folder.
+pub fn managed_asset_file_name(path: &str) -> Result<&str, String> {
+    let file_name = path
+        .strip_prefix("assets/")
+        .ok_or_else(|| format!("Asset path '{path}' must start with assets/"))?;
+    if file_name.is_empty()
+        || file_name.contains('/')
+        || file_name.contains('\\')
+        || Path::new(file_name)
             .file_name()
             .and_then(|name| name.to_str())
-            == Some(normalized))
-    .then_some(normalized)
+            != Some(file_name)
+    {
+        return Err(format!("Unsafe asset path '{path}'"));
+    }
+    Ok(file_name)
 }
 
 pub fn delete_asset(path: &str) -> Result<(), String> {
     let file_name = managed_asset_file_name(path)
-        .ok_or_else(|| "The selected file is not a managed asset".to_string())?;
+        .map_err(|_| "The selected file is not a managed asset".to_string())?;
     let target = assets_directory().join(file_name);
     remove_asset_references_from_saved_themes(path)?;
     std::fs::remove_file(target).map_err(|error| error.to_string())
@@ -174,10 +180,7 @@ pub(super) fn remove_asset_references_from_saved_themes(path: &str) -> Result<()
             serde_json::from_str(&source).map_err(|error| error.to_string())?;
         if remove_asset_references(&mut theme, path) > 0 {
             theme.prepare_runtime();
-            let errors = theme.validate();
-            if !errors.is_empty() {
-                return Err(errors.join("\n"));
-            }
+            theme.check()?;
             updates.push((theme_path, theme));
         }
     }
@@ -189,22 +192,10 @@ pub(super) fn remove_asset_references_from_saved_themes(path: &str) -> Result<()
 
 pub fn remove_asset_references(theme: &mut ThemeDocument, path: &str) -> usize {
     let mut removed = 0;
-    for surface in &mut theme.surfaces {
-        if matches!(
-            &surface.background,
-            LayerBackground::Image { path: image, .. } if image == path
-        ) {
-            surface.background = LayerBackground::None;
+    for background in theme.backgrounds_mut() {
+        if matches!(background, LayerBackground::Image { path: image, .. } if image == path) {
+            *background = LayerBackground::None;
             removed += 1;
-        }
-        for object in &mut surface.children {
-            if matches!(
-                &object.background,
-                LayerBackground::Image { path: image, .. } if image == path
-            ) {
-                object.background = LayerBackground::None;
-                removed += 1;
-            }
         }
     }
     removed
@@ -212,24 +203,11 @@ pub fn remove_asset_references(theme: &mut ThemeDocument, path: &str) -> usize {
 
 pub fn theme_asset_usage(theme: &ThemeDocument, path: &str) -> usize {
     theme
-        .surfaces
-        .iter()
-        .map(|surface| {
-            usize::from(matches!(
-                &surface.background,
-                LayerBackground::Image { path: image, .. } if image == path
-            )) + surface
-                .children
-                .iter()
-                .filter(|object| {
-                    matches!(
-                        &object.background,
-                        LayerBackground::Image { path: image, .. } if image == path
-                    )
-                })
-                .count()
+        .backgrounds()
+        .filter(|background| {
+            matches!(background, LayerBackground::Image { path: image, .. } if image == path)
         })
-        .sum()
+        .count()
 }
 
 pub fn save_theme(theme: &ThemeDocument) -> Result<PathBuf, String> {
@@ -241,10 +219,7 @@ pub fn save_theme(theme: &ThemeDocument) -> Result<PathBuf, String> {
             theme.name
         ));
     }
-    let errors = theme.validate();
-    if !errors.is_empty() {
-        return Err(errors.join("\n"));
-    }
+    theme.check()?;
     let directory = themes_directory();
     std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
     let path = directory.join(format!("{}.json", safe_file_stem(&theme.id)));
@@ -283,34 +258,14 @@ pub fn load_theme(path: &Path) -> Result<ThemeDocument, String> {
     let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let mut theme: ThemeDocument = serde_json::from_str(&content).map_err(|e| e.to_string())?;
     theme.prepare_runtime();
-    let errors = theme.validate();
-    if errors.is_empty() {
-        Ok(theme)
-    } else {
-        Err(errors.join("\n"))
-    }
+    theme.check()?;
+    Ok(theme)
 }
 
 pub fn ensure_starter_theme() -> Result<PathBuf, String> {
     let directory = themes_directory();
     for (expected_id, source) in BUILTIN_THEME_SOURCES {
-        let mut theme: ThemeDocument = serde_json::from_str(source)
-            .map_err(|error| format!("Built-in theme '{expected_id}' is invalid JSON: {error}"))?;
-        if theme.id != *expected_id {
-            return Err(format!(
-                "Built-in theme id '{}' does not match '{expected_id}'",
-                theme.id
-            ));
-        }
-        theme.prepare_runtime();
-        let errors = theme.validate();
-        if !errors.is_empty() {
-            return Err(format!(
-                "Built-in theme '{}' is invalid:\n{}",
-                theme.name,
-                errors.join("\n")
-            ));
-        }
+        let theme = parse_bundled_theme("Built-in theme", expected_id, source)?;
         let path = directory.join(format!("{expected_id}.json"));
         let canonical = serde_json::to_vec_pretty(&theme).map_err(|error| error.to_string())?;
         let current = std::fs::read(&path).ok();
@@ -319,14 +274,6 @@ pub fn ensure_starter_theme() -> Result<PathBuf, String> {
         }
     }
     ensure_bundled_editable_themes(&directory, &assets_directory())?;
-    for removed_id in REMOVED_BUILTIN_THEME_IDS {
-        let path = directory.join(format!("{removed_id}.json"));
-        match std::fs::remove_file(path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.to_string()),
-        }
-    }
     Ok(directory.join(format!("{CLASSIC_THEME_ID}.json")))
 }
 
@@ -347,67 +294,33 @@ pub(super) fn ensure_bundled_editable_themes(
     }
 
     for (expected_id, source) in BUNDLED_EDITABLE_THEME_SOURCES {
-        let mut bundled: ThemeDocument = serde_json::from_str(source).map_err(|error| {
-            format!("Bundled editable theme '{expected_id}' is invalid JSON: {error}")
-        })?;
-        if bundled.id != *expected_id {
-            return Err(format!(
-                "Bundled editable theme id '{}' does not match '{expected_id}'",
-                bundled.id
-            ));
-        }
-        bundled.prepare_runtime();
-        let errors = bundled.validate();
-        if !errors.is_empty() {
-            return Err(format!(
-                "Bundled editable theme '{}' is invalid:\n{}",
-                bundled.name,
-                errors.join("\n")
-            ));
-        }
-
+        let bundled = parse_bundled_theme("Bundled editable theme", expected_id, source)?;
         let path = directory.join(format!("{expected_id}.json"));
         if !path.exists() {
             crate::app_settings::write_json_atomic(&path, &bundled)?;
-            continue;
-        }
-
-        // Upgrade the original locally-created Minecraft theme without
-        // replacing any other user edits. Once changed, later menu choices are
-        // preserved because only the old prototype reference is recognized.
-        let Ok(mut installed) = load_theme(&path) else {
-            continue;
-        };
-        if migrate_minecraft_context_menu(&mut installed) {
-            crate::app_settings::write_json_atomic(&path, &installed)?;
         }
     }
     std::fs::write(install_marker, b"1").map_err(|error| error.to_string())?;
     Ok(())
 }
 
-pub(super) fn migrate_minecraft_context_menu(theme: &mut ThemeDocument) -> bool {
-    if theme.id != MINECRAFT_THEME_ID {
-        return false;
+/// Parse and check a theme compiled into the app; `kind` names it in errors.
+fn parse_bundled_theme(
+    kind: &str,
+    expected_id: &str,
+    source: &str,
+) -> Result<ThemeDocument, String> {
+    let mut theme: ThemeDocument = serde_json::from_str(source)
+        .map_err(|error| format!("{kind} '{expected_id}' is invalid JSON: {error}"))?;
+    if theme.id != expected_id {
+        return Err(format!(
+            "{kind} id '{}' does not match '{expected_id}'",
+            theme.id
+        ));
     }
-    const LEGACY_ACTION: &str = "show_context_menu(\"classic-test\")";
-    const DASHBOARD_V2_ACTION: &str = "show_context_menu(\"dashboard-v2\")";
-    fn migrate_object(object: &mut SceneObject) -> bool {
-        let mut changed = false;
-        if let Some(events) = object.mouse_events.as_mut() {
-            if events.right_click.trim() == LEGACY_ACTION {
-                events.right_click = DASHBOARD_V2_ACTION.into();
-                changed = true;
-            }
-        }
-        for child in &mut object.children {
-            changed |= migrate_object(child);
-        }
-        changed
-    }
-    let mut changed = false;
-    for surface in &mut theme.surfaces {
-        changed |= migrate_object(surface);
-    }
-    changed
+    theme.prepare_runtime();
+    theme
+        .check()
+        .map_err(|errors| format!("{kind} '{}' is invalid:\n{errors}", theme.name))?;
+    Ok(theme)
 }

@@ -196,11 +196,14 @@ fn named_account_bindings_show_independent_usage_and_errors() {
 
 #[test]
 fn managed_asset_paths_stay_inside_the_asset_directory() {
-    assert_eq!(managed_asset_file_name("assets/logo.png"), Some("logo.png"));
-    assert_eq!(managed_asset_file_name("logo.png"), None);
-    assert_eq!(managed_asset_file_name("assets/../logo.png"), None);
-    assert_eq!(managed_asset_file_name("assets/folder/logo.png"), None);
-    assert_eq!(managed_asset_file_name("assets\\logo.png"), None);
+    assert_eq!(
+        managed_asset_file_name("assets/logo.png").ok(),
+        Some("logo.png")
+    );
+    assert_eq!(managed_asset_file_name("logo.png").ok(), None);
+    assert_eq!(managed_asset_file_name("assets/../logo.png").ok(), None);
+    assert_eq!(managed_asset_file_name("assets/folder/logo.png").ok(), None);
+    assert_eq!(managed_asset_file_name("assets\\logo.png").ok(), None);
 }
 
 #[test]
@@ -241,56 +244,6 @@ fn removing_an_asset_clears_root_and_child_layer_references() {
         theme.surfaces[0].children[0].background,
         LayerBackground::None
     ));
-}
-
-#[test]
-fn legacy_image_content_becomes_an_image_background_without_tint() {
-    let object: SceneObject = serde_json::from_value(serde_json::json!({
-        "id": "legacy-image",
-        "name": "Legacy image",
-        "content": {
-            "type": "image",
-            "path": "assets/logo.png",
-            "fit": "cover",
-            "tint": { "color": "#80FF0000" }
-        }
-    }))
-    .unwrap();
-    assert!(matches!(object.content, SceneContent::None));
-    assert!(matches!(
-        &object.background,
-        LayerBackground::Image { path, fit }
-            if path == "assets/logo.png" && *fit == ImageFit::Cover
-    ));
-
-    let encoded = serde_json::to_value(&object).unwrap();
-    assert_eq!(encoded["background"]["type"], "image");
-    assert_eq!(encoded["content"]["type"], "none");
-    assert!(encoded.get("tint").is_none());
-    assert!(encoded["background"].get("tint").is_none());
-}
-
-#[test]
-fn legacy_shape_content_becomes_layer_appearance() {
-    let object: SceneObject = serde_json::from_value(serde_json::json!({
-        "id": "legacy-shape",
-        "name": "Legacy shape",
-        "content": {
-            "type": "shape",
-            "shape": "rectangle",
-            "fill": { "color": "#FF123456" },
-            "stroke": { "color": { "color": "#FFFFFFFF" }, "width": "2" },
-            "corner_radius": "8"
-        }
-    }))
-    .unwrap();
-    assert!(matches!(object.content, SceneContent::None));
-    assert!(matches!(
-        &object.background,
-        LayerBackground::Colour { colour } if colour.color == "#FF123456"
-    ));
-    assert_eq!(object.border.as_ref().unwrap().width.0, "2");
-    assert_eq!(object.corner_radius.0, "8");
 }
 
 #[test]
@@ -443,13 +396,7 @@ fn layer_width_can_get_its_own_resolved_gap() {
     assert!(theme.validate().is_empty(), "{:?}", theme.validate());
     let (width, height) = resolve_surface_size(&theme, 0, None, ThemeRuntime::default());
     let surface = &theme.surfaces[0];
-    let canvas = Canvas {
-        width,
-        width_expression: Some(surface.width.clone()),
-        height,
-        height_expression: Some(surface.height.clone()),
-        background: surface.background.canvas_paint(),
-    };
+    let canvas = Canvas { width, height };
     let (layers, warnings) = resolve_objects_for(
         surface,
         &canvas,
@@ -818,16 +765,6 @@ fn schema_only_serializes_placement_fields_for_the_relevant_level() {
 }
 
 #[test]
-fn generated_studio_defaults_are_replaceable_but_named_user_themes_are_not() {
-    let mut theme = ThemeDocument::starter();
-    theme.id = "midnight-glass".into();
-    theme.name = "Midnight Glass".into();
-    assert!(theme.is_obsolete_studio_starter());
-    theme.name = "My Midnight Glass".into();
-    assert!(!theme.is_obsolete_studio_starter());
-}
-
-#[test]
 fn colors_support_rgb_and_rgba() {
     assert_eq!(
         parse_color("#112233"),
@@ -953,7 +890,8 @@ fn opencode_monthly_window_is_available_to_templates_when_present() {
 #[test]
 fn starter_theme_renders_transparent_pixels_at_declared_size() {
     let theme = ThemeDocument::starter();
-    let rendered = render_theme(&theme, None);
+    let rendered =
+        render_theme_surface_with_runtime_at_scale(&theme, 0, None, ThemeRuntime::default(), 1.0);
     assert_eq!((rendered.width, rendered.height), (217, 46));
     assert_eq!(rendered.pixels.len(), 217 * 46);
     assert!(rendered.pixels.iter().any(|pixel| pixel >> 24 > 0));
@@ -1105,13 +1043,7 @@ fn child_objects_resolve_against_parent_anchors_and_clip() {
     surface.children = vec![parent, child];
     let (width, height) =
         resolve_object_size(surface, None, ThemeRuntime::default(), &mut Vec::new());
-    let canvas = Canvas {
-        width,
-        width_expression: Some(surface.width.clone()),
-        height,
-        height_expression: Some(surface.height.clone()),
-        background: surface.background.canvas_paint(),
-    };
+    let canvas = Canvas { width, height };
     let (layers, warnings) = resolve_objects_for(
         surface,
         &canvas,
@@ -1190,7 +1122,8 @@ fn parent_rotation_rotates_child_position_and_clip() {
         resolve_object_bounds_with_runtime(&theme, 0, 1, None, ThemeRuntime::default()).unwrap();
     assert!((bounds.0 - 135.0).abs() < 0.001);
     assert!((bounds.1 - 55.0).abs() < 0.001);
-    let rendered = render_theme(&theme, None);
+    let rendered =
+        render_theme_surface_with_runtime_at_scale(&theme, 0, None, ThemeRuntime::default(), 1.0);
     assert!(rendered.warnings.is_empty());
 }
 
@@ -1260,7 +1193,8 @@ fn surface_render_and_visibility_are_expression_driven() {
 
     theme.surfaces[0].render = Expression("true".into());
     theme.surfaces[0].visibility = 50.0.into();
-    let rendered = render_theme_surface_with_runtime(&theme, 0, None, ThemeRuntime::default());
+    let rendered =
+        render_theme_surface_with_runtime_at_scale(&theme, 0, None, ThemeRuntime::default(), 1.0);
     let max_alpha = rendered
         .pixels
         .iter()
@@ -1321,17 +1255,14 @@ fn starter_adapts_width_segments_and_collapsed_provider_rows() {
         let (canvas_width, canvas_height) = resolve_surface_size(&theme, 0, None, runtime);
         let canvas = Canvas {
             width: canvas_width,
-            width_expression: Some(surface.width.clone()),
             height: canvas_height,
-            height_expression: Some(surface.height.clone()),
-            background: surface.background.canvas_paint(),
         };
         let context = DataContext::from_usage_with_runtime(None, &canvas, runtime);
         assert_eq!(
             evaluate("ceil(10 / max(1, providers.count))", &context).unwrap() as u16,
             segments
         );
-        let rendered = render_theme_surface_with_runtime(&theme, 0, None, runtime);
+        let rendered = render_theme_surface_with_runtime_at_scale(&theme, 0, None, runtime, 1.0);
         assert_eq!((rendered.width, rendered.height), (width, 46));
         assert!(rendered.warnings.is_empty());
     }
@@ -1374,8 +1305,13 @@ fn each_surface_renders_at_its_own_size() {
     second.height = 40.0.into();
     theme.surfaces.push(second);
     let surface_index = theme.surfaces.len() - 1;
-    let rendered =
-        render_theme_surface_with_runtime(&theme, surface_index, None, ThemeRuntime::default());
+    let rendered = render_theme_surface_with_runtime_at_scale(
+        &theme,
+        surface_index,
+        None,
+        ThemeRuntime::default(),
+        1.0,
+    );
     assert_eq!((rendered.width, rendered.height), (80, 40));
     assert!(theme.validate().is_empty());
 }
@@ -1383,7 +1319,7 @@ fn each_surface_renders_at_its_own_size() {
 #[test]
 fn starter_has_a_taskbar_widget_and_provider_tray_icons() {
     let theme = ThemeDocument::starter();
-    assert!(theme.is_builtin_classic());
+    assert_eq!(theme.id, CLASSIC_THEME_ID);
     assert_eq!(theme.surfaces[0].placement.nest, SurfaceNest::Taskbar);
     // Left edge of the taskbar: Windows 11 centres its buttons and leaves that
     // side empty, the tray side is where notifications and flyouts fight for
@@ -1413,37 +1349,13 @@ fn starter_has_a_taskbar_widget_and_provider_tray_icons() {
 }
 
 #[test]
-fn migrated_theme_is_writable_and_only_moves_the_taskbar_surface() {
-    let theme = ThemeDocument::migrated_from_legacy(Some((2, -96)), false);
-    assert_eq!(theme.id, "migrated-theme");
-    assert_eq!(theme.name, "Migrated Theme");
-    assert!(!theme.is_builtin_classic());
-    assert_eq!(theme.surfaces[0].placement.reference.display, 2);
-    assert_eq!(theme.surfaces[0].placement.offset_x, -96);
-    assert_eq!(theme.surfaces[0].render.0, "0");
-    assert!(theme.surfaces[1..]
-        .iter()
-        .all(|surface| surface.placement.nest == SurfaceNest::TrayIcon));
-    assert!(theme.validate().is_empty());
-}
-
-#[test]
-fn hidden_legacy_widget_creates_an_unplaced_hidden_copy() {
-    let theme = ThemeDocument::migrated_from_legacy(None, false);
-    let classic = ThemeDocument::starter();
-    assert_eq!(theme.surfaces[0].render.0, "0");
-    assert_eq!(theme.surfaces[0].placement, classic.surfaces[0].placement);
-    assert!(theme.validate().is_empty());
-}
-
-#[test]
 fn starter_tray_icons_follow_enabled_providers() {
     let theme = ThemeDocument::starter();
     let runtime = ThemeRuntime::new(false, true, false);
     assert!(!surface_should_render(&theme, 1, None, runtime));
     assert!(surface_should_render(&theme, 2, None, runtime));
     assert!(!surface_should_render(&theme, 3, None, runtime));
-    let rendered = render_theme_surface_with_runtime(&theme, 2, None, runtime);
+    let rendered = render_theme_surface_with_runtime_at_scale(&theme, 2, None, runtime, 1.0);
     assert_eq!((rendered.width, rendered.height), (64, 64));
     assert!(rendered.pixels.iter().any(|pixel| pixel >> 24 > 0));
 }
@@ -1453,9 +1365,6 @@ fn built_in_themes_are_valid_and_cannot_be_saved_as_editable_themes() {
     assert_eq!(BUILTIN_THEME_SOURCES.len(), 2);
     assert_eq!(BUILTIN_THEME_SOURCES[0].0, CLASSIC_THEME_ID);
     assert_eq!(BUILTIN_THEME_SOURCES[1].0, COMPACT_FLUENT_QUAD_THEME_ID);
-    assert!(REMOVED_BUILTIN_THEME_IDS
-        .iter()
-        .all(|id| !is_builtin_theme_id(id)));
     let mut ids = std::collections::HashSet::new();
     for (expected_id, source) in BUILTIN_THEME_SOURCES {
         let mut theme: ThemeDocument = serde_json::from_str(source).unwrap();
@@ -1465,11 +1374,12 @@ fn built_in_themes_are_valid_and_cannot_be_saved_as_editable_themes() {
         assert!(theme.is_builtin());
         assert!(theme.validate().is_empty(), "{}", theme.name);
         for surface_index in 0..theme.surfaces.len() {
-            let rendered = render_theme_surface_with_runtime(
+            let rendered = render_theme_surface_with_runtime_at_scale(
                 &theme,
                 surface_index,
                 None,
                 ThemeRuntime::new(true, true, true),
+                1.0,
             );
             assert!(
                 rendered.warnings.is_empty(),
@@ -1489,7 +1399,7 @@ fn built_in_themes_are_valid_and_cannot_be_saved_as_editable_themes() {
     let mut duplicate = ThemeDocument::starter();
     duplicate.id = "classic-copy".into();
     assert!(!duplicate.is_builtin());
-    assert!(!duplicate.is_builtin_classic());
+    assert_ne!(duplicate.id, CLASSIC_THEME_ID);
 }
 
 #[test]
@@ -1597,35 +1507,6 @@ fn bundled_minecraft_theme_is_valid_editable_and_uses_dashboard_v2() {
 }
 
 #[test]
-fn minecraft_context_menu_migration_is_targeted_and_one_time() {
-    let mut minecraft: ThemeDocument =
-        serde_json::from_str(BUNDLED_EDITABLE_THEME_SOURCES[0].1).unwrap();
-    minecraft.surfaces[0]
-        .mouse_events
-        .as_mut()
-        .unwrap()
-        .right_click = "show_context_menu(\"classic-test\")".into();
-    assert!(migrate_minecraft_context_menu(&mut minecraft));
-    assert_eq!(
-        minecraft.surfaces[0]
-            .mouse_events
-            .as_ref()
-            .unwrap()
-            .right_click,
-        "show_context_menu(\"dashboard-v2\")"
-    );
-    assert!(!migrate_minecraft_context_menu(&mut minecraft));
-
-    minecraft.id = "user-theme".into();
-    minecraft.surfaces[0]
-        .mouse_events
-        .as_mut()
-        .unwrap()
-        .right_click = "show_context_menu(\"classic-test\")".into();
-    assert!(!migrate_minecraft_context_menu(&mut minecraft));
-}
-
-#[test]
 fn bundled_minecraft_install_preserves_user_edits() {
     let root = std::env::temp_dir().join(format!(
         "claude-code-usage-monitor-minecraft-test-{}-{}",
@@ -1675,30 +1556,6 @@ fn theme_deletion_is_limited_to_managed_writable_themes() {
 }
 
 #[test]
-fn themes_without_a_nest_migrate_from_their_reference_region() {
-    let mut json = serde_json::to_value(ThemeDocument::starter()).unwrap();
-    json["surfaces"][0]["placement"] = serde_json::json!({
-        "reference": { "region": "system_tray", "display": 0 }
-    });
-    let mut taskbar_theme: ThemeDocument = serde_json::from_value(json.clone()).unwrap();
-    assert_eq!(taskbar_theme.surfaces[0].placement.nest, SurfaceNest::Auto);
-    taskbar_theme.prepare_runtime();
-    assert_eq!(
-        taskbar_theme.surfaces[0].placement.nest,
-        SurfaceNest::Taskbar
-    );
-
-    json["surfaces"][0]["placement"]["reference"]["region"] =
-        serde_json::Value::String("monitor".into());
-    let mut monitor_theme: ThemeDocument = serde_json::from_value(json).unwrap();
-    monitor_theme.prepare_runtime();
-    assert_eq!(
-        monitor_theme.surfaces[0].placement.nest,
-        SurfaceNest::Floating
-    );
-}
-
-#[test]
 fn nest_and_reference_are_independent() {
     let mut theme = ThemeDocument::starter();
     theme.surfaces[0].placement.nest = SurfaceNest::Desktop;
@@ -1709,14 +1566,6 @@ fn nest_and_reference_are_independent() {
         theme.surfaces[0].placement.reference.region,
         ReferenceRegion::SystemTray
     );
-
-    let placement: Placement = serde_json::from_value(serde_json::json!({
-        "layer": "floating",
-        "reference": { "region": "taskbar", "display": 0 }
-    }))
-    .unwrap();
-    assert_eq!(placement.nest, SurfaceNest::Floating);
-    assert_eq!(placement.reference.region, ReferenceRegion::Taskbar);
 }
 
 #[test]

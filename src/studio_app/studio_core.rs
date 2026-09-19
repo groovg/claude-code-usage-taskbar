@@ -55,8 +55,7 @@ impl StudioApp {
         let configured_path = settings.active_theme_path.as_ref().map(PathBuf::from);
         let configured_theme = configured_path
             .as_deref()
-            .and_then(|path| theme_engine::load_theme(path).ok())
-            .filter(|theme| !theme.is_obsolete_studio_starter());
+            .and_then(|path| theme_engine::load_theme(path).ok());
         let (theme_path, mut theme) = configured_theme
             .map(|theme| (configured_path, theme))
             .unwrap_or_else(|| {

@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 
 use crate::providers::ProviderId;
 use crate::theme_engine::{self, DataContext, Expression};
@@ -10,8 +10,6 @@ use crate::theme_engine::{self, DataContext, Expression};
 pub const CONTEXT_MENU_SCHEMA_VERSION: u32 = 1;
 pub const CLASSIC_CONTEXT_MENU_ID: &str = "classic-v1";
 pub const DASHBOARD_V2_CONTEXT_MENU_ID: &str = "dashboard-v2";
-pub const LEGACY_CLASSIC_CONTEXT_MENU_ID: &str = "classic-v1-4-9";
-pub const LEGACY_DASHBOARD_V2_CONTEXT_MENU_ID: &str = "dashboard-and-exit";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextMenuDocument {
@@ -54,50 +52,16 @@ pub enum ContextMenuItemKind {
 pub enum ContextMenuAction {
     OpenDashboard,
     Refresh,
-    SetUpdateFrequency {
-        #[serde(
-            alias = "milliseconds",
-            deserialize_with = "deserialize_update_frequency_seconds"
-        )]
-        seconds: u32,
-    },
-    ToggleProvider {
-        provider: ContextMenuProvider,
-    },
+    SetUpdateFrequency { seconds: u32 },
+    ToggleProvider { provider: ContextMenuProvider },
     ToggleStartup,
     ToggleWidget,
-    /// Accepted only so menus saved by older versions can be loaded and
-    /// cleaned up. New menus cannot create or execute this legacy action.
-    #[serde(rename = "reset_position")]
-    LegacyResetPosition,
-    SetLanguage {
-        language: String,
-    },
+    SetLanguage { language: String },
     CheckForUpdates,
-    ToggleLayerRender {
-        target: String,
-    },
-    LayerActions {
-        actions: String,
-    },
-    OpenUrl {
-        url: String,
-    },
+    ToggleLayerRender { target: String },
+    LayerActions { actions: String },
+    OpenUrl { url: String },
     Exit,
-}
-
-fn deserialize_update_frequency_seconds<'de, D>(deserializer: D) -> Result<u32, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = u32::deserialize(deserializer)?;
-    Ok(match value {
-        crate::app_settings::POLL_1_MIN
-        | crate::app_settings::POLL_5_MIN
-        | crate::app_settings::POLL_15_MIN
-        | crate::app_settings::POLL_1_HOUR => value / 1_000,
-        _ => value,
-    })
 }
 
 pub type ContextMenuProvider = ProviderId;
@@ -176,10 +140,16 @@ impl ContextMenuDocument {
     pub fn is_builtin(&self) -> bool {
         self.id.eq_ignore_ascii_case(CLASSIC_CONTEXT_MENU_ID)
             || self.id.eq_ignore_ascii_case(DASHBOARD_V2_CONTEXT_MENU_ID)
-            || self.id.eq_ignore_ascii_case(LEGACY_CLASSIC_CONTEXT_MENU_ID)
-            || self
-                .id
-                .eq_ignore_ascii_case(LEGACY_DASHBOARD_V2_CONTEXT_MENU_ID)
+    }
+
+    /// `validate` as a result, one error per line.
+    pub fn check(&self) -> Result<(), String> {
+        let errors = self.validate();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("\n"))
+        }
     }
 
     pub fn validate(&self) -> Vec<String> {
@@ -486,10 +456,7 @@ pub fn ensure_builtin_context_menus() -> Result<PathBuf, String> {
     std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     let mut classic_path = None;
     for document in [classic_context_menu(), dashboard_v2_context_menu()] {
-        let errors = document.validate();
-        if !errors.is_empty() {
-            return Err(errors.join("\n"));
-        }
+        document.check()?;
         let path = directory.join(format!("{}.json", document.id));
         let canonical = serde_json::to_vec_pretty(&document).map_err(|error| error.to_string())?;
         if std::fs::read(&path).ok().as_deref() != Some(canonical.as_slice()) {
@@ -499,17 +466,6 @@ pub fn ensure_builtin_context_menus() -> Result<PathBuf, String> {
             classic_path = Some(path);
         }
     }
-    for legacy_id in [
-        LEGACY_CLASSIC_CONTEXT_MENU_ID,
-        LEGACY_DASHBOARD_V2_CONTEXT_MENU_ID,
-    ] {
-        let legacy_path = directory.join(format!("{legacy_id}.json"));
-        match std::fs::remove_file(legacy_path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.to_string()),
-        }
-    }
     classic_path.ok_or_else(|| "The Classic context menu could not be created".into())
 }
 
@@ -517,13 +473,9 @@ pub fn load_context_menu(path: &Path) -> Result<ContextMenuDocument, String> {
     let source = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
     let mut document: ContextMenuDocument =
         serde_json::from_str(&source).map_err(|error| error.to_string())?;
-    remove_legacy_context_menu_actions(&mut document.items);
-    let errors = document.validate();
-    if errors.is_empty() {
-        Ok(document)
-    } else {
-        Err(errors.join("\n"))
-    }
+    remove_empty_submenus(&mut document.items);
+    document.check()?;
+    Ok(document)
 }
 
 pub fn list_context_menus() -> Result<Vec<ContextMenuDescriptor>, String> {
@@ -553,7 +505,6 @@ pub fn list_context_menus() -> Result<Vec<ContextMenuDescriptor>, String> {
 
 pub fn resolve_context_menu(reference: Option<&str>) -> Result<ContextMenuDocument, String> {
     let reference = reference.unwrap_or(CLASSIC_CONTEXT_MENU_ID).trim();
-    let reference = canonical_context_menu_reference(reference);
     let menus = list_context_menus()?;
     let mut matches = menus
         .iter()
@@ -574,32 +525,17 @@ pub fn resolve_context_menu(reference: Option<&str>) -> Result<ContextMenuDocume
     }
 }
 
-fn canonical_context_menu_reference(reference: &str) -> &str {
-    match reference {
-        reference if reference.eq_ignore_ascii_case(LEGACY_CLASSIC_CONTEXT_MENU_ID) => {
-            CLASSIC_CONTEXT_MENU_ID
-        }
-        reference if reference.eq_ignore_ascii_case(LEGACY_DASHBOARD_V2_CONTEXT_MENU_ID) => {
-            DASHBOARD_V2_CONTEXT_MENU_ID
-        }
-        reference => reference,
-    }
-}
-
 pub fn save_context_menu(document: &ContextMenuDocument) -> Result<PathBuf, String> {
     let mut document = document.clone();
     document.schema_version = CONTEXT_MENU_SCHEMA_VERSION;
-    remove_legacy_context_menu_actions(&mut document.items);
+    remove_empty_submenus(&mut document.items);
     if document.is_builtin() {
         return Err(format!(
             "{} is read-only; duplicate it to make changes",
             document.name
         ));
     }
-    let errors = document.validate();
-    if !errors.is_empty() {
-        return Err(errors.join("\n"));
-    }
+    document.check()?;
     let directory = context_menus_directory();
     std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     let path = directory.join(format!("{}.json", safe_file_stem(&document.id)));
@@ -607,19 +543,17 @@ pub fn save_context_menu(document: &ContextMenuDocument) -> Result<PathBuf, Stri
     Ok(path)
 }
 
-fn remove_legacy_context_menu_actions(items: &mut Vec<ContextMenuItem>) {
+/// Studio adds a group before its first item; saving drops groups that are
+/// still empty instead of failing validation.
+fn remove_empty_submenus(items: &mut Vec<ContextMenuItem>) {
     for item in items.iter_mut() {
         if let ContextMenuItemKind::Submenu { items } = &mut item.kind {
-            remove_legacy_context_menu_actions(items);
+            remove_empty_submenus(items);
         }
     }
-    items.retain(|item| match &item.kind {
-        ContextMenuItemKind::Action {
-            action: ContextMenuAction::LegacyResetPosition,
-        } => false,
-        ContextMenuItemKind::Submenu { items } => !items.is_empty(),
-        _ => true,
-    });
+    items.retain(
+        |item| !matches!(&item.kind, ContextMenuItemKind::Submenu { items } if items.is_empty()),
+    );
 }
 
 pub fn delete_context_menu(path: &Path) -> Result<(), String> {
@@ -712,9 +646,6 @@ mod tests {
         assert!(!serde_json::to_string(&menu)
             .unwrap()
             .contains("reset_position"));
-        let mut legacy = menu.clone();
-        legacy.id = LEGACY_CLASSIC_CONTEXT_MENU_ID.into();
-        assert!(legacy.is_builtin());
     }
 
     #[test]
@@ -723,13 +654,6 @@ mod tests {
         assert_eq!(menu.id, DASHBOARD_V2_CONTEXT_MENU_ID);
         assert_eq!(menu.name, "Dashboard v2");
         assert!(menu.is_builtin());
-        let mut legacy = menu.clone();
-        legacy.id = LEGACY_DASHBOARD_V2_CONTEXT_MENU_ID.into();
-        assert!(legacy.is_builtin());
-        assert_eq!(
-            canonical_context_menu_reference(LEGACY_DASHBOARD_V2_CONTEXT_MENU_ID),
-            DASHBOARD_V2_CONTEXT_MENU_ID
-        );
         assert!(menu.validate().is_empty());
         assert_eq!(
             menu.items,
@@ -746,39 +670,17 @@ mod tests {
     }
 
     #[test]
-    fn legacy_frequency_milliseconds_are_normalized_to_seconds() {
-        let action: ContextMenuAction =
-            serde_json::from_str(r#"{"type":"set_update_frequency","milliseconds":300000}"#)
-                .unwrap();
-        assert_eq!(
-            action,
-            ContextMenuAction::SetUpdateFrequency { seconds: 300 }
-        );
-        let serialized = serde_json::to_string(&action).unwrap();
-        assert!(serialized.contains(r#""seconds":300"#));
-        assert!(!serialized.contains("milliseconds"));
-    }
-
-    #[test]
-    fn legacy_reset_position_actions_are_removed() {
+    fn empty_submenus_are_removed() {
         let mut items = vec![
-            ContextMenuItem::action(
-                "reset-position",
-                "Reset position",
-                ContextMenuAction::LegacyResetPosition,
-            ),
+            ContextMenuItem::submenu("empty", "Empty", Vec::new()),
             ContextMenuItem::submenu(
-                "legacy-settings",
+                "settings",
                 "Settings",
-                vec![ContextMenuItem::action(
-                    "nested-reset-position",
-                    "Reset position",
-                    ContextMenuAction::LegacyResetPosition,
-                )],
+                vec![ContextMenuItem::submenu("nested", "Nested", Vec::new())],
             ),
             ContextMenuItem::action("exit", "Exit", ContextMenuAction::Exit),
         ];
-        remove_legacy_context_menu_actions(&mut items);
+        remove_empty_submenus(&mut items);
         assert_eq!(
             items,
             vec![ContextMenuItem::action(

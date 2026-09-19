@@ -504,16 +504,8 @@ pub(super) fn format_usage_line(base: &str, context: &DataContext) -> Option<Str
     let named_account = provider
         .strip_prefix("accounts.")
         .and_then(|path| path.split_once('.'))
-        .is_some_and(|(provider, id)| {
-            matches!(provider, "claude" | "codex")
-                && !id.is_empty()
-                && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-        });
-    if (!named_account
-        && !matches!(
-            provider,
-            "active" | "claude" | "codex" | "antigravity" | "opencode" | "cursor"
-        ))
+        .is_some_and(|(provider, id)| is_account(provider, id));
+    if (!named_account && !is_provider_key(provider))
         || !(matches!(
             window,
             "session" | "five_hour" | "weekly" | "monthly" | "credits" | "scoped" | "context"

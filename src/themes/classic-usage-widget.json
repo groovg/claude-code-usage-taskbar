@@ -1413,8 +1413,7 @@
             "value": "claude.credits.display",
             "direction": "left_to_right",
             "fill": {
-              "color": "#F5A623FF",
-              "opacity": "1"
+              "color": "#F5A623FF"
             },
             "track": {
               "color": "#00000000",
@@ -1445,8 +1444,7 @@
             "contrast": "1",
             "align": "left",
             "color": {
-              "color": "#F5A623FF",
-              "opacity": "1"
+              "color": "#F5A623FF"
             }
           }
         },
@@ -1463,8 +1461,7 @@
             "value": "claude.credits.display",
             "direction": "left_to_right",
             "fill": {
-              "color": "#C77700FF",
-              "opacity": "1"
+              "color": "#C77700FF"
             },
             "track": {
               "color": "#00000000",
@@ -1495,8 +1492,7 @@
             "contrast": "1",
             "align": "left",
             "color": {
-              "color": "#C77700FF",
-              "opacity": "1"
+              "color": "#C77700FF"
             }
           }
         },
@@ -1513,8 +1509,7 @@
             "value": "codex.credits.display",
             "direction": "left_to_right",
             "fill": {
-              "color": "#F5A623FF",
-              "opacity": "1"
+              "color": "#F5A623FF"
             },
             "track": {
               "color": "#00000000",
@@ -1545,8 +1540,7 @@
             "contrast": "1",
             "align": "left",
             "color": {
-              "color": "#F5A623FF",
-              "opacity": "1"
+              "color": "#F5A623FF"
             }
           }
         },
@@ -1563,8 +1557,7 @@
             "value": "codex.credits.display",
             "direction": "left_to_right",
             "fill": {
-              "color": "#C77700FF",
-              "opacity": "1"
+              "color": "#C77700FF"
             },
             "track": {
               "color": "#00000000",
@@ -1595,8 +1588,7 @@
             "contrast": "1",
             "align": "left",
             "color": {
-              "color": "#C77700FF",
-              "opacity": "1"
+              "color": "#C77700FF"
             }
           }
         }

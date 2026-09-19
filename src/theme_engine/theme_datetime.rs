@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::native_interop::wide_str;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
 use windows::Win32::Globalization::{
@@ -41,99 +42,73 @@ pub(super) fn format_timestamp(unix: f64, format: &str, context: &DataContext) -
     let (utc, format) = normalized
         .strip_prefix("utc_")
         .map_or((false, normalized.as_str()), |format| (true, format));
-    if !is_timestamp_format(format) {
-        return None;
-    }
+    // Pick the formatter first: any other format is not a timestamp at all.
+    let formatter: fn(&SYSTEMTIME, &str, bool) -> Option<String> = match format {
+        "weekday_2" => |value, locale, _| {
+            date_pattern(value, "ddd", locale).map(|value| value.chars().take(2).collect())
+        },
+        "weekday_short" => |value, locale, _| date_pattern(value, "ddd", locale),
+        "weekday_long" => |value, locale, _| date_pattern(value, "dddd", locale),
+        "day" => |value, locale, _| date_pattern(value, "d", locale),
+        "day_2" => |value, locale, _| date_pattern(value, "dd", locale),
+        "month" => |value, locale, _| date_pattern(value, "M", locale),
+        "month_2" => |value, locale, _| date_pattern(value, "MM", locale),
+        "month_short" => |value, locale, _| date_pattern(value, "MMM", locale),
+        "month_long" => |value, locale, _| date_pattern(value, "MMMM", locale),
+        "year_2" => |value, locale, _| date_pattern(value, "yy", locale),
+        "year" => |value, locale, _| date_pattern(value, "yyyy", locale),
+        "date" | "date_short" => |value, locale, _| date_default(value, DATE_SHORTDATE, locale),
+        "date_long" => |value, locale, _| date_default(value, DATE_LONGDATE, locale),
+        "time" | "time_short" => |value, locale, _| time_default(value, TIME_NOSECONDS, locale),
+        "time_seconds" => |value, locale, _| time_default(value, TIME_FORMAT_FLAGS(0), locale),
+        "time_24" => |value, locale, _| time_pattern(value, "HH':'mm", locale),
+        "time_24_seconds" => |value, locale, _| time_pattern(value, "HH':'mm':'ss", locale),
+        "time_12" => |value, locale, _| time_pattern(value, "h':'mm tt", locale),
+        "time_12_seconds" => |value, locale, _| time_pattern(value, "h':'mm':'ss tt", locale),
+        "am_pm" => |value, locale, _| time_pattern(value, "tt", locale),
+        "datetime" | "datetime_short" => |value, locale, _| {
+            combine(
+                date_default(value, DATE_SHORTDATE, locale),
+                time_default(value, TIME_NOSECONDS, locale),
+            )
+        },
+        "datetime_long" => |value, locale, _| {
+            combine(
+                date_default(value, DATE_LONGDATE, locale),
+                time_default(value, TIME_FORMAT_FLAGS(0), locale),
+            )
+        },
+        "iso_date" => |value, _, _| {
+            Some(format!(
+                "{:04}-{:02}-{:02}",
+                value.wYear, value.wMonth, value.wDay
+            ))
+        },
+        "iso_time" => |value, _, _| {
+            Some(format!(
+                "{:02}:{:02}:{:02}",
+                value.wHour, value.wMinute, value.wSecond
+            ))
+        },
+        "iso_datetime" => |value, _, utc| {
+            Some(format!(
+                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}{}",
+                value.wYear,
+                value.wMonth,
+                value.wDay,
+                value.wHour,
+                value.wMinute,
+                value.wSecond,
+                if utc { "Z" } else { "" }
+            ))
+        },
+        _ => return None,
+    };
     let Some(value) = timestamp_system_time(unix, !utc) else {
         return Some("--".into());
     };
     let locale = context.get_string("i18n.locale").unwrap_or("en");
-    let result = match format {
-        "weekday_2" => {
-            date_pattern(&value, "ddd", locale).map(|value| value.chars().take(2).collect())
-        }
-        "weekday_short" => date_pattern(&value, "ddd", locale),
-        "weekday_long" => date_pattern(&value, "dddd", locale),
-        "day" => date_pattern(&value, "d", locale),
-        "day_2" => date_pattern(&value, "dd", locale),
-        "month" => date_pattern(&value, "M", locale),
-        "month_2" => date_pattern(&value, "MM", locale),
-        "month_short" => date_pattern(&value, "MMM", locale),
-        "month_long" => date_pattern(&value, "MMMM", locale),
-        "year_2" => date_pattern(&value, "yy", locale),
-        "year" => date_pattern(&value, "yyyy", locale),
-        "date" | "date_short" => date_default(&value, DATE_SHORTDATE, locale),
-        "date_long" => date_default(&value, DATE_LONGDATE, locale),
-        "time" | "time_short" => time_default(&value, TIME_NOSECONDS, locale),
-        "time_seconds" => time_default(&value, TIME_FORMAT_FLAGS(0), locale),
-        "time_24" => time_pattern(&value, "HH':'mm", locale),
-        "time_24_seconds" => time_pattern(&value, "HH':'mm':'ss", locale),
-        "time_12" => time_pattern(&value, "h':'mm tt", locale),
-        "time_12_seconds" => time_pattern(&value, "h':'mm':'ss tt", locale),
-        "am_pm" => time_pattern(&value, "tt", locale),
-        "datetime" | "datetime_short" => combine(
-            date_default(&value, DATE_SHORTDATE, locale),
-            time_default(&value, TIME_NOSECONDS, locale),
-        ),
-        "datetime_long" => combine(
-            date_default(&value, DATE_LONGDATE, locale),
-            time_default(&value, TIME_FORMAT_FLAGS(0), locale),
-        ),
-        "iso_date" => Some(format!(
-            "{:04}-{:02}-{:02}",
-            value.wYear, value.wMonth, value.wDay
-        )),
-        "iso_time" => Some(format!(
-            "{:02}:{:02}:{:02}",
-            value.wHour, value.wMinute, value.wSecond
-        )),
-        "iso_datetime" => Some(format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}{}",
-            value.wYear,
-            value.wMonth,
-            value.wDay,
-            value.wHour,
-            value.wMinute,
-            value.wSecond,
-            if utc { "Z" } else { "" }
-        )),
-        _ => None,
-    };
-    Some(result.unwrap_or_else(|| "--".into()))
-}
-
-fn is_timestamp_format(format: &str) -> bool {
-    matches!(
-        format,
-        "weekday_2"
-            | "weekday_short"
-            | "weekday_long"
-            | "day"
-            | "day_2"
-            | "month"
-            | "month_2"
-            | "month_short"
-            | "month_long"
-            | "year_2"
-            | "year"
-            | "date"
-            | "date_short"
-            | "date_long"
-            | "time"
-            | "time_short"
-            | "time_seconds"
-            | "time_24"
-            | "time_24_seconds"
-            | "time_12"
-            | "time_12_seconds"
-            | "am_pm"
-            | "datetime"
-            | "datetime_short"
-            | "datetime_long"
-            | "iso_date"
-            | "iso_time"
-            | "iso_datetime"
-    )
+    Some(formatter(&value, locale, utc).unwrap_or_else(|| "--".into()))
 }
 
 fn timestamp_system_time(unix: f64, local: bool) -> Option<SYSTEMTIME> {
@@ -178,8 +153,8 @@ fn format_date(
     pattern: Option<&str>,
     locale: &str,
 ) -> Option<String> {
-    let locale = wide(locale);
-    let pattern = pattern.map(wide);
+    let locale = wide_str(locale);
+    let pattern = pattern.map(wide_str);
     let mut output = [0_u16; 128];
     let count = unsafe {
         GetDateFormatEx(
@@ -210,8 +185,8 @@ fn format_time(
     pattern: Option<&str>,
     locale: &str,
 ) -> Option<String> {
-    let locale = wide(locale);
-    let pattern = pattern.map(wide);
+    let locale = wide_str(locale);
+    let pattern = pattern.map(wide_str);
     let mut output = [0_u16; 128];
     let count = unsafe {
         GetTimeFormatEx(
@@ -225,10 +200,6 @@ fn format_time(
         )
     };
     wide_result(&output, count)
-}
-
-fn wide(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 fn wide_result(value: &[u16], count: i32) -> Option<String> {

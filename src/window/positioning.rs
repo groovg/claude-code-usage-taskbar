@@ -175,10 +175,7 @@ pub(super) fn position_custom_theme(hwnd: HWND, theme: &ThemeDocument, scale: f6
         vertical_anchor_factor(surface_vertical),
         (theme.placement.offset_y as f64 * scale).round() as i32,
     );
-    let nest = theme
-        .placement
-        .nest
-        .resolve(theme.placement.reference.region);
+    let nest = theme.placement.nest;
     unsafe {
         match nest {
             SurfaceNest::Taskbar => {
@@ -224,7 +221,7 @@ pub(super) fn position_custom_theme(hwnd: HWND, theme: &ThemeDocument, scale: f6
             SurfaceNest::TrayIcon => {
                 let _ = ShowWindow(hwnd, SW_HIDE);
             }
-            SurfaceNest::Floating | SurfaceNest::Auto => {
+            SurfaceNest::Floating => {
                 native_interop::make_popup(hwnd, true);
                 let _ = SetWindowPos(
                     hwnd,
@@ -257,10 +254,7 @@ pub(super) fn sync_theme_window_visibility() {
     };
     unsafe {
         for (surface_index, surface) in theme.surfaces.iter().enumerate() {
-            let nest = surface
-                .placement
-                .nest
-                .resolve(surface.placement.reference.region);
+            let nest = surface.placement.nest;
             if nest != SurfaceNest::Floating {
                 continue;
             }

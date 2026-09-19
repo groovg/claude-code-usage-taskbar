@@ -54,20 +54,6 @@ const BUNDLED_THEME_ASSETS: &[(&str, &[u8])] = &[
     ),
 ];
 
-const REMOVED_BUILTIN_THEME_IDS: &[&str] = &[
-    "mission-control",
-    "neon-reactor",
-    "rpg-party-hud",
-    "quota-garden",
-    "tokyo-data-skyline",
-    "pixel-arcade",
-    "minimal-signal",
-    "quota-constellation",
-    "quota-orrery",
-    "terminal-ticker",
-    "tactical-edge-hud",
-];
-
 fn is_builtin_theme_id(id: &str) -> bool {
     BUILTIN_THEME_SOURCES
         .iter()
@@ -88,7 +74,7 @@ pub fn apply_widget_position(
     let position = position.resolved();
     for surface in &mut theme.surfaces {
         let placement = &mut surface.placement;
-        if placement.nest.resolve(placement.reference.region) != SurfaceNest::Taskbar {
+        if placement.nest != SurfaceNest::Taskbar {
             continue;
         }
         if position == crate::app_settings::WidgetPosition::Left {
@@ -118,8 +104,6 @@ pub struct ThemeDocument {
     pub canvas: Canvas,
     #[serde(skip)]
     pub placement: Placement,
-    #[serde(skip)]
-    pub children: Vec<SceneObject>,
     #[serde(default)]
     pub surfaces: Vec<SceneObject>,
 }
@@ -128,7 +112,7 @@ pub struct ThemeDocument {
 /// have `placement`; descendants have `parent` and use `anchor`. Content,
 /// styling, layout, geometry, and the ability to contain children are otherwise
 /// identical at every level.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SceneObject {
     pub id: String,
     pub name: String,
@@ -175,28 +159,17 @@ pub struct SceneObject {
 }
 
 /// Resolved root dimensions used to build expression contexts.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct Canvas {
-    #[serde(default = "default_canvas_width")]
     pub width: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub width_expression: Option<Expression>,
-    #[serde(default = "default_canvas_height")]
     pub height: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub height_expression: Option<Expression>,
-    #[serde(default)]
-    pub background: Paint,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Placement {
     #[serde(default)]
     pub reference: ReferenceTarget,
-    /// Controls which native shell host owns a root surface. Older themes did
-    /// not persist this value, so they are normalized from their reference
-    /// region by `prepare_runtime`.
-    #[serde(default = "legacy_surface_nest", alias = "layer")]
+    /// Controls which native shell host owns a root surface.
     pub nest: SurfaceNest,
     #[serde(default)]
     pub horizontal: HorizontalAnchor,
@@ -239,13 +212,9 @@ pub enum ReferenceRegion {
     SystemTray,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SurfaceNest {
-    /// Transitional value used only while loading themes saved before native
-    /// surface hosting was introduced.
-    #[default]
-    Auto,
     Taskbar,
     /// A genuine Windows notification-area icon. Explorer owns its position,
     /// overflow state, DPI scaling, and drag ordering; the root object supplies
@@ -253,18 +222,6 @@ pub enum SurfaceNest {
     TrayIcon,
     Desktop,
     Floating,
-}
-
-impl SurfaceNest {
-    pub fn resolve(self, reference: ReferenceRegion) -> Self {
-        match self {
-            Self::Auto => match reference {
-                ReferenceRegion::Taskbar | ReferenceRegion::SystemTray => Self::Taskbar,
-                ReferenceRegion::Monitor => Self::Floating,
-            },
-            nest => nest,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -861,7 +818,7 @@ pub enum ImageFit {
     Original,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LayerBackground {
     #[default]
@@ -880,197 +837,6 @@ pub enum LayerBackground {
         #[serde(default)]
         fit: ImageFit,
     },
-}
-
-impl LayerBackground {
-    fn from_legacy_paint(paint: Paint) -> Self {
-        if paint.color.trim().eq_ignore_ascii_case("#00000000") {
-            Self::None
-        } else {
-            Self::Colour { colour: paint }
-        }
-    }
-
-    fn canvas_paint(&self) -> Paint {
-        match self {
-            Self::Colour { colour } => colour.clone(),
-            Self::None | Self::Gradient { .. } | Self::Image { .. } => Paint::default(),
-        }
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum LayerBackgroundWire {
-    Current(LayerBackgroundCurrent),
-    Legacy(Paint),
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum LayerBackgroundCurrent {
-    None,
-    Colour {
-        colour: Paint,
-    },
-    Gradient {
-        start: Paint,
-        end: Paint,
-        #[serde(default)]
-        angle: Expression,
-    },
-    Image {
-        path: String,
-        #[serde(default)]
-        fit: ImageFit,
-    },
-}
-
-impl<'de> Deserialize<'de> for LayerBackground {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        Ok(match LayerBackgroundWire::deserialize(deserializer)? {
-            LayerBackgroundWire::Current(LayerBackgroundCurrent::None) => Self::None,
-            LayerBackgroundWire::Current(LayerBackgroundCurrent::Colour { colour }) => {
-                Self::Colour { colour }
-            }
-            LayerBackgroundWire::Current(LayerBackgroundCurrent::Gradient {
-                start,
-                end,
-                angle,
-            }) => Self::Gradient { start, end, angle },
-            LayerBackgroundWire::Current(LayerBackgroundCurrent::Image { path, fit }) => {
-                Self::Image { path, fit }
-            }
-            LayerBackgroundWire::Legacy(paint) => Self::from_legacy_paint(paint),
-        })
-    }
-}
-
-#[derive(Deserialize)]
-struct SceneObjectWire {
-    id: String,
-    name: String,
-    #[serde(default = "default_render")]
-    render: Expression,
-    #[serde(default = "default_visibility")]
-    visibility: Expression,
-    #[serde(default)]
-    parent: Option<String>,
-    #[serde(default)]
-    placement: Placement,
-    #[serde(default)]
-    anchor: ObjectAnchor,
-    #[serde(default)]
-    x: Expression,
-    #[serde(default)]
-    y: Expression,
-    #[serde(default = "default_layer_width")]
-    width: Expression,
-    #[serde(default = "default_layer_height")]
-    height: Expression,
-    #[serde(default)]
-    rotation: Expression,
-    #[serde(default)]
-    background: LayerBackground,
-    #[serde(default)]
-    border: Option<Stroke>,
-    #[serde(default)]
-    mouse_events: Option<MouseEvents>,
-    #[serde(default)]
-    corner_radius: Expression,
-    #[serde(default)]
-    layout: ChildLayout,
-    #[serde(default)]
-    align: ChildAlignment,
-    #[serde(default)]
-    gap: Expression,
-    #[serde(default)]
-    content: Option<serde_json::Value>,
-    #[serde(default)]
-    children: Vec<SceneObject>,
-}
-
-#[derive(Deserialize)]
-struct LegacyImageContent {
-    path: String,
-    #[serde(default)]
-    fit: ImageFit,
-}
-
-#[derive(Deserialize)]
-struct LegacyShapeContent {
-    #[serde(default = "default_accent_paint")]
-    fill: Paint,
-    #[serde(default)]
-    stroke: Option<Stroke>,
-    #[serde(default)]
-    corner_radius: Expression,
-}
-
-impl<'de> Deserialize<'de> for SceneObject {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let mut wire = SceneObjectWire::deserialize(deserializer)?;
-        let content_type = wire
-            .content
-            .as_ref()
-            .and_then(|content| content.get("type"))
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned);
-        let content = match (content_type.as_deref(), wire.content.take()) {
-            (Some("image"), Some(value)) => {
-                let legacy: LegacyImageContent =
-                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
-                wire.background = LayerBackground::Image {
-                    path: legacy.path,
-                    fit: legacy.fit,
-                };
-                SceneContent::None
-            }
-            (Some("shape"), Some(value)) => {
-                let legacy: LegacyShapeContent =
-                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
-                wire.background = LayerBackground::from_legacy_paint(legacy.fill);
-                if wire.border.is_none() {
-                    wire.border = legacy.stroke;
-                }
-                if wire.corner_radius.is_zero() {
-                    wire.corner_radius = legacy.corner_radius;
-                }
-                SceneContent::None
-            }
-            (_, Some(serde_json::Value::Null) | None) => SceneContent::None,
-            (_, Some(value)) => serde_json::from_value(value).map_err(serde::de::Error::custom)?,
-        };
-        Ok(Self {
-            id: wire.id,
-            name: wire.name,
-            render: wire.render,
-            visibility: wire.visibility,
-            parent: wire.parent,
-            placement: wire.placement,
-            anchor: wire.anchor,
-            x: wire.x,
-            y: wire.y,
-            width: wire.width,
-            height: wire.height,
-            rotation: wire.rotation,
-            background: wire.background,
-            border: wire.border,
-            mouse_events: wire.mouse_events,
-            corner_radius: wire.corner_radius,
-            layout: wire.layout,
-            align: wire.align,
-            gap: wire.gap,
-            content,
-            children: wire.children,
-        })
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1148,15 +914,6 @@ pub struct Paint {
     pub color: String,
     #[serde(default = "default_opacity")]
     pub opacity: Expression,
-}
-
-impl Default for Paint {
-    fn default() -> Self {
-        Self {
-            color: "#00000000".to_string(),
-            opacity: Expression::from(1.0),
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1468,65 +1225,53 @@ impl DataContext {
         codex_compatibility: bool,
         countdown: bool,
     ) {
-        // What a gauge or a badge should show. `percentage` stays the share
-        // that has been spent so warning thresholds keep working, while
-        // `display` follows the countdown setting.
-        let display = |percentage: f64| {
-            if countdown {
-                100.0 - percentage
-            } else {
-                percentage
-            }
-        };
         let weekly_label = usage
             .and_then(|usage| usage.weekly_label.as_deref())
             .or_else(|| self.get_string("i18n.weekly_window"))
             .unwrap_or("7d")
             .to_string();
         self.insert_string(&format!("{name}.weekly.label"), weekly_label);
-        let (five_hour, weekly) = usage
-            .map(|usage| (usage.session.percentage, usage.weekly.percentage))
-            .unwrap_or((0.0, 0.0));
+        let spent = |section: Option<&crate::models::UsageSection>| {
+            section.map_or(0.0, |section| section.percentage)
+        };
+        let five_hour = usage.map(|usage| &usage.session);
+        let weekly = usage.map(|usage| &usage.weekly);
         // Before Codex windows were classified by duration, a weekly-only
         // response arrived in the primary slot and was exposed to themes as
         // `codex.session`. Keep that established binding working for existing
         // custom themes, while `codex.five_hour` always means the real window.
-        let use_codex_session_fallback = codex_compatibility
-            && usage.is_some_and(|usage| !usage.session.available && usage.weekly.available);
-        let session = if use_codex_session_fallback {
+        let session = if codex_compatibility
+            && usage.is_some_and(|usage| !usage.session.available && usage.weekly.available)
+        {
             weekly
         } else {
             five_hour
         };
-        self.insert(&format!("{name}.session.percentage"), session);
-        self.insert(&format!("{name}.session.remaining"), 100.0 - session);
-        self.insert(&format!("{name}.session.display"), display(session));
-        self.insert(&format!("{name}.five_hour.percentage"), five_hour);
-        self.insert(&format!("{name}.five_hour.remaining"), 100.0 - five_hour);
-        self.insert(&format!("{name}.five_hour.display"), display(five_hour));
-        self.insert(&format!("{name}.weekly.percentage"), weekly);
-        self.insert(&format!("{name}.weekly.remaining"), 100.0 - weekly);
-        self.insert(&format!("{name}.weekly.display"), display(weekly));
+        // Presence is independent of percentage and reset times. Monthly
+        // availability remains based on its explicitly optional section.
+        for (window, section) in [
+            ("session", session),
+            ("five_hour", five_hour),
+            ("weekly", weekly),
+        ] {
+            let key = format!("{name}.{window}");
+            self.insert_share(&key, spent(section), countdown);
+            self.insert(
+                &format!("{key}.available"),
+                section.is_some_and(|section| section.available) as u8 as f64,
+            );
+            self.insert_reset(&key, section.and_then(|section| section.resets_at));
+        }
         let monthly = usage.and_then(|usage| usage.monthly.as_ref());
         self.insert_string(&format!("{name}.monthly.label"), "30d");
-        if let Some(monthly) = monthly {
-            self.insert(&format!("{name}.monthly.percentage"), monthly.percentage);
-            self.insert(
-                &format!("{name}.monthly.remaining"),
-                100.0 - monthly.percentage,
-            );
-            self.insert(
-                &format!("{name}.monthly.display"),
-                display(monthly.percentage),
-            );
-        } else {
-            self.insert(&format!("{name}.monthly.percentage"), 0.0);
-            self.insert(&format!("{name}.monthly.remaining"), 100.0);
-            self.insert(&format!("{name}.monthly.display"), display(0.0));
-        }
+        self.insert_share(&format!("{name}.monthly"), spent(monthly), countdown);
         self.insert(
             &format!("{name}.monthly.available"),
             monthly.is_some() as u8 as f64,
+        );
+        self.insert_reset(
+            &format!("{name}.monthly"),
+            monthly.and_then(|monthly| monthly.resets_at),
         );
         self.insert(&format!("{name}.available"), usage.is_some() as u8 as f64);
         // Carried over from an earlier poll: real figures, not current ones.
@@ -1537,15 +1282,10 @@ impl DataContext {
         // Credits are absent for most accounts, so `credits.available` is what
         // a theme should gate the overlay on rather than `available`.
         let credits = usage.and_then(|usage| usage.credits.as_ref());
-        let credits_percentage = credits.map(|credits| credits.percentage).unwrap_or(0.0);
-        self.insert(&format!("{name}.credits.percentage"), credits_percentage);
-        self.insert(
-            &format!("{name}.credits.remaining"),
-            100.0 - credits_percentage,
-        );
-        self.insert(
-            &format!("{name}.credits.display"),
-            display(credits_percentage),
+        self.insert_share(
+            &format!("{name}.credits"),
+            credits.map(|credits| credits.percentage).unwrap_or(0.0),
+            countdown,
         );
         // Currency, unlike the percentages either side of it.
         self.insert(
@@ -1569,64 +1309,9 @@ impl DataContext {
         let scoped_percentage = binding.map(|limit| limit.percentage).unwrap_or(0.0);
         let headline = match credits {
             Some(credits) => credits.percentage,
-            None => five_hour.max(weekly).max(scoped_percentage),
+            None => spent(five_hour).max(spent(weekly)).max(scoped_percentage),
         };
-        self.insert(&format!("{name}.headline.percentage"), headline);
-        self.insert(&format!("{name}.headline.remaining"), 100.0 - headline);
-        self.insert(&format!("{name}.headline.display"), display(headline));
-        let reset_value = |reset: Option<std::time::SystemTime>| {
-            let unix = reset
-                .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|value| value.as_secs_f64())
-                .unwrap_or(0.0);
-            let seconds = reset
-                .and_then(|value| value.duration_since(std::time::SystemTime::now()).ok())
-                .map(|value| value.as_secs_f64())
-                .unwrap_or(0.0);
-            (unix, seconds)
-        };
-        let (five_hour_unix, five_hour_seconds) =
-            reset_value(usage.and_then(|value| value.session.resets_at));
-        let (weekly_unix, weekly_seconds) =
-            reset_value(usage.and_then(|value| value.weekly.resets_at));
-        let (session_unix, session_seconds) = if use_codex_session_fallback {
-            (weekly_unix, weekly_seconds)
-        } else {
-            (five_hour_unix, five_hour_seconds)
-        };
-        let five_hour_available = usage.is_some_and(|value| value.session.available);
-        let weekly_available = usage.is_some_and(|value| value.weekly.available);
-        let session_available = if use_codex_session_fallback {
-            weekly_available
-        } else {
-            five_hour_available
-        };
-        // Presence is independent of percentage and reset times. Monthly
-        // availability remains based on its explicitly optional section.
-        for (window, available) in [
-            ("session", session_available),
-            ("five_hour", five_hour_available),
-            ("weekly", weekly_available),
-        ] {
-            self.insert(
-                &format!("{name}.{window}.available"),
-                available as u8 as f64,
-            );
-        }
-        let (monthly_unix, monthly_seconds) =
-            reset_value(monthly.and_then(|value| value.resets_at));
-        for (window, unix, seconds) in [
-            ("session", session_unix, session_seconds),
-            ("five_hour", five_hour_unix, five_hour_seconds),
-            ("weekly", weekly_unix, weekly_seconds),
-            ("monthly", monthly_unix, monthly_seconds),
-        ] {
-            self.insert(&format!("{name}.{window}.reset.unix"), unix);
-            self.insert(&format!("{name}.{window}.reset.seconds"), seconds);
-            self.insert(&format!("{name}.{window}.reset.minutes"), seconds / 60.0);
-            self.insert(&format!("{name}.{window}.reset.hours"), seconds / 3600.0);
-            self.insert(&format!("{name}.{window}.reset.days"), seconds / 86400.0);
-        }
+        self.insert_share(&format!("{name}.headline"), headline, countdown);
         // Model-scoped weekly caps. `scoped.*` is the one that matters now --
         // flagged active by the API, else the fullest -- so a theme can show
         // "Fable 43% · 2d" without naming the model. Every reported cap is
@@ -1664,23 +1349,15 @@ impl DataContext {
                 .take(8)
                 .collect();
             self.insert_string(&format!("{key}.short_label"), short);
-            self.insert(&format!("{key}.percentage"), percentage);
-            self.insert(&format!("{key}.remaining"), 100.0 - percentage);
-            self.insert(&format!("{key}.display"), display(percentage));
+            self.insert_share(&key, percentage, countdown);
             self.insert(&format!("{key}.active"), active as u8 as f64);
             self.insert(&format!("{key}.available"), available as u8 as f64);
-            let (unix, seconds) = reset_value(reset);
-            self.insert(&format!("{key}.reset.unix"), unix);
-            self.insert(&format!("{key}.reset.seconds"), seconds);
-            self.insert(&format!("{key}.reset.minutes"), seconds / 60.0);
-            self.insert(&format!("{key}.reset.hours"), seconds / 3600.0);
-            self.insert(&format!("{key}.reset.days"), seconds / 86400.0);
+            self.insert_reset(&key, reset);
         }
         self.insert(&format!("{name}.scoped.count"), scoped.len() as f64);
         // Context window of the newest local Claude Code session: a share of
         // the window, not of any allowance, and it has no reset.
         let context = usage.and_then(|usage| usage.context.as_ref());
-        let context_percentage = context.map(|context| context.percentage).unwrap_or(0.0);
         self.insert_string(&format!("{name}.context.label"), "ctx");
         self.insert_string(
             &format!("{name}.context.model"),
@@ -1694,14 +1371,10 @@ impl DataContext {
                 .and_then(|context| context.project.as_deref())
                 .unwrap_or(""),
         );
-        self.insert(&format!("{name}.context.percentage"), context_percentage);
-        self.insert(
-            &format!("{name}.context.remaining"),
-            100.0 - context_percentage,
-        );
-        self.insert(
-            &format!("{name}.context.display"),
-            display(context_percentage),
+        self.insert_share(
+            &format!("{name}.context"),
+            context.map(|context| context.percentage).unwrap_or(0.0),
+            countdown,
         );
         self.insert(
             &format!("{name}.context.tokens"),
@@ -1715,6 +1388,36 @@ impl DataContext {
             &format!("{name}.context.available"),
             context.is_some() as u8 as f64,
         );
+    }
+
+    /// What a gauge or a badge should show. `percentage` stays the share that
+    /// has been spent so warning thresholds keep working, while `display`
+    /// follows the countdown setting.
+    fn insert_share(&mut self, key: &str, percentage: f64, countdown: bool) {
+        self.insert(&format!("{key}.percentage"), percentage);
+        self.insert(&format!("{key}.remaining"), 100.0 - percentage);
+        let display = if countdown {
+            100.0 - percentage
+        } else {
+            percentage
+        };
+        self.insert(&format!("{key}.display"), display);
+    }
+
+    fn insert_reset(&mut self, key: &str, reset: Option<std::time::SystemTime>) {
+        let unix = reset
+            .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|value| value.as_secs_f64())
+            .unwrap_or(0.0);
+        let seconds = reset
+            .and_then(|value| value.duration_since(std::time::SystemTime::now()).ok())
+            .map(|value| value.as_secs_f64())
+            .unwrap_or(0.0);
+        self.insert(&format!("{key}.reset.unix"), unix);
+        self.insert(&format!("{key}.reset.seconds"), seconds);
+        self.insert(&format!("{key}.reset.minutes"), seconds / 60.0);
+        self.insert(&format!("{key}.reset.hours"), seconds / 3600.0);
+        self.insert(&format!("{key}.reset.days"), seconds / 86400.0);
     }
 
     pub fn insert(&mut self, name: &str, value: f64) {
@@ -1768,10 +1471,8 @@ impl DataContext {
                     .split_once('.')
                     .map_or(account, |(provider, _)| provider)
             });
-        (matches!(
-            provider,
-            "active" | "claude" | "codex" | "antigravity" | "opencode" | "cursor"
-        ) && !slug.is_empty()
+        (is_provider_key(provider)
+            && !slug.is_empty()
             && slug
                 .bytes()
                 .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'))
@@ -1784,12 +1485,7 @@ impl DataContext {
     fn account_default_key(name: &str) -> Option<String> {
         let (provider, rest) = name.strip_prefix("accounts.")?.split_once('.')?;
         let (id, field) = rest.split_once('.')?;
-        (matches!(provider, "claude" | "codex")
-            && !id.is_empty()
-            && id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'))
-        .then(|| format!("account.{field}"))
+        is_account(provider, id).then(|| format!("account.{field}"))
     }
 
     fn account_defaults() -> &'static Self {
@@ -1818,6 +1514,23 @@ impl DataContext {
         self.insert("parent.height", object.parent_height);
         self
     }
+}
+
+/// A prefix every provider binding set is published under.
+fn is_provider_key(key: &str) -> bool {
+    key == "active"
+        || PROVIDER_DESCRIPTORS
+            .iter()
+            .any(|descriptor| descriptor.key == key)
+}
+
+/// Named accounts exist for Claude and Codex, keyed by a plain id.
+fn is_account(provider: &str, id: &str) -> bool {
+    matches!(provider, "claude" | "codex")
+        && !id.is_empty()
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 fn action_target_id<'a>(target: &'a MouseActionTarget, self_id: &'a str) -> &'a str {
@@ -2034,13 +1747,7 @@ fn mouse_action_object_context(
         .get(surface_index)
         .ok_or_else(|| format!("Surface {surface_index} does not exist"))?;
     let (width, height) = resolve_surface_size(theme, surface_index, data, runtime);
-    let canvas = Canvas {
-        width,
-        width_expression: Some(surface.width.clone()),
-        height,
-        height_expression: Some(surface.height.clone()),
-        background: surface.background.canvas_paint(),
-    };
+    let canvas = Canvas { width, height };
     let context = DataContext::from_usage_with_runtime(data, &canvas, runtime);
     if surface.id.eq_ignore_ascii_case(object_id) {
         return Ok(context);
@@ -2188,17 +1895,10 @@ pub fn execute_mouse_actions(
                 let effective = apply_mouse_action_overrides(theme, overrides);
                 let (target_surface_index, object) =
                     mouse_action_target(&effective, surface_index, self_id, &target)?;
-                let surface = &effective.surfaces[target_surface_index];
                 let object_id = object.id.clone();
                 let (width, height) =
                     resolve_surface_size(&effective, target_surface_index, data, runtime);
-                let canvas = Canvas {
-                    width,
-                    width_expression: Some(surface.width.clone()),
-                    height,
-                    height_expression: Some(surface.height.clone()),
-                    background: surface.background.canvas_paint(),
-                };
+                let canvas = Canvas { width, height };
                 let context = DataContext::from_usage_with_runtime(data, &canvas, runtime);
                 let current = evaluate(&mouse_property_expression(object, property).0, &context)
                     .unwrap_or(0.0);
@@ -2231,18 +1931,6 @@ impl ThemeDocument {
         is_builtin_theme_id(&self.id)
     }
 
-    pub fn is_builtin_classic(&self) -> bool {
-        self.id == CLASSIC_THEME_ID
-    }
-
-    /// Identifies the short-lived first Studio approximation so it can be
-    /// upgraded without replacing themes users have renamed or repurposed.
-    pub fn is_obsolete_studio_starter(&self) -> bool {
-        (self.id == "classic-segments" && self.name == "Classic Segments")
-            || (self.id == "midnight-glass" && self.name == "Midnight Glass")
-            || (self.id == "classic-usage-widget" && self.name == "Classic Usage Widget")
-    }
-
     pub fn starter() -> Self {
         let mut theme: Self = serde_json::from_str(BUILTIN_THEME_SOURCES[0].1)
             .expect("built-in Classic theme must be valid JSON");
@@ -2250,68 +1938,42 @@ impl ThemeDocument {
         theme
     }
 
-    /// Create the writable one-time upgrade target for pre-theme installs.
-    /// Only the primary taskbar surface inherits legacy placement and
-    /// visibility; notification-area roots remain registered with Explorer.
-    pub fn migrated_from_legacy(placement: Option<(usize, i32)>, widget_visible: bool) -> Self {
-        let mut theme = Self::starter();
-        theme.id = "migrated-theme".into();
-        theme.name = "Migrated Theme".into();
-        if let Some(surface) = theme.surfaces.first_mut() {
-            surface.render = (if widget_visible { 1.0 } else { 0.0 }).into();
-            if let Some((display, offset_x)) = placement {
-                surface.placement.reference.display = display;
-                surface.placement.offset_x = offset_x;
-                surface.placement.offset_x_expression = None;
-            }
-        }
-        theme
-    }
-
     pub fn prepare_runtime(&mut self) {
-        // The empty-surface path supports documents assembled through the
-        // runtime adapter fields before their root surface is materialized.
-        if self.surfaces.is_empty() {
-            let width = self
-                .canvas
-                .width_expression
-                .clone()
-                .unwrap_or_else(|| (self.canvas.width as f64).into());
-            let height = self
-                .canvas
-                .height_expression
-                .clone()
-                .unwrap_or_else(|| (self.canvas.height as f64).into());
-            let mut root = SceneObject::root(
-                "main",
-                "Main surface",
-                width,
-                height,
-                self.placement.clone(),
-            );
-            root.background = LayerBackground::from_legacy_paint(self.canvas.background.clone());
-            root.children = std::mem::take(&mut self.children);
-            self.surfaces.push(root);
-        }
-        for surface in &mut self.surfaces {
-            surface.placement.nest = surface
-                .placement
-                .nest
-                .resolve(surface.placement.reference.region);
-        }
         if let Some(surface) = self.surfaces.first() {
             let (width, height) =
                 resolve_object_size(surface, None, ThemeRuntime::default(), &mut Vec::new());
-            self.canvas = Canvas {
-                width,
-                width_expression: Some(surface.width.clone()),
-                height,
-                height_expression: Some(surface.height.clone()),
-                background: surface.background.canvas_paint(),
-            };
+            self.canvas = Canvas { width, height };
             self.placement = surface.placement.clone();
-            self.children = surface.children.clone();
         }
+    }
+
+    /// `validate` as a result, one error per line.
+    pub fn check(&self) -> Result<(), String> {
+        let errors = self.validate();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("\n"))
+        }
+    }
+
+    /// Every object's background: each root, then its descendants.
+    pub fn backgrounds(&self) -> impl Iterator<Item = &LayerBackground> {
+        self.surfaces
+            .iter()
+            .flat_map(|surface| std::iter::once(surface).chain(&surface.children))
+            .map(|object| &object.background)
+    }
+
+    pub fn backgrounds_mut(&mut self) -> impl Iterator<Item = &mut LayerBackground> {
+        self.surfaces.iter_mut().flat_map(|surface| {
+            std::iter::once(&mut surface.background).chain(
+                surface
+                    .children
+                    .iter_mut()
+                    .map(|object| &mut object.background),
+            )
+        })
     }
 
     pub fn validate(&self) -> Vec<String> {
@@ -2345,13 +2007,7 @@ impl ThemeDocument {
             }
             let (width, height) =
                 resolve_object_size(root, None, ThemeRuntime::default(), &mut errors);
-            let canvas = Canvas {
-                width,
-                width_expression: Some(root.width.clone()),
-                height,
-                height_expression: Some(root.height.clone()),
-                background: root.background.canvas_paint(),
-            };
+            let canvas = Canvas { width, height };
             let context = DataContext::from_usage(None, &canvas);
             validate_scene_object(&mut errors, &context, root);
             validate_scene_mouse_events(&mut errors, &context, self, surface_index, root);
@@ -2711,10 +2367,7 @@ impl Default for Canvas {
     fn default() -> Self {
         Self {
             width: default_canvas_width(),
-            width_expression: None,
             height: default_canvas_height(),
-            height_expression: None,
-            background: Paint::default(),
         }
     }
 }
@@ -2734,10 +2387,6 @@ impl Default for Placement {
             offset_y_expression: None,
         }
     }
-}
-
-fn legacy_surface_nest() -> SurfaceNest {
-    SurfaceNest::Auto
 }
 
 impl Paint {

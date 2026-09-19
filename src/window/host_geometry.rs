@@ -79,10 +79,7 @@ fn runtime_with_geometry(
     else {
         return runtime;
     };
-    let nest = surface
-        .placement
-        .nest
-        .resolve(surface.placement.reference.region);
+    let nest = surface.placement.nest;
     let rect = if matches!(nest, SurfaceNest::Taskbar | SurfaceNest::TrayIcon) {
         host.taskbar.unwrap_or(host.monitor)
     } else {

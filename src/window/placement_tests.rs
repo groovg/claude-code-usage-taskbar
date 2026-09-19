@@ -7,10 +7,6 @@ fn window_state_timer_is_only_needed_for_floating_surfaces() {
 
     theme.surfaces[0].placement.nest = SurfaceNest::Floating;
     assert!(theme_has_floating_surface(&theme));
-
-    theme.surfaces[0].placement.nest = SurfaceNest::Auto;
-    theme.surfaces[0].placement.reference.region = ReferenceRegion::Monitor;
-    assert!(theme_has_floating_surface(&theme));
 }
 
 #[test]
@@ -44,14 +40,6 @@ fn physical_host_dimensions_are_normalized_to_logical_pixels() {
     assert_eq!(logical_host_dimension(46, 1.0), 46);
     assert_eq!(logical_host_dimension(92, 2.0), 46);
     assert_eq!(logical_host_dimension(30, 0.0), 30);
-}
-
-#[test]
-fn legacy_physical_offset_becomes_a_leftward_logical_theme_offset() {
-    assert_eq!(legacy_offset_to_theme_offset(120, 1.25), -96);
-    assert_eq!(legacy_offset_to_theme_offset(120, 1.0), -120);
-    assert_eq!(legacy_offset_to_theme_offset(-5, 1.0), 0);
-    assert_eq!(legacy_offset_to_theme_offset(20, 0.0), -20);
 }
 
 #[test]

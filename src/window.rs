@@ -20,9 +20,9 @@ use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::app_settings::{
-    self, load_settings, save_settings, LegacyPlacement, SettingsFile, POLL_15_MIN,
-    POLL_15_MIN_SECONDS, POLL_1_HOUR, POLL_1_HOUR_SECONDS, POLL_1_MIN, POLL_1_MIN_SECONDS,
-    POLL_5_MIN, POLL_5_MIN_SECONDS,
+    self, load_settings, save_settings, SettingsFile, POLL_15_MIN, POLL_15_MIN_SECONDS,
+    POLL_1_HOUR, POLL_1_HOUR_SECONDS, POLL_1_MIN, POLL_1_MIN_SECONDS, POLL_5_MIN,
+    POLL_5_MIN_SECONDS,
 };
 use crate::context_menu::{self, ContextMenuAction, ContextMenuItem, ContextMenuItemKind};
 use crate::diagnose;
@@ -227,32 +227,6 @@ fn monitor_scale(display: native_interop::DisplayMonitor) -> f64 {
     }
 }
 
-fn migrated_theme_placement(legacy: LegacyPlacement) -> (usize, i32) {
-    let displays = native_interop::find_monitors();
-    let taskbars = native_interop::find_taskbars();
-    let display_index = taskbars
-        .get(legacy.taskbar_index)
-        .or_else(|| taskbars.first())
-        .map(|taskbar| unsafe { MonitorFromWindow(taskbar.hwnd, MONITOR_DEFAULTTOPRIMARY) })
-        .and_then(|monitor| {
-            displays
-                .iter()
-                .position(|display| display.handle == monitor)
-        })
-        .unwrap_or_else(|| legacy.taskbar_index.min(displays.len().saturating_sub(1)));
-    let offset_x = legacy_offset_to_theme_offset(legacy.tray_offset, display_scale(display_index));
-    (display_index, offset_x)
-}
-
-fn legacy_offset_to_theme_offset(tray_offset: i32, scale: f64) -> i32 {
-    let scale = if scale.is_finite() && scale > 0.0 {
-        scale
-    } else {
-        1.0
-    };
-    -((tray_offset.max(0) as f64 / scale).round() as i32)
-}
-
 fn theme_surface_scale(theme: &ThemeDocument, surface_index: usize) -> f64 {
     let display_index = theme
         .surfaces
@@ -290,10 +264,7 @@ pub(crate) fn query_theme_runtime_for_surface(
     else {
         return runtime;
     };
-    let nest = surface
-        .placement
-        .nest
-        .resolve(surface.placement.reference.region);
+    let nest = surface.placement.nest;
     let host_rect = if matches!(nest, SurfaceNest::Taskbar | SurfaceNest::TrayIcon) {
         native_interop::find_taskbars()
             .into_iter()
@@ -390,10 +361,7 @@ fn spawn_taskbar_watchdog() {
             };
             let shell_hosted = state.active_theme.surfaces.iter().any(|surface| {
                 matches!(
-                    surface
-                        .placement
-                        .nest
-                        .resolve(surface.placement.reference.region),
+                    surface.placement.nest,
                     SurfaceNest::Taskbar | SurfaceNest::Desktop
                 )
             });
@@ -474,13 +442,10 @@ fn effective_theme_from_state(state: &AppState) -> ThemeDocument {
 }
 
 fn theme_has_floating_surface(theme: &ThemeDocument) -> bool {
-    theme.surfaces.iter().any(|surface| {
-        surface
-            .placement
-            .nest
-            .resolve(surface.placement.reference.region)
-            == SurfaceNest::Floating
-    })
+    theme
+        .surfaces
+        .iter()
+        .any(|surface| surface.placement.nest == SurfaceNest::Floating)
 }
 
 fn sync_window_state_timer(hwnd: HWND) {
@@ -508,9 +473,6 @@ fn save_state_settings() {
     let state = lock_state();
     if let Some(s) = state.as_ref() {
         let mut persisted = load_settings();
-        persisted.legacy_placement_pending = false;
-        persisted.widget_visible = true;
-        persisted.legacy_visibility_pending = false;
         persisted.poll_interval_ms = s.poll_interval_ms;
         persisted.language = s
             .language_override
@@ -649,13 +611,10 @@ fn sync_tray_icon(hwnd: HWND) {
         })
     };
     if let Some((theme, data, runtime)) = themed {
-        let has_tray_surfaces = theme.surfaces.iter().any(|surface| {
-            surface
-                .placement
-                .nest
-                .resolve(surface.placement.reference.region)
-                == SurfaceNest::TrayIcon
-        });
+        let has_tray_surfaces = theme
+            .surfaces
+            .iter()
+            .any(|surface| surface.placement.nest == SurfaceNest::TrayIcon);
         if has_tray_surfaces {
             let icons = theme
                 .surfaces
@@ -664,11 +623,7 @@ fn sync_tray_icon(hwnd: HWND) {
                 .filter(|(surface_index, surface)| {
                     let surface_runtime =
                         theme_runtime_for_surface(&theme, *surface_index, runtime);
-                    surface
-                        .placement
-                        .nest
-                        .resolve(surface.placement.reference.region)
-                        == SurfaceNest::TrayIcon
+                    surface.placement.nest == SurfaceNest::TrayIcon
                         && theme_engine::surface_should_render(
                             &theme,
                             *surface_index,
@@ -728,13 +683,7 @@ fn theme_tray_uses_current_time(theme: &ThemeDocument) -> bool {
         .surfaces
         .iter()
         .enumerate()
-        .filter(|(_, surface)| {
-            surface
-                .placement
-                .nest
-                .resolve(surface.placement.reference.region)
-                == SurfaceNest::TrayIcon
-        })
+        .filter(|(_, surface)| surface.placement.nest == SurfaceNest::TrayIcon)
         .any(|(surface_index, _)| {
             theme
                 .surface_current_time_refresh_interval(surface_index)
@@ -1106,13 +1055,7 @@ fn sync_custom_mirrors() {
                     .active_theme
                     .surfaces
                     .iter()
-                    .map(|surface| {
-                        surface
-                            .placement
-                            .nest
-                            .resolve(surface.placement.reference.region)
-                            == SurfaceNest::Desktop
-                    })
+                    .map(|surface| surface.placement.nest == SurfaceNest::Desktop)
                     .collect::<Vec<_>>();
                 (surfaces.len().max(1), surfaces)
             })
@@ -1416,57 +1359,10 @@ pub fn run() {
 
         let mut settings = load_settings();
         let classic_theme_path = theme_engine::ensure_starter_theme().ok();
-        let mut configured_theme_path = settings.active_theme_path.as_deref().map(PathBuf::from);
-        let mut configured_theme = configured_theme_path
+        let configured_theme_path = settings.active_theme_path.as_deref().map(PathBuf::from);
+        let configured_theme = configured_theme_path
             .as_deref()
-            .and_then(|path| theme_engine::load_theme(path).ok())
-            .filter(|theme| !theme.is_obsolete_studio_starter());
-        let legacy_placement = settings.legacy_placement();
-        let legacy_visibility = settings.legacy_widget_visibility();
-        if legacy_placement.is_some() || legacy_visibility.is_some() {
-            if configured_theme
-                .as_ref()
-                .is_some_and(|theme| !theme.is_builtin_classic())
-            {
-                // A user-selected writable theme already owns its presentation.
-                // Consume the obsolete settings without replacing that theme.
-                settings.consume_legacy_placement();
-                settings.consume_legacy_widget_visibility();
-                save_settings_or_log(&settings, "unable to consume legacy settings");
-            } else if legacy_placement.is_some() || legacy_visibility == Some(false) {
-                let placement = legacy_placement.map(migrated_theme_placement);
-                let migrated = ThemeDocument::migrated_from_legacy(
-                    placement,
-                    legacy_visibility.unwrap_or(true),
-                );
-                match theme_engine::save_theme(&migrated) {
-                    Ok(path) => {
-                        configured_theme_path = Some(path.clone());
-                        configured_theme = Some(migrated);
-                        settings.active_theme_path = Some(path.to_string_lossy().into_owned());
-                        settings.consume_legacy_placement();
-                        settings.consume_legacy_widget_visibility();
-                        if let Err(error) = save_settings(&settings) {
-                            diagnose::log(format!(
-                                "migrated theme created but settings cleanup failed: {error}"
-                            ));
-                        } else {
-                            diagnose::log(
-                                "legacy placement and visibility migrated to Migrated Theme",
-                            );
-                        }
-                    }
-                    Err(error) => diagnose::log(format!(
-                        "legacy theme migration deferred because the copied theme could not be saved: {error}"
-                    )),
-                }
-            } else {
-                // An explicitly visible v1.4.9 widget already matches the
-                // built-in theme's Render value, so no copy is necessary.
-                settings.consume_legacy_widget_visibility();
-                save_settings_or_log(&settings, "unable to consume legacy visibility");
-            }
-        }
+            .and_then(|path| theme_engine::load_theme(path).ok());
         let (active_theme_path, active_theme) = configured_theme
             .map(|theme| (configured_theme_path, theme))
             .unwrap_or_else(|| {
@@ -1693,10 +1589,7 @@ fn render_layered() {
         };
         let surface = &theme.surfaces[surface_index];
         let surface_runtime = theme_runtime_for_surface(&theme, surface_index, runtime);
-        let nest = surface
-            .placement
-            .nest
-            .resolve(surface.placement.reference.region);
+        let nest = surface.placement.nest;
         let desktop_nested = nest == SurfaceNest::Desktop;
         let target_hwnd = if desktop_nested {
             unsafe {
@@ -1779,16 +1672,7 @@ fn render_layered() {
 fn theme_for_surface(theme: &ThemeDocument, surface_index: usize) -> ThemeDocument {
     let mut result = theme.clone();
     if let Some(surface) = theme.surfaces.get(surface_index) {
-        result.canvas.width_expression = Some(surface.width.clone());
-        result.canvas.height_expression = Some(surface.height.clone());
-        result.canvas.background = match &surface.background {
-            crate::theme_engine::LayerBackground::Colour { colour } => colour.clone(),
-            crate::theme_engine::LayerBackground::None
-            | crate::theme_engine::LayerBackground::Gradient { .. }
-            | crate::theme_engine::LayerBackground::Image { .. } => Default::default(),
-        };
         result.placement = surface.placement.clone();
-        result.children = surface.children.clone();
     }
     result
 }

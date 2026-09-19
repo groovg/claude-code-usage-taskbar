@@ -46,24 +46,9 @@ pub fn format_template(template: &str, context: &DataContext) -> String {
     output
 }
 
-/// Resolve and rasterize a custom theme without mutating the live application.
-/// The same output is used by the studio preview and by the desktop widget.
-#[cfg(test)]
-pub fn render_theme(theme: &ThemeDocument, data: Option<&AppUsageData>) -> RenderedTheme {
-    render_theme_surface_with_runtime(theme, 0, data, ThemeRuntime::default())
-}
-
-pub fn render_theme_surface_with_runtime(
-    theme: &ThemeDocument,
-    surface_index: usize,
-    data: Option<&AppUsageData>,
-    runtime: ThemeRuntime,
-) -> RenderedTheme {
-    render_theme_surface_with_runtime_at_scale(theme, surface_index, data, runtime, 1.0)
-}
-
 /// Rasterize a theme surface at a physical-pixel scale while keeping theme
 /// expressions and object geometry in their 96-DPI logical coordinate space.
+/// The same output is used by the studio preview and by the desktop widget.
 pub fn render_theme_surface_with_runtime_at_scale(
     theme: &ThemeDocument,
     surface_index: usize,
@@ -87,10 +72,7 @@ pub fn render_theme_surface_with_runtime_at_scale(
     let height = scaled_render_dimension(logical_height, scale);
     let resolved_canvas = Canvas {
         width: logical_width,
-        width_expression: Some(surface.width.clone()),
         height: logical_height,
-        height_expression: Some(surface.height.clone()),
-        background: surface.background.canvas_paint(),
     };
     let context = DataContext::from_usage_with_runtime(data, &resolved_canvas, runtime);
     let mut pixels = vec![0u32; width as usize * height as usize];
@@ -131,31 +113,19 @@ pub fn render_theme_surface_with_runtime_at_scale(
             &mut warnings,
         );
     }
-    let visibility = theme
-        .surfaces
-        .get(surface_index)
-        .map(|surface| match evaluate(&surface.visibility.0, &context) {
-            Ok(value) if value.is_finite() => value.clamp(0.0, 100.0) / 100.0,
-            Ok(_) => {
-                warnings.push(format!(
-                    "{}.visibility did not produce a finite value",
-                    surface.name
-                ));
-                1.0
-            }
-            Err(error) => {
-                warnings.push(format!("{}.visibility: {error}", surface.name));
-                1.0
-            }
-        })
-        .unwrap_or(1.0);
+    let visibility = finite_or_warn(
+        &surface.visibility,
+        &context,
+        &surface.name,
+        "visibility",
+        &mut warnings,
+    )
+    .map_or(1.0, |value| value.clamp(0.0, 100.0) / 100.0);
     if visibility < 1.0 {
         for pixel in &mut pixels {
-            let scale = |component: u32| ((component as f64 * visibility).round() as u32).min(255);
-            *pixel = (scale(*pixel >> 24) << 24)
-                | (scale((*pixel >> 16) & 0xff) << 16)
-                | (scale((*pixel >> 8) & 0xff) << 8)
-                | scale(*pixel & 0xff);
+            *pixel = scale_channels(*pixel, |component| {
+                ((component as f64 * visibility).round() as u32).min(255)
+            });
         }
     }
     RenderedTheme {
@@ -164,6 +134,38 @@ pub fn render_theme_surface_with_runtime_at_scale(
         pixels,
         warnings,
     }
+}
+
+/// Evaluate `object.property`, reporting an error or a non-finite result as a
+/// warning; either way the caller falls back to its default.
+pub(super) fn finite_or_warn(
+    expression: &Expression,
+    context: &DataContext,
+    object: &str,
+    property: &str,
+    warnings: &mut Vec<String>,
+) -> Option<f64> {
+    match evaluate(&expression.0, context) {
+        Ok(value) if value.is_finite() => Some(value),
+        Ok(_) => {
+            warnings.push(format!(
+                "{object}.{property} did not produce a finite value"
+            ));
+            None
+        }
+        Err(error) => {
+            warnings.push(format!("{object}.{property}: {error}"));
+            None
+        }
+    }
+}
+
+/// Apply `scale` to every channel of a premultiplied 0xAARRGGBB pixel.
+pub(super) fn scale_channels(pixel: u32, scale: impl Fn(u32) -> u32) -> u32 {
+    (scale(pixel >> 24) << 24)
+        | (scale((pixel >> 16) & 0xff) << 16)
+        | (scale((pixel >> 8) & 0xff) << 8)
+        | scale(pixel & 0xff)
 }
 
 pub(super) fn normalized_render_scale(scale: f64) -> f64 {
@@ -296,13 +298,7 @@ pub fn hit_test_mouse_event(
         return None;
     }
     let (width, height) = resolve_object_size(surface, data, runtime, &mut Vec::new());
-    let canvas = Canvas {
-        width,
-        width_expression: Some(surface.width.clone()),
-        height,
-        height_expression: Some(surface.height.clone()),
-        background: surface.background.canvas_paint(),
-    };
+    let canvas = Canvas { width, height };
     let (resolved, _) = resolve_objects_for(surface, &canvas, &surface.children, data, runtime);
     for object in resolved.into_iter().rev() {
         if object.opacity <= 0.0
@@ -377,13 +373,7 @@ pub fn resolve_object_bounds_with_runtime(
     }
     let mut warnings = Vec::new();
     let (width, height) = resolve_object_size(surface, data, runtime, &mut warnings);
-    let canvas = Canvas {
-        width,
-        width_expression: Some(surface.width.clone()),
-        height,
-        height_expression: Some(surface.height.clone()),
-        background: surface.background.canvas_paint(),
-    };
+    let canvas = Canvas { width, height };
     let context = DataContext::from_usage_with_runtime(data, &canvas, runtime);
     let mut cache = vec![None; surface.children.len()];
     let geometry = resolve_geometry(
@@ -420,37 +410,12 @@ pub(super) fn resolve_object_size(
 ) -> (u32, u32) {
     let fallback = Canvas::default();
     let mut context = DataContext::from_usage_with_runtime(data, &fallback, runtime);
-    let gap = match evaluate(&object.gap.0, &context) {
-        Ok(value) if value.is_finite() => value.max(0.0),
-        Ok(_) => {
-            warnings.push(format!(
-                "{}.gap did not produce a finite value",
-                object.name
-            ));
-            0.0
-        }
-        Err(error) => {
-            warnings.push(format!("{}.gap: {error}", object.name));
-            0.0
-        }
-    };
+    let gap = finite_or_warn(&object.gap, &context, &object.name, "gap", warnings)
+        .map_or(0.0, |value| value.max(0.0));
     context.insert("this.gap", gap);
-    let mut resolve = |label: &str, expression: &Expression, fallback: u32| match evaluate(
-        &expression.0,
-        &context,
-    ) {
-        Ok(value) if value.is_finite() => value.round().clamp(1.0, 8192.0) as u32,
-        Ok(_) => {
-            warnings.push(format!(
-                "{}.{} did not produce a finite value",
-                object.name, label
-            ));
-            fallback
-        }
-        Err(error) => {
-            warnings.push(format!("{}.{}: {error}", object.name, label));
-            fallback
-        }
+    let mut resolve = |label: &str, expression: &Expression, fallback: u32| {
+        finite_or_warn(expression, &context, &object.name, label, warnings)
+            .map_or(fallback, |value| value.round().clamp(1.0, 8192.0) as u32)
     };
     (
         resolve("width", &object.width, fallback.width),
@@ -477,13 +442,7 @@ pub fn resolve_surface_placement(
         };
     };
     let (width, height) = resolve_surface_size(theme, surface_index, data, runtime);
-    let canvas = Canvas {
-        width,
-        width_expression: Some(surface.width.clone()),
-        height,
-        height_expression: Some(surface.height.clone()),
-        background: surface.background.canvas_paint(),
-    };
+    let canvas = Canvas { width, height };
     let context = DataContext::from_usage_with_runtime(data, &canvas, runtime);
     let number = |expression: &Option<Expression>, fallback: i32| {
         expression
@@ -515,13 +474,7 @@ pub fn surface_should_render(
         return surface_index == 0;
     };
     let (width, height) = resolve_surface_size(theme, surface_index, data, runtime);
-    let canvas = Canvas {
-        width,
-        width_expression: Some(surface.width.clone()),
-        height,
-        height_expression: Some(surface.height.clone()),
-        background: surface.background.canvas_paint(),
-    };
+    let canvas = Canvas { width, height };
     let context = DataContext::from_usage_with_runtime(data, &canvas, runtime);
     evaluate(&surface.render.0, &context).is_ok_and(|value| value.is_finite() && value != 0.0)
 }
@@ -564,43 +517,31 @@ pub(super) fn resolve_geometry(
     }
     stack.push(index);
     let object = &layers[index];
-    match evaluate(&object.render.0, context) {
-        Ok(0.0) => {
-            stack.pop();
-            return None;
-        }
-        Ok(value) if value.is_finite() => {}
-        Ok(_) => {
-            warnings.push(format!(
-                "{}.render did not produce a finite value",
-                object.name
-            ));
-            stack.pop();
-            return None;
-        }
-        Err(error) => {
-            warnings.push(format!("{}.render: {error}", object.name));
-            stack.pop();
-            return None;
-        }
+    let render = finite_or_warn(&object.render, context, &object.name, "render", warnings);
+    if render.is_none_or(|render| render == 0.0) {
+        stack.pop();
+        return None;
     }
     let mut parent_index = None;
-    let parent = if let Some(parent_id) = &object.parent {
-        if parent_id == &root.id {
-            ObjectGeometry {
-                x: 0.0,
-                y: 0.0,
-                width: canvas.width as f64,
-                height: canvas.height as f64,
-                parent_width: canvas.width as f64,
-                parent_height: canvas.height as f64,
-                gap: evaluate(&root.gap.0, context).unwrap_or(0.0).max(0.0),
-                opacity: 1.0,
-                rotation: evaluate(&root.rotation.0, context).unwrap_or(0.0),
-                clip: Vec::new(),
-                child_clip: Vec::new(),
-            }
-        } else {
+    let parent = match object
+        .parent
+        .as_ref()
+        .filter(|parent_id| **parent_id != root.id)
+    {
+        None => ObjectGeometry {
+            x: 0.0,
+            y: 0.0,
+            width: canvas.width as f64,
+            height: canvas.height as f64,
+            parent_width: canvas.width as f64,
+            parent_height: canvas.height as f64,
+            gap: evaluate(&root.gap.0, context).unwrap_or(0.0).max(0.0),
+            opacity: 1.0,
+            rotation: evaluate(&root.rotation.0, context).unwrap_or(0.0),
+            clip: Vec::new(),
+            child_clip: Vec::new(),
+        },
+        Some(parent_id) => {
             let Some(found_parent_index) = layers
                 .iter()
                 .position(|candidate| &candidate.id == parent_id)
@@ -624,57 +565,18 @@ pub(super) fn resolve_geometry(
                 warnings,
             )?
         }
-    } else {
-        ObjectGeometry {
-            x: 0.0,
-            y: 0.0,
-            width: canvas.width as f64,
-            height: canvas.height as f64,
-            parent_width: canvas.width as f64,
-            parent_height: canvas.height as f64,
-            gap: evaluate(&root.gap.0, context).unwrap_or(0.0).max(0.0),
-            opacity: 1.0,
-            rotation: evaluate(&root.rotation.0, context).unwrap_or(0.0),
-            clip: Vec::new(),
-            child_clip: Vec::new(),
-        }
     };
     stack.pop();
     let mut object_context = context.clone();
     object_context.insert("parent.width", parent.width);
     object_context.insert("parent.height", parent.height);
     object_context.insert("parent.gap", parent.gap);
-    let gap = match evaluate(&object.gap.0, &object_context) {
-        Ok(value) if value.is_finite() => value.max(0.0),
-        Ok(_) => {
-            warnings.push(format!(
-                "{}.gap did not produce a finite value",
-                object.name
-            ));
-            0.0
-        }
-        Err(error) => {
-            warnings.push(format!("{}.gap: {error}", object.name));
-            0.0
-        }
-    };
+    let gap = finite_or_warn(&object.gap, &object_context, &object.name, "gap", warnings)
+        .map_or(0.0, |value| value.max(0.0));
     object_context.insert("this.gap", gap);
-    let mut value = |name: &str, expression: &Expression, fallback: f64| match evaluate(
-        &expression.0,
-        &object_context,
-    ) {
-        Ok(value) if value.is_finite() => value,
-        Ok(_) => {
-            warnings.push(format!(
-                "{}.{} did not produce a finite value",
-                object.name, name
-            ));
-            fallback
-        }
-        Err(error) => {
-            warnings.push(format!("{}.{}: {error}", object.name, name));
-            fallback
-        }
+    let mut value = |name: &str, expression: &Expression, fallback: f64| {
+        finite_or_warn(expression, &object_context, &object.name, name, warnings)
+            .unwrap_or(fallback)
     };
     let offset_x = value("x", &object.x, 0.0);
     let offset_y = value("y", &object.y, 0.0);
@@ -810,23 +712,14 @@ pub(super) fn render_object_background(
             fill_rounded(pixels, width, height, colour.resolve(context), radius);
         }
         LayerBackground::Gradient { start, end, angle } => {
-            let angle = match evaluate(&angle.0, context) {
-                Ok(value) if value.is_finite() => value,
-                Ok(_) => {
-                    warnings.push(format!(
-                        "{}.background.gradient.angle did not produce a finite value",
-                        object.source.name
-                    ));
-                    0.0
-                }
-                Err(error) => {
-                    warnings.push(format!(
-                        "{}.background.gradient.angle: {error}",
-                        object.source.name
-                    ));
-                    0.0
-                }
-            };
+            let angle = finite_or_warn(
+                angle,
+                context,
+                &object.source.name,
+                "background.gradient.angle",
+                warnings,
+            )
+            .unwrap_or(0.0);
             fill_linear_gradient(
                 pixels,
                 width,
@@ -900,20 +793,14 @@ pub(super) fn render_object_content(
             let radius = evaluate(&corner_radius.0, context).unwrap_or(0.0) * scale;
             let gap = evaluate(&segment_gap.0, context).unwrap_or(2.0) * scale;
             let segments = match segments_expression {
-                Some(expression) => match evaluate(&expression.0, context) {
-                    Ok(value) if value.is_finite() => value.round().clamp(0.0, 1000.0) as u16,
-                    Ok(_) => {
-                        warnings.push(format!(
-                            "{}.segments did not produce a finite value",
-                            object.source.name
-                        ));
-                        *segments
-                    }
-                    Err(error) => {
-                        warnings.push(format!("{}.segments: {error}", object.source.name));
-                        *segments
-                    }
-                },
+                Some(expression) => finite_or_warn(
+                    expression,
+                    context,
+                    &object.source.name,
+                    "segments",
+                    warnings,
+                )
+                .map_or(*segments, |value| value.round().clamp(0.0, 1000.0) as u16),
                 None => *segments,
             };
             if segments > 1 {
@@ -1131,7 +1018,7 @@ pub(super) fn render_text_mask(
         }
         let old_bitmap = SelectObject(memory_dc, bitmap.into());
         std::ptr::write_bytes(bits, 0, width as usize * height as usize * 4);
-        let font_name: Vec<u16> = font_family.encode_utf16().chain(Some(0)).collect();
+        let font_name = crate::native_interop::wide_str(font_family);
         let font = CreateFontW(
             -(font_size.round() as i32),
             0,
@@ -1379,11 +1266,7 @@ pub(super) fn clip_to_rounded_rectangle(pixels: &mut [u32], width: u32, height: 
     );
     for (pixel, mask) in pixels.iter_mut().zip(mask) {
         let coverage = mask >> 24;
-        let scale = |component: u32| (component * coverage + 127) / 255;
-        *pixel = (scale(*pixel >> 24) << 24)
-            | (scale((*pixel >> 16) & 0xff) << 16)
-            | (scale((*pixel >> 8) & 0xff) << 8)
-            | scale(*pixel & 0xff);
+        *pixel = scale_channels(*pixel, |component| (component * coverage + 127) / 255);
     }
 }
 
@@ -1423,12 +1306,9 @@ pub(super) fn stroke_rounded_rectangle(
                         + (ix as i32 + offset) as u32)
                         as usize;
                     let keep = 255 - inner_coverage;
-                    let pixel = outer[outer_index];
-                    let scale = |component: u32| (component * keep + 127) / 255;
-                    outer[outer_index] = (scale(pixel >> 24) << 24)
-                        | (scale((pixel >> 16) & 0xff) << 16)
-                        | (scale((pixel >> 8) & 0xff) << 8)
-                        | scale(pixel & 0xff);
+                    outer[outer_index] = scale_channels(outer[outer_index], |component| {
+                        (component * keep + 127) / 255
+                    });
                 }
             }
         }

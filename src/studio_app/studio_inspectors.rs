@@ -1040,7 +1040,6 @@ pub(super) fn reference_target_name(language: LanguageId, target: ReferenceTarge
 }
 pub(super) fn surface_nest_name(language: LanguageId, nest: SurfaceNest) -> &'static str {
     match nest {
-        SurfaceNest::Auto => language.text("Automatic"),
         SurfaceNest::Taskbar => language.text("Taskbar"),
         SurfaceNest::TrayIcon => language.text("Tray Icon"),
         SurfaceNest::Desktop => language.text("Desktop"),

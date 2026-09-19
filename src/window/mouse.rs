@@ -283,13 +283,7 @@ pub(super) fn clear_tray_mouse_hover_if_left(hwnd: HWND) {
                 .active_theme
                 .surfaces
                 .get(target.0)
-                .is_some_and(|surface| {
-                    surface
-                        .placement
-                        .nest
-                        .resolve(surface.placement.reference.region)
-                        == SurfaceNest::TrayIcon
-                });
+                .is_some_and(|surface| surface.placement.nest == SurfaceNest::TrayIcon);
             (target, is_tray)
         })
     };

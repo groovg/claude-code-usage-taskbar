@@ -249,7 +249,6 @@ pub(super) fn execute_context_menu_action(
         ContextMenuAction::CheckForUpdates => Some(IDM_VERSION_ACTION),
         ContextMenuAction::Exit => Some(2),
         ContextMenuAction::ToggleWidget
-        | ContextMenuAction::LegacyResetPosition
         | ContextMenuAction::ToggleLayerRender { .. }
         | ContextMenuAction::LayerActions { .. }
         | ContextMenuAction::OpenUrl { .. } => None,

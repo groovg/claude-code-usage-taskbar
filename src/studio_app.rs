@@ -501,22 +501,17 @@ impl PreviewRenderer {
             .spawn(move || {
                 let mut next = next_preview_request(&worker_requests);
                 while let Some(request) = next {
-                    let mut rendered = if (request.scale - 1.0).abs() < f64::EPSILON {
-                        theme_engine::render_theme_surface_with_runtime(
-                            &request.theme,
-                            request.key.surface_index,
-                            request.usage.as_ref(),
-                            request.runtime,
-                        )
-                    } else {
-                        theme_engine::render_theme_surface_with_runtime_at_scale(
-                            &request.theme,
-                            request.key.surface_index,
-                            request.usage.as_ref(),
-                            request.runtime,
-                            request.scale,
-                        )
-                    };
+                    let mut rendered = theme_engine::render_theme_surface_with_runtime_at_scale(
+                        &request.theme,
+                        request.key.surface_index,
+                        request.usage.as_ref(),
+                        request.runtime,
+                        if (request.scale - 1.0).abs() < f64::EPSILON {
+                            1.0
+                        } else {
+                            request.scale
+                        },
+                    );
                     let _render_warnings = &rendered.warnings;
                     if !theme_engine::surface_should_render(
                         &request.theme,

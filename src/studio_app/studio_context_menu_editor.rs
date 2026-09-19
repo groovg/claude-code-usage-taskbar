@@ -227,7 +227,6 @@ pub(super) fn context_menu_action_script(action: &ContextMenuAction) -> String {
         }
         ContextMenuAction::ToggleStartup => "toggle_startup()".into(),
         ContextMenuAction::ToggleWidget => "toggle_widget()".into(),
-        ContextMenuAction::LegacyResetPosition => String::new(),
         ContextMenuAction::SetLanguage { language } => {
             format!("set_language({})", string_arg(language))
         }
