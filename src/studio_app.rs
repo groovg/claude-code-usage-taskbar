@@ -132,7 +132,7 @@ pub fn handle_cli_mode(args: &[String]) -> bool {
         .expect("src/icons/16x16.png must be a valid PNG app icon");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Usage Monitor")
+            .with_title("Claude Code Usage Taskbar")
             .with_inner_size([dashboard_width, dashboard_height])
             .with_icon(dashboard_icon),
         renderer: eframe::Renderer::Glow,

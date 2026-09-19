@@ -215,9 +215,14 @@ fn fetch_latest_release() -> Result<Option<ReleaseDescriptor>, String> {
 }
 
 fn download_release_asset(url: &str, partial_path: &Path, final_path: &Path) -> Result<(), String> {
+    // The shared agent's 30 s budget suits API calls, not a multi-megabyte
+    // download on a slow link: give the download ten minutes.
     let response = HTTP_AGENT
         .get(url)
         .header("User-Agent", user_agent())
+        .config()
+        .timeout_global(Some(std::time::Duration::from_secs(600)))
+        .build()
         .call()
         .map_err(|e| format!("Unable to download the latest release: {e}"))?;
 

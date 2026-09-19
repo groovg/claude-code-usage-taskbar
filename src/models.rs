@@ -282,9 +282,14 @@ impl AppUsageData {
             );
         // Only the figures warrant a redraw.
         let figures = |context: &Option<ContextSection>| {
-            context
-                .as_ref()
-                .map(|context| (context.tokens, context.window, context.model.clone()))
+            context.as_ref().map(|context| {
+                (
+                    context.tokens,
+                    context.window,
+                    context.model.clone(),
+                    context.project.clone(),
+                )
+            })
         };
         for usage in slots {
             if figures(&usage.context) != figures(&context) {
@@ -316,7 +321,8 @@ impl AppUsageData {
                 Some(path) => {
                     expected.as_ref().is_none_or(|expected| {
                         crate::accounts::source_key(expected) != crate::accounts::source_key(path)
-                    }) || crate::accounts::file_signature(path) != account.source_signature
+                    }) || crate::poller::source_signature(account.provider, path)
+                        != account.source_signature
                 }
                 None => crate::accounts::environment_directory(account.provider).is_some(),
             };

@@ -15,7 +15,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     MB_OK, SW_RESTORE, WM_CLOSE,
 };
 
-const DASHBOARD_TITLE: &str = "Usage Monitor";
+const DASHBOARD_TITLE: &str = "Claude Code Usage Taskbar";
 const DASHBOARD_MUTEX: &str = "Local\\ClaudeCodeUsageTaskbarDashboard";
 const DASHBOARD_REQUEST_EVENT: &str = "Local\\ClaudeCodeUsageTaskbarOpenDashboard";
 

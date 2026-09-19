@@ -52,6 +52,7 @@ pub struct PollFailure {
 
 /// Claude and Codex fan out per account; every other provider is polled once.
 pub(crate) use accounts::poll_accounts as poll;
+pub(crate) use accounts::source_signature;
 
 /// Keep the previous reading for any enabled provider that failed this cycle.
 ///

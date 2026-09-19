@@ -16,26 +16,7 @@ impl Target {
             return String::new();
         }
         match &self.path {
-            Ok(Some(path)) => {
-                let mut signature = file_signature(path);
-                // A tokenless default CLI file sends the poll to the desktop
-                // app's cache; a re-login there must count as a change too, or
-                // an auth pause never lifts.
-                let is_default = self.provider == ProviderId::Claude
-                    && crate::accounts::default_credential_path(ProviderId::Claude).is_some_and(
-                        |default| {
-                            crate::accounts::source_key(&default)
-                                == crate::accounts::source_key(path)
-                        },
-                    );
-                if is_default && !claude::windows_file_has_token(path) {
-                    if let Some(config) = claude_desktop::config_path() {
-                        signature.push('|');
-                        signature.push_str(&claude_desktop::watch_signature(&config));
-                    }
-                }
-                signature
-            }
+            Ok(Some(path)) => source_signature(self.provider, path),
             Ok(None) => fingerprint(&format!(
                 "{:?}",
                 credential_watch_snapshot(CredentialWatchMode::ActiveSource(self.provider))
@@ -43,6 +24,24 @@ impl Target {
             Err(error) => fingerprint(error),
         }
     }
+}
+
+/// Signature of an account's credential source, as stored with its reading.
+/// A tokenless default CLI file sends the poll to the desktop app's cache, so
+/// a re-login there must count as a change too, or an auth pause never lifts.
+pub(crate) fn source_signature(provider: ProviderId, path: &std::path::Path) -> String {
+    let mut signature = file_signature(path);
+    let is_default = provider == ProviderId::Claude
+        && crate::accounts::default_credential_path(ProviderId::Claude).is_some_and(|default| {
+            crate::accounts::source_key(&default) == crate::accounts::source_key(path)
+        });
+    if is_default && !claude::windows_file_has_token(path) {
+        if let Some(config) = claude_desktop::config_path() {
+            signature.push('|');
+            signature.push_str(&claude_desktop::watch_signature(&config));
+        }
+    }
+    signature
 }
 
 pub(crate) fn poll_accounts(

@@ -1,9 +1,7 @@
 use std::sync::Mutex;
 
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
 use windows::Win32::UI::Shell::{
     ExtractIconExW, Shell_NotifyIconGetRect, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE,
     NIF_TIP, NIIF_WARNING, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, NOTIFYICONIDENTIFIER,
@@ -30,22 +28,15 @@ pub struct ThemedTrayIcon {
 /// Native windows and the system tray share this source so Windows can choose
 /// the exact large or small icon instead of scaling a single bitmap.
 pub fn load_app_icons() -> (HICON, HICON) {
+    // current_exe has no MAX_PATH limit, unlike a fixed GetModuleFileNameW buffer.
+    let Ok(exe) = std::env::current_exe() else {
+        return (HICON::default(), HICON::default());
+    };
+    let exe = windows::core::HSTRING::from(exe.as_os_str());
     unsafe {
-        let mut exe_buf = [0u16; 260];
-        let len = GetModuleFileNameW(None, &mut exe_buf) as usize;
-        if len == 0 {
-            return (HICON::default(), HICON::default());
-        }
-
         let mut small_icon = HICON::default();
         let mut large_icon = HICON::default();
-        let extracted = ExtractIconExW(
-            PCWSTR::from_raw(exe_buf.as_ptr()),
-            0,
-            Some(&mut large_icon),
-            Some(&mut small_icon),
-            1,
-        );
+        let extracted = ExtractIconExW(&exe, 0, Some(&mut large_icon), Some(&mut small_icon), 1);
 
         if extracted == 0 {
             (HICON::default(), HICON::default())

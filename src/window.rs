@@ -796,30 +796,37 @@ fn update_language_change() -> bool {
 
 fn begin_update_check(hwnd: HWND, interactive: bool) {
     let send_hwnd = SendHwnd::from_hwnd(hwnd);
-    let (strings, install_channel) = {
+    let (strings, install_channel, busy) = {
         let mut state = lock_state();
         let Some(app_state) = state.as_mut() else {
             return;
         };
-
-        if matches!(
+        let busy = matches!(
             app_state.update_status,
             UpdateStatus::Checking | UpdateStatus::Applying
-        ) {
-            if interactive {
-                message_box(
-                    hwnd,
-                    app_state.language.strings().updates,
-                    app_state.language.strings().update_in_progress,
-                    MB_OK | MB_ICONINFORMATION,
-                );
-            }
-            return;
+        );
+        if !busy {
+            app_state.update_status = UpdateStatus::Checking;
         }
-
-        app_state.update_status = UpdateStatus::Checking;
-        (app_state.language.strings(), app_state.install_channel)
+        (
+            app_state.language.strings(),
+            app_state.install_channel,
+            busy,
+        )
     };
+    // The message box runs a modal loop that dispatches to wnd_proc, which
+    // takes the state lock: never show it while holding the lock.
+    if busy {
+        if interactive {
+            message_box(
+                hwnd,
+                strings.updates,
+                strings.update_in_progress,
+                MB_OK | MB_ICONINFORMATION,
+            );
+        }
+        return;
+    }
 
     std::thread::spawn(move || {
         let hwnd = send_hwnd.to_hwnd();
@@ -878,28 +885,30 @@ fn begin_update_check(hwnd: HWND, interactive: bool) {
 
 fn begin_update_apply(hwnd: HWND, release: ReleaseDescriptor) {
     let send_hwnd = SendHwnd::from_hwnd(hwnd);
-    let strings = {
+    let (strings, busy) = {
         let mut state = lock_state();
         let Some(app_state) = state.as_mut() else {
             return;
         };
-
-        if matches!(
+        let busy = matches!(
             app_state.update_status,
             UpdateStatus::Checking | UpdateStatus::Applying
-        ) {
-            message_box(
-                hwnd,
-                app_state.language.strings().updates,
-                app_state.language.strings().update_in_progress,
-                MB_OK | MB_ICONINFORMATION,
-            );
-            return;
+        );
+        if !busy {
+            app_state.update_status = UpdateStatus::Applying;
         }
-
-        app_state.update_status = UpdateStatus::Applying;
-        app_state.language.strings()
+        (app_state.language.strings(), busy)
     };
+    // Outside the lock: the message box's modal loop re-enters wnd_proc.
+    if busy {
+        message_box(
+            hwnd,
+            strings.updates,
+            strings.update_in_progress,
+            MB_OK | MB_ICONINFORMATION,
+        );
+        return;
+    }
 
     std::thread::spawn(move || {
         let hwnd = send_hwnd.to_hwnd();

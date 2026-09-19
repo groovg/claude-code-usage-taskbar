@@ -89,6 +89,12 @@ pub fn apply_widget_position(
             placement.offset_x = 0;
         }
     }
+    // The document-level placement mirrors the first surface (see
+    // prepare_runtime); the main window is positioned from it before the
+    // first render, so keep it in step or the widget jumps.
+    if let Some(surface) = theme.surfaces.first() {
+        theme.placement = surface.placement.clone();
+    }
     theme
 }
 

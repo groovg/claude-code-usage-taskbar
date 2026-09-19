@@ -2462,6 +2462,8 @@ fn widget_position_moves_only_built_in_taskbar_surfaces() {
         Some(HorizontalAnchor::Right)
     );
     assert_eq!(right.surfaces[0].placement.offset_x, 0);
+    // The main window is positioned from the document-level copy.
+    assert_eq!(right.placement, right.surfaces[0].placement);
     // Tray icons are Explorer's to place.
     assert!(right.surfaces[1..]
         .iter()
