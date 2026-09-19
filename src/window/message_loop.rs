@@ -8,25 +8,12 @@ pub(super) unsafe extern "system" fn wnd_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
-        WM_NCHITTEST => LRESULT(HTCLIENT as isize),
-        WM_PAINT => {
-            let mut ps = PAINTSTRUCT::default();
-            let _ = BeginPaint(hwnd, &mut ps);
-            let _ = EndPaint(hwnd, &ps);
-            LRESULT(0)
-        }
-        WM_ERASEBKGND => LRESULT(1),
-        WM_DISPLAYCHANGE | WM_DPICHANGED_MSG | WM_SETTINGCHANGE => {
+        WM_DISPLAYCHANGE | WM_DPICHANGED | WM_SETTINGCHANGE => {
             refresh_theme_host_geometry();
-            if msg == WM_DPICHANGED_MSG {
-                let new_dpi = (wparam.0 & 0xFFFF) as u32;
-                CURRENT_DPI.store(new_dpi, Ordering::Relaxed);
-            }
             if msg == WM_SETTINGCHANGE {
                 check_theme_change();
                 check_language_change();
             }
-            refresh_dpi();
             position_at_taskbar();
             render_layered();
             sync_tray_icon(hwnd);
@@ -131,9 +118,6 @@ pub(super) unsafe extern "system" fn wnd_proc(
             render_layered();
             schedule_countdown_timer();
             schedule_clock_timer();
-            suppress_tray_reposition_for(Duration::from_millis(
-                TRAY_ICON_UPDATE_REPOSITION_SUPPRESS_MS,
-            ));
             sync_tray_icon(hwnd);
             LRESULT(0)
         }
@@ -152,193 +136,8 @@ pub(super) unsafe extern "system" fn wnd_proc(
             crate::dashboard::show(hwnd);
             LRESULT(0)
         }
-        WM_APP_QUIT => {
-            let _ = DestroyWindow(hwnd);
-            LRESULT(0)
-        }
         WM_APP_UPDATE_CHECK_COMPLETE => {
             schedule_auto_update_check(hwnd);
-            LRESULT(0)
-        }
-        WM_SETCURSOR if set_surface_cursor(hwnd) => LRESULT(1),
-        WM_SETCURSOR => DefWindowProcW(hwnd, msg, wparam, lparam),
-        WM_MOUSEMOVE => {
-            let is_dragging = {
-                let state = lock_state();
-                state.as_ref().map(|s| s.dragging).unwrap_or(false)
-            };
-            if is_dragging {
-                let mut pt = POINT::default();
-                let _ = GetCursorPos(&mut pt);
-                let taskbar = {
-                    let state = lock_state();
-                    state.as_ref().and_then(|s| s.taskbar_hwnd)
-                };
-                // Query Explorer before taking STATE: the query can re-enter wnd_proc.
-                let taskbar_rect =
-                    taskbar.and_then(|taskbar| native_interop::get_taskbar_rect(taskbar.to_hwnd()));
-                let move_target = {
-                    let mut state = lock_state();
-                    let s = match state.as_mut() {
-                        Some(s) => s,
-                        None => return LRESULT(0),
-                    };
-                    if !s.dragging || s.taskbar_hwnd != taskbar {
-                        return LRESULT(0);
-                    }
-
-                    // Moving mouse left = positive delta = larger offset (further left)
-                    let delta = s.drag_start_mouse_x - pt.x;
-                    let mut new_offset = s.drag_start_offset + delta;
-
-                    // Clamp: offset >= 0 (can't go right of default)
-                    if new_offset < 0 {
-                        new_offset = 0;
-                    }
-
-                    let taskbar_hwnd = s.taskbar_hwnd.map(SendHwnd::to_hwnd);
-                    let embedded = s.embedded;
-                    let hwnd_val = s.hwnd.to_hwnd();
-
-                    // Clamp: don't go past left edge of taskbar
-                    if let Some(taskbar_hwnd) = taskbar_hwnd {
-                        if let Some(taskbar_rect) = taskbar_rect {
-                            let mut tray_left = taskbar_rect.right;
-                            if let Some(tray_hwnd) =
-                                native_interop::find_child_window(taskbar_hwnd, "TrayNotifyWnd")
-                            {
-                                if let Some(tray_rect) =
-                                    native_interop::get_window_rect_safe(tray_hwnd)
-                                {
-                                    tray_left = tray_rect.left;
-                                }
-                            }
-                            let widget_width = total_widget_width_for_state(s);
-                            let max_offset = (tray_left - taskbar_rect.left - widget_width).max(0);
-                            if new_offset > max_offset {
-                                new_offset = max_offset;
-                            }
-
-                            s.tray_offset = new_offset;
-
-                            let taskbar_height = taskbar_rect.bottom - taskbar_rect.top;
-                            let anchor_top = taskbar_rect.top;
-                            let anchor_height = taskbar_height;
-                            let widget_height = total_widget_height_for_state(s);
-                            let y = compute_anchor_y(anchor_top, anchor_height, widget_height);
-                            let x = if embedded {
-                                tray_left - taskbar_rect.left - widget_width - new_offset
-                            } else {
-                                tray_left - widget_width - new_offset
-                            };
-                            Some((
-                                hwnd_val,
-                                embedded,
-                                x,
-                                y,
-                                taskbar_rect.top,
-                                widget_width,
-                                widget_height,
-                            ))
-                        } else {
-                            s.tray_offset = new_offset;
-                            None
-                        }
-                    } else {
-                        s.tray_offset = new_offset;
-                        None
-                    }
-                };
-
-                if let Some((hwnd_val, embedded, x, y, taskbar_top, widget_width, widget_height)) =
-                    move_target
-                {
-                    if embedded {
-                        native_interop::move_window(
-                            hwnd_val,
-                            x,
-                            y - taskbar_top,
-                            widget_width,
-                            widget_height,
-                        );
-                    } else {
-                        native_interop::move_window(hwnd_val, x, y, widget_width, widget_height);
-                    }
-                }
-            } else {
-                update_mouse_hover(hwnd, lparam);
-            }
-            LRESULT(0)
-        }
-        WM_MOUSELEAVE => {
-            clear_mouse_hover(hwnd);
-            LRESULT(0)
-        }
-        WM_LBUTTONDBLCLK => {
-            if let Some((surface, object)) = mouse_target_at(hwnd, lparam) {
-                dispatch_double_click(hwnd, surface, object);
-            }
-            LRESULT(0)
-        }
-        WM_RBUTTONUP => {
-            if let Some((surface, object)) = mouse_target_at(hwnd, lparam) {
-                let _ = dispatch_mouse_event(surface, &object, MouseEventKind::RightClick);
-            }
-            LRESULT(0)
-        }
-        WM_LBUTTONUP => {
-            let suppressed = {
-                let mut state = lock_state();
-                state.as_mut().is_some_and(|state| {
-                    let suppressed = state.suppress_next_left_up;
-                    state.suppress_next_left_up = false;
-                    suppressed
-                })
-            };
-            if suppressed {
-                return LRESULT(0);
-            }
-            let mut pt = POINT::default();
-            let _ = GetCursorPos(&mut pt);
-            let drag_result = {
-                let mut state = lock_state();
-                if let Some(s) = state.as_mut() {
-                    if s.dragging {
-                        s.dragging = false;
-                        Some((s.taskbar_index, s.drag_start_client_x))
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            };
-            if let Some((current_taskbar_index, drag_start_client_x)) = drag_result {
-                let _ = ReleaseCapture();
-                if let Some((target_index, target_taskbar)) = taskbar_at_point(pt) {
-                    if target_index != current_taskbar_index {
-                        let new_offset = offset_for_drop_point(
-                            target_taskbar.hwnd,
-                            target_taskbar.rect,
-                            pt,
-                            drag_start_client_x,
-                        );
-                        {
-                            let mut state = lock_state();
-                            if let Some(s) = state.as_mut() {
-                                s.tray_offset = new_offset;
-                            }
-                        }
-                        if attach_to_taskbar(hwnd, target_index) {
-                            position_at_taskbar();
-                            render_layered();
-                        }
-                    }
-                }
-                save_state_settings();
-            } else if let Some((surface, object)) = mouse_target_at(hwnd, lparam) {
-                schedule_or_dispatch_click(hwnd, surface, object);
-            }
             LRESULT(0)
         }
         WM_COMMAND => {
@@ -390,13 +189,6 @@ pub(super) unsafe extern "system" fn wnd_proc(
                     }
                 }
                 2 => {
-                    let hook = {
-                        let state = lock_state();
-                        state.as_ref().and_then(|s| s.win_event_hook)
-                    };
-                    if let Some(h) = hook {
-                        native_interop::unhook_win_event(h.to_hook());
-                    }
                     crate::dashboard::close_existing();
                     let _ = DestroyWindow(hwnd);
                 }
@@ -475,8 +267,8 @@ pub(super) unsafe extern "system" fn wnd_proc(
                 let root_id = lock_state().as_ref().and_then(|state| {
                     state
                         .active_theme
-                        .as_ref()
-                        .and_then(|theme| theme.surfaces.get(surface_index))
+                        .surfaces
+                        .get(surface_index)
                         .map(|surface| surface.id.clone())
                 });
                 if let Some(root_id) = root_id {
@@ -486,20 +278,12 @@ pub(super) unsafe extern "system" fn wnd_proc(
                             return LRESULT(0);
                         }
                         WM_LBUTTONUP => {
-                            let suppressed = {
-                                let mut state = lock_state();
-                                state.as_mut().is_some_and(|state| {
-                                    let suppressed = state.suppress_next_left_up;
-                                    state.suppress_next_left_up = false;
-                                    suppressed
-                                })
-                            };
-                            if suppressed {
+                            if take_suppressed_left_up() {
                                 return LRESULT(0);
                             }
                             if mouse_handler_exists(surface_index, &root_id, MouseEventKind::Click)
                             {
-                                schedule_or_dispatch_click(hwnd, surface_index, root_id);
+                                schedule_or_dispatch_click(surface_index, root_id);
                             } else if !mouse_handler_exists(
                                 surface_index,
                                 &root_id,
@@ -515,7 +299,7 @@ pub(super) unsafe extern "system" fn wnd_proc(
                                 &root_id,
                                 MouseEventKind::DoubleClick,
                             ) {
-                                dispatch_double_click(hwnd, surface_index, root_id);
+                                dispatch_double_click(surface_index, root_id);
                             } else {
                                 crate::dashboard::show(hwnd);
                             }
@@ -535,14 +319,10 @@ pub(super) unsafe extern "system" fn wnd_proc(
                     }
                 }
             }
-            match tray_icon::handle_message(lparam) {
-                tray_icon::TrayAction::OpenDashboard => {
-                    crate::dashboard::show(hwnd);
-                }
-                tray_icon::TrayAction::ShowContextMenu => {
-                    show_context_menu_document(hwnd, None, None);
-                }
-                tray_icon::TrayAction::None => {}
+            match tray_message {
+                WM_LBUTTONUP | WM_LBUTTONDBLCLK => crate::dashboard::show(hwnd),
+                WM_RBUTTONUP | WM_CONTEXTMENU => show_context_menu_document(hwnd, None, None),
+                _ => {}
             }
             LRESULT(0)
         }
@@ -558,19 +338,10 @@ pub(super) unsafe extern "system" fn wnd_proc(
         WM_DESTROY => {
             crate::dashboard::close_existing();
             crate::desktop_compositor::clear();
-            let (hook, desktop_windows) = {
-                let mut state = lock_state();
-                match state.as_mut() {
-                    Some(state) => (
-                        state.win_event_hook,
-                        std::mem::take(&mut state.desktop_hwnds),
-                    ),
-                    None => (None, Vec::new()),
-                }
-            };
-            if let Some(h) = hook {
-                native_interop::unhook_win_event(h.to_hook());
-            }
+            let desktop_windows = lock_state()
+                .as_mut()
+                .map(|state| std::mem::take(&mut state.desktop_hwnds))
+                .unwrap_or_default();
             for window in desktop_windows.into_iter().flatten() {
                 let _ = DestroyWindow(window.to_hwnd());
             }
@@ -578,7 +349,8 @@ pub(super) unsafe extern "system" fn wnd_proc(
             PostQuitMessage(0);
             LRESULT(0)
         }
-        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        // Painting, hit testing and mouse input work as on the other surfaces.
+        _ => mirror_wnd_proc(hwnd, msg, wparam, lparam),
     }
 }
 
@@ -594,10 +366,9 @@ mod tests {
         let state = lock_state();
         let (completed, completion) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || unsafe {
-            let class = native_interop::wide_str("STATIC");
             let hwnd = CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
-                PCWSTR::from_raw(class.as_ptr()),
+                w!("STATIC"),
                 PCWSTR::null(),
                 WINDOW_STYLE::default(),
                 0,

@@ -43,7 +43,6 @@ struct LocaleSource {
     code: String,
     native_name: String,
     locale_patterns: Vec<String>,
-    update_via_winget: String,
     windows_font: Option<(String, String)>,
     strings: BTreeMap<String, String>,
     translations: BTreeMap<String, String>,
@@ -103,10 +102,6 @@ fn build_locales() {
             }
             None => generated.push_str("windows_font: None,\n"),
         }
-        generated.push_str(&format!(
-            "update_via_winget_label: {:?},\n",
-            locale.update_via_winget
-        ));
         generated.push_str("strings: Strings {\n");
         for (field, value) in &locale.strings {
             generated.push_str(&format!("{field}: {value:?},\n"));
@@ -140,7 +135,6 @@ fn read_locale(path: &Path) -> LocaleSource {
         "native_name",
         "locale_patterns",
         "order",
-        "update_via_winget",
         "windows_font_name",
         "windows_font_file",
         "strings",
@@ -176,7 +170,6 @@ fn read_locale(path: &Path) -> LocaleSource {
         code: required_string(table, "code", path),
         native_name: required_string(table, "native_name", path),
         locale_patterns: required_string_array(table, "locale_patterns", path),
-        update_via_winget: required_string(table, "update_via_winget", path),
         windows_font: font_name.zip(font_file),
         strings: required_string_table(table, "strings", path),
         translations: required_string_table(table, "translations", path),

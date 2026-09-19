@@ -101,8 +101,6 @@ pub struct SettingsFile {
     show_opencode: bool,
     #[serde(default)]
     show_cursor: bool,
-    #[serde(default = "default_true")]
-    pub custom_theme_enabled: bool,
     /// Show what is left of each allowance instead of what has been spent, so
     /// the widget counts down towards a limit rather than up from zero.
     #[serde(default)]
@@ -134,7 +132,6 @@ impl Default for SettingsFile {
             show_antigravity: false,
             show_opencode: false,
             show_cursor: false,
-            custom_theme_enabled: true,
             usage_countdown: false,
             widget_position: WidgetPosition::Auto,
             active_theme_path: None,
@@ -162,9 +159,6 @@ impl SettingsFile {
         if self.enabled_providers().is_empty() {
             self.set_enabled_providers(ProviderSet::default());
         }
-        // The widget and Theme Studio are now one system. Keep accepting this
-        // legacy setting so older settings files migrate cleanly.
-        self.custom_theme_enabled = true;
         self.dashboard_width = valid_dashboard_dimension(self.dashboard_width);
         self.dashboard_height = valid_dashboard_dimension(self.dashboard_height);
     }
@@ -518,16 +512,6 @@ mod tests {
             assert_eq!(explicit.for_alignment(true), explicit);
             assert_eq!(explicit.for_alignment(false), explicit);
         }
-    }
-
-    #[test]
-    fn settings_always_use_the_theme_widget() {
-        let mut settings = SettingsFile {
-            custom_theme_enabled: false,
-            ..Default::default()
-        };
-        settings.normalize();
-        assert!(settings.custom_theme_enabled);
     }
 
     #[test]

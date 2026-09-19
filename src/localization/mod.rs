@@ -1,7 +1,3 @@
-// Keep the complete translation catalogue while the GPU dashboard progressively
-// adopts the legacy widget strings.
-#![allow(dead_code)]
-
 use windows::core::PWSTR;
 use windows::Win32::Globalization::{
     GetUserDefaultLocaleName, GetUserDefaultUILanguage, GetUserPreferredUILanguages,
@@ -18,7 +14,6 @@ struct Locale {
     native_name: &'static str,
     locale_patterns: &'static [&'static str],
     windows_font: Option<(&'static str, &'static str)>,
-    update_via_winget_label: &'static str,
     strings: Strings,
     translations: &'static [(&'static str, &'static str)],
 }
@@ -63,10 +58,6 @@ impl LanguageId {
             .binary_search_by(|(key, _)| (*key).cmp(english))
             .map(|index| locale.translations[index].1)
             .unwrap_or(english)
-    }
-
-    pub fn update_via_winget_label(self) -> &'static str {
-        self.locale().update_via_winget_label
     }
 
     pub fn provider_auth_error(self, provider: ProviderId) -> (&'static str, &'static str) {
@@ -124,34 +115,12 @@ impl LanguageId {
 #[derive(Clone, Copy, Debug)]
 pub struct Strings {
     pub window_title: &'static str,
-    pub refresh: &'static str,
-    pub update_frequency: &'static str,
-    pub one_minute: &'static str,
-    pub five_minutes: &'static str,
-    pub fifteen_minutes: &'static str,
-    pub one_hour: &'static str,
-    pub models: &'static str,
-    pub claude_code_model: &'static str,
-    pub codex_model: &'static str,
-    pub antigravity_model: &'static str,
-    pub opencode_model: &'static str,
-    pub cursor_model: &'static str,
-    pub settings: &'static str,
-    pub start_with_windows: &'static str,
-    pub language: &'static str,
-    pub system_default: &'static str,
-    pub check_for_updates: &'static str,
-    pub checking_for_updates: &'static str,
     pub updates: &'static str,
     pub update_in_progress: &'static str,
     pub up_to_date: &'static str,
-    pub up_to_date_short: &'static str,
     pub update_failed: &'static str,
-    pub applying_update: &'static str,
-    pub update_to: &'static str,
     pub update_available: &'static str,
     pub update_prompt_now: &'static str,
-    pub exit: &'static str,
     pub session_window: &'static str,
     pub weekly_window: &'static str,
     pub cursor_auto_window: &'static str,
@@ -171,10 +140,6 @@ pub struct Strings {
     pub opencode_token_expired_body: &'static str,
     pub cursor_token_expired_title: &'static str,
     pub cursor_token_expired_body: &'static str,
-    pub codex_window_title: &'static str,
-    pub antigravity_window_title: &'static str,
-    pub opencode_window_title: &'static str,
-    pub cursor_window_title: &'static str,
 }
 
 pub fn resolve_language(language_override: Option<LanguageId>) -> LanguageId {
@@ -188,10 +153,6 @@ pub fn detect_system_language() -> LanguageId {
         .or_else(default_ui_locale)
         .or_else(default_locale_name)
         .unwrap_or(LanguageId::English)
-}
-
-pub fn update_via_winget(language: LanguageId) -> &'static str {
-    language.update_via_winget_label()
 }
 
 fn preferred_ui_languages() -> Vec<String> {

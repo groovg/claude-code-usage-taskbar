@@ -1,110 +1,23 @@
 use super::*;
 
+/// Place the main window from the theme's primary placement. render_layered
+/// repositions visible surfaces, but a hidden surface 0 keeps what this sets.
 pub(super) fn position_at_taskbar() {
-    refresh_dpi();
     let custom_position = {
         let state = lock_state();
-        state.as_ref().and_then(|s| {
-            if s.custom_theme_enabled {
-                effective_theme_from_state(s).map(|mut theme| {
-                    let runtime = theme_runtime_for_surface(&theme, 0, theme_runtime_from_state(s));
-                    let (width, height) =
-                        theme_engine::resolve_surface_size(&theme, 0, s.data.as_ref(), runtime);
-                    theme.canvas.width = width;
-                    theme.canvas.height = height;
-                    let scale = theme_surface_scale(&theme, 0);
-                    (s.hwnd.to_hwnd(), theme, scale)
-                })
-            } else {
-                None
-            }
+        state.as_ref().map(|s| {
+            let mut theme = effective_theme_from_state(s);
+            let runtime = theme_runtime_for_surface(&theme, 0, theme_runtime_from_state(s));
+            let (width, height) =
+                theme_engine::resolve_surface_size(&theme, 0, s.data.as_ref(), runtime);
+            theme.canvas.width = width;
+            theme.canvas.height = height;
+            let scale = theme_surface_scale(&theme, 0);
+            (s.hwnd.to_hwnd(), theme, scale)
         })
     };
     if let Some((hwnd, theme, scale)) = custom_position {
         position_custom_theme(hwnd, &theme, scale);
-        return;
-    }
-    // Drop the app-state lock before any Win32 call that may synchronously
-    // re-enter our window procedure.
-    let (hwnd, embedded, tray_offset, taskbar_hwnd) = {
-        let state = lock_state();
-        let s = match state.as_ref() {
-            Some(s) => s,
-            None => return,
-        };
-
-        // Don't fight the user's drag
-        if s.dragging {
-            return;
-        }
-
-        let taskbar_hwnd = match s.taskbar_hwnd {
-            Some(h) => h.to_hwnd(),
-            None => {
-                diagnose::log("position_at_taskbar skipped: no taskbar handle");
-                return;
-            }
-        };
-
-        (s.hwnd.to_hwnd(), s.embedded, s.tray_offset, taskbar_hwnd)
-    };
-
-    let taskbar_rect = match native_interop::get_taskbar_rect(taskbar_hwnd) {
-        Some(r) => r,
-        None => {
-            diagnose::log("position_at_taskbar skipped: unable to query taskbar rect");
-            return;
-        }
-    };
-
-    let taskbar_height = taskbar_rect.bottom - taskbar_rect.top;
-    let mut tray_left = taskbar_rect.right;
-    let anchor_top = taskbar_rect.top;
-    let anchor_height = taskbar_height;
-
-    if let Some(tray_hwnd) = native_interop::find_child_window(taskbar_hwnd, "TrayNotifyWnd") {
-        if let Some(tray_rect) = native_interop::get_window_rect_safe(tray_hwnd) {
-            tray_left = tray_rect.left;
-        }
-    }
-
-    let widget_width = total_widget_width();
-    let max_offset = (tray_left - taskbar_rect.left - widget_width).max(0);
-    let tray_offset = tray_offset.clamp(0, max_offset);
-    let offset_changed = {
-        let mut state = lock_state();
-        if let Some(s) = state.as_mut() {
-            if s.tray_offset != tray_offset {
-                s.tray_offset = tray_offset;
-                true
-            } else {
-                false
-            }
-        } else {
-            false
-        }
-    };
-    if offset_changed {
-        save_state_settings();
-    }
-
-    let widget_height = total_widget_height();
-    let y = compute_anchor_y(anchor_top, anchor_height, widget_height);
-    if embedded {
-        // Child window: coordinates relative to parent (taskbar)
-        let x = tray_left - taskbar_rect.left - widget_width - tray_offset;
-        native_interop::move_window(hwnd, x, y - taskbar_rect.top, widget_width, widget_height);
-        diagnose::log(format!(
-            "positioned embedded widget at x={x} y={} w={widget_width} h={widget_height}",
-            y - taskbar_rect.top
-        ));
-    } else {
-        // Topmost popup: screen coordinates
-        let x = tray_left - widget_width - tray_offset;
-        native_interop::move_window(hwnd, x, y, widget_width, widget_height);
-        diagnose::log(format!(
-            "positioned fallback widget at x={x} y={y} w={widget_width} h={widget_height}"
-        ));
     }
 }
 
@@ -116,22 +29,18 @@ pub(super) fn reset_layered_window(hwnd: HWND) {
     }
 }
 
-pub(super) fn render_desktop_custom_window(hwnd: HWND, rendered: &theme_engine::RenderedTheme) {
-    if let Err(error) = crate::desktop_compositor::present(hwnd, rendered) {
-        diagnose::log(format!(
-            "desktop theme render failed hwnd={:?} size={}x{} error={error}",
-            hwnd, rendered.width, rendered.height
-        ));
-    }
-}
-
 pub(super) fn render_custom_window(
     hwnd: HWND,
     rendered: &theme_engine::RenderedTheme,
     desktop_nested: bool,
 ) {
     if desktop_nested {
-        render_desktop_custom_window(hwnd, rendered);
+        if let Err(error) = crate::desktop_compositor::present(hwnd, rendered) {
+            diagnose::log(format!(
+                "desktop theme render failed hwnd={:?} size={}x{} error={error}",
+                hwnd, rendered.width, rendered.height
+            ));
+        }
         return;
     }
 
@@ -214,10 +123,6 @@ pub(super) fn render_custom_window(
 }
 
 pub(super) fn position_custom_theme(hwnd: HWND, theme: &ThemeDocument, scale: f64) {
-    position_custom_theme_internal(hwnd, theme, scale);
-}
-
-pub(super) fn position_custom_theme_internal(hwnd: HWND, theme: &ThemeDocument, scale: f64) {
     let taskbars = native_interop::find_taskbars();
     let displays = native_interop::find_monitors();
     let display_index = theme.placement.reference.display;
@@ -341,14 +246,8 @@ pub(super) fn sync_theme_window_visibility() {
         let Some(state) = state.as_ref() else {
             return;
         };
-        if !state.custom_theme_enabled {
-            return;
-        }
-        let Some(theme) = effective_theme_from_state(state) else {
-            return;
-        };
         (
-            theme,
+            effective_theme_from_state(state),
             state.data.clone(),
             theme_runtime_from_state(state),
             std::iter::once(state.hwnd)
@@ -503,57 +402,5 @@ pub(super) fn vertical_anchor_factor(anchor: VerticalAnchor) -> f64 {
         VerticalAnchor::Top => 0.0,
         VerticalAnchor::Center => 0.5,
         VerticalAnchor::Bottom => 1.0,
-    }
-}
-
-pub(super) fn compute_anchor_y(anchor_top: i32, anchor_height: i32, widget_height: i32) -> i32 {
-    let anchor_bottom = anchor_top + anchor_height;
-    (anchor_bottom - widget_height).max(anchor_top)
-}
-
-/// WinEvent callback for tray icon location changes
-pub(super) unsafe extern "system" fn on_tray_location_changed(
-    _hook: HWINEVENTHOOK,
-    _event: u32,
-    hwnd: HWND,
-    _id_object: i32,
-    _id_child: i32,
-    _thread: u32,
-    _time: u32,
-) {
-    static LAST_REPOSITION: Mutex<Option<std::time::Instant>> = Mutex::new(None);
-
-    let is_tray = {
-        let state = lock_state();
-        state
-            .as_ref()
-            .and_then(|s| s.tray_notify_hwnd)
-            .map(|h| h.to_hwnd() == hwnd)
-            .unwrap_or(false)
-    };
-
-    if is_tray {
-        if tray_reposition_is_suppressed() {
-            return;
-        }
-
-        let should_reposition = {
-            let mut last = LAST_REPOSITION.lock().unwrap_or_else(|e| e.into_inner());
-            let now = std::time::Instant::now();
-            if last
-                .map(|t| now.duration_since(t).as_millis() > 500)
-                .unwrap_or(true)
-            {
-                *last = Some(now);
-                true
-            } else {
-                false
-            }
-        };
-        if should_reposition {
-            refresh_theme_host_geometry();
-            position_at_taskbar();
-            render_layered();
-        }
     }
 }

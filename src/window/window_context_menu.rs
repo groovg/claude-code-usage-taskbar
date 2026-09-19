@@ -22,14 +22,7 @@ pub(super) fn show_context_menu_document(
         let Ok(menu) = CreatePopupMenu() else {
             return;
         };
-        append_context_menu_items(
-            menu,
-            &document.items,
-            language,
-            &data_context,
-            origin.as_ref(),
-            &mut actions,
-        );
+        append_context_menu_items(menu, &document.items, language, &data_context, &mut actions);
         let mut point = POINT::default();
         let _ = GetCursorPos(&mut point);
         let _ = SetForegroundWindow(hwnd);
@@ -59,19 +52,14 @@ pub(super) fn context_menu_data_context(origin: Option<&(usize, String)>) -> Dat
     };
     let mut runtime = theme_runtime_from_state(state);
     let mut canvas = Canvas::default();
-    if let Some(theme) = effective_theme_from_state(state) {
-        let surface_index = origin.map_or(0, |(surface_index, _)| *surface_index);
-        if theme.surfaces.get(surface_index).is_some() {
-            runtime = theme_runtime_for_surface(&theme, surface_index, runtime);
-            let (width, height) = theme_engine::resolve_surface_size(
-                &theme,
-                surface_index,
-                state.data.as_ref(),
-                runtime,
-            );
-            canvas.width = width;
-            canvas.height = height;
-        }
+    let theme = effective_theme_from_state(state);
+    let surface_index = origin.map_or(0, |(surface_index, _)| *surface_index);
+    if theme.surfaces.get(surface_index).is_some() {
+        runtime = theme_runtime_for_surface(&theme, surface_index, runtime);
+        let (width, height) =
+            theme_engine::resolve_surface_size(&theme, surface_index, state.data.as_ref(), runtime);
+        canvas.width = width;
+        canvas.height = height;
     }
     DataContext::from_usage_with_runtime(state.data.as_ref(), &canvas, runtime)
 }
@@ -81,7 +69,6 @@ unsafe fn append_context_menu_items(
     items: &[ContextMenuItem],
     language: LanguageId,
     context: &DataContext,
-    origin: Option<&(usize, String)>,
     actions: &mut Vec<ContextMenuAction>,
 ) {
     for item in items {
@@ -104,7 +91,7 @@ unsafe fn append_context_menu_items(
                 let Ok(submenu) = CreatePopupMenu() else {
                     continue;
                 };
-                append_context_menu_items(submenu, items, language, context, origin, actions);
+                append_context_menu_items(submenu, items, language, context, actions);
                 let label = native_interop::wide_str(&context_menu::rendered_label(
                     language,
                     &item.label,
@@ -124,7 +111,7 @@ unsafe fn append_context_menu_items(
                     &item.label,
                     context,
                 ));
-                let flags = context_menu_action_flags(action, origin);
+                let flags = context_menu_action_flags(action);
                 let _ = AppendMenuW(menu, flags, id, PCWSTR::from_raw(label.as_ptr()));
                 actions.push(action.clone());
             }
@@ -132,10 +119,7 @@ unsafe fn append_context_menu_items(
     }
 }
 
-pub(super) fn context_menu_action_flags(
-    action: &ContextMenuAction,
-    origin: Option<&(usize, String)>,
-) -> MENU_ITEM_FLAGS {
+pub(super) fn context_menu_action_flags(action: &ContextMenuAction) -> MENU_ITEM_FLAGS {
     let state = lock_state();
     let Some(state) = state.as_ref() else {
         return MENU_ITEM_FLAGS(0);
@@ -146,15 +130,44 @@ pub(super) fn context_menu_action_flags(
         }
         ContextMenuAction::ToggleProvider { provider } => state.providers.contains(*provider),
         ContextMenuAction::ToggleStartup => is_startup_enabled(),
-        ContextMenuAction::ToggleWidget => state
-            .active_theme
-            .as_ref()
-            .and_then(|theme| {
-                let effective = theme_engine::apply_mouse_action_overrides(
-                    theme,
-                    &state.mouse_action_overrides,
+        ContextMenuAction::ToggleWidget => {
+            let effective = theme_engine::apply_mouse_action_overrides(
+                &state.active_theme,
+                &state.mouse_action_overrides,
+            );
+            context_menu_widget_origin(&effective).is_some_and(|(surface_index, _)| {
+                let runtime = theme_runtime_for_surface(
+                    &effective,
+                    surface_index,
+                    theme_runtime_from_state(state),
                 );
-                context_menu_widget_origin(&effective).map(|(surface_index, _)| {
+                theme_engine::surface_should_render(
+                    &effective,
+                    surface_index,
+                    state.data.as_ref(),
+                    runtime,
+                )
+            })
+        }
+        ContextMenuAction::SetLanguage { language } => {
+            if language.eq_ignore_ascii_case("system") {
+                state.language_override.is_none()
+            } else {
+                state
+                    .language_override
+                    .is_some_and(|current| current.code().eq_ignore_ascii_case(language))
+            }
+        }
+        ContextMenuAction::ToggleLayerRender { target } => {
+            let effective = theme_engine::apply_mouse_action_overrides(
+                &state.active_theme,
+                &state.mouse_action_overrides,
+            );
+            effective
+                .surfaces
+                .iter()
+                .position(|surface| surface.id.eq_ignore_ascii_case(target))
+                .is_some_and(|surface_index| {
                     let runtime = theme_runtime_for_surface(
                         &effective,
                         surface_index,
@@ -167,55 +180,14 @@ pub(super) fn context_menu_action_flags(
                         runtime,
                     )
                 })
-            })
-            .unwrap_or(false),
-        ContextMenuAction::SetLanguage { language } => {
-            if language.eq_ignore_ascii_case("system") {
-                state.language_override.is_none()
-            } else {
-                state
-                    .language_override
-                    .is_some_and(|current| current.code().eq_ignore_ascii_case(language))
-            }
         }
-        ContextMenuAction::ToggleLayerRender { target } => state
-            .active_theme
-            .as_ref()
-            .and_then(|theme| {
-                let effective = theme_engine::apply_mouse_action_overrides(
-                    theme,
-                    &state.mouse_action_overrides,
-                );
-                effective
-                    .surfaces
-                    .iter()
-                    .position(|surface| surface.id.eq_ignore_ascii_case(target))
-                    .map(|surface_index| {
-                        let runtime = theme_runtime_for_surface(
-                            &effective,
-                            surface_index,
-                            theme_runtime_from_state(state),
-                        );
-                        theme_engine::surface_should_render(
-                            &effective,
-                            surface_index,
-                            state.data.as_ref(),
-                            runtime,
-                        )
-                    })
-            })
-            .unwrap_or(false),
         _ => false,
     };
     let disabled = matches!(
         action,
         ContextMenuAction::CheckForUpdates
             if matches!(state.update_status, UpdateStatus::Checking | UpdateStatus::Applying)
-    ) || matches!(
-        action,
-        ContextMenuAction::LayerActions { .. } | ContextMenuAction::ToggleLayerRender { .. }
-    ) && origin.is_none()
-        && state.active_theme.is_none();
+    );
     match (checked, disabled) {
         (true, true) => MF_CHECKED | MF_GRAYED,
         (true, false) => MF_CHECKED,
@@ -233,8 +205,8 @@ pub(super) fn context_menu_action_origin(
     lock_state().as_ref().and_then(|state| {
         state
             .active_theme
-            .as_ref()
-            .and_then(|theme| theme.surfaces.first())
+            .surfaces
+            .first()
             .map(|surface| (0, surface.id.clone()))
     })
 }
@@ -292,8 +264,7 @@ pub(super) fn execute_context_menu_action(
         ContextMenuAction::ToggleWidget => {
             let target = lock_state()
                 .as_ref()
-                .and_then(|state| state.active_theme.as_ref())
-                .and_then(context_menu_widget_origin);
+                .and_then(|state| context_menu_widget_origin(&state.active_theme));
             if let Some((surface_index, root_id)) = target {
                 let _ =
                     execute_mouse_action_source(surface_index, &root_id, "toggle(self, render)");
@@ -366,7 +337,6 @@ mod tests {
                     &conditional,
                     localization::detect_system_language(),
                     &context,
-                    None,
                     &mut actions,
                 );
                 let count = GetMenuItemCount(Some(menu));

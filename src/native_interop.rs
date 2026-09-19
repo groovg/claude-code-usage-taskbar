@@ -1,22 +1,12 @@
 use std::sync::Mutex;
 
-use windows::core::BOOL;
-use windows::core::PCWSTR;
+use windows::core::{w, BOOL, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
 };
-use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
+use windows::Win32::System::Registry::{RegGetValueW, HKEY, RRF_NOEXPAND, RRF_RT_ANY};
 use windows::Win32::UI::WindowsAndMessaging::*;
-
-// Window style constants
-pub const WS_POPUP_STYLE: u32 = 0x80000000;
-pub const WS_CHILD_STYLE: u32 = 0x40000000;
-pub const WS_CLIPSIBLINGS_STYLE: u32 = 0x04000000;
-
-// Win event constants
-pub const EVENT_OBJECT_LOCATIONCHANGE: u32 = 0x800B;
-pub const WINEVENT_OUTOFCONTEXT: u32 = 0x0000;
 
 // Timer IDs
 pub const TIMER_POLL: usize = 1;
@@ -30,12 +20,10 @@ pub const TIMER_CLOCK: usize = 8;
 pub const TIMER_CONTEXT: usize = 9;
 
 // Custom messages
-pub const WM_APP: u32 = 0x8000;
 pub const WM_APP_USAGE_UPDATED: u32 = WM_APP + 1;
 pub const WM_APP_TRAY: u32 = WM_APP + 3;
 pub const WM_APP_SETTINGS_UPDATED: u32 = WM_APP + 5;
 pub const WM_APP_REFRESH_NOW: u32 = WM_APP + 6;
-pub const WM_APP_QUIT: u32 = WM_APP + 7;
 pub const WM_APP_OPEN_DASHBOARD: u32 = WM_APP + 8;
 pub const WM_APP_TRAY_DISPATCH: u32 = WM_APP + 9;
 
@@ -104,7 +92,9 @@ pub fn find_taskbars() -> Vec<TaskbarWindow> {
         if len > 0 {
             let class_name = String::from_utf16_lossy(&class_name[..len as usize]);
             if class_name == "Shell_TrayWnd" || class_name == "Shell_SecondaryTrayWnd" {
-                if let Some(rect) = get_taskbar_rect(hwnd) {
+                // GetWindowRect, not SHAppBarMessage: the latter waits on
+                // Explorer's message loop and deadlocks when Explorer hangs.
+                if let Some(rect) = get_window_rect_safe(hwnd) {
                     taskbars.push(TaskbarWindow { hwnd, rect });
                 }
             }
@@ -143,15 +133,6 @@ pub fn find_child_window(parent: HWND, class_name: &str) -> Option<HWND> {
     }
 }
 
-/// Get taskbar position safely.
-/// We use get_window_rect_safe directly because GetWindowRect is a non-blocking
-/// kernel-mode query that returns immediately even if explorer.exe is hung or unresponsive.
-/// SHAppBarMessage sends a synchronous LPC message to explorer.exe's UI message loop,
-/// which deadlocks the monitor thread if Explorer hangs (Event 1002).
-pub fn get_taskbar_rect(taskbar_hwnd: HWND) -> Option<RECT> {
-    get_window_rect_safe(taskbar_hwnd)
-}
-
 /// Get the bounding rectangle of a window
 pub fn get_window_rect_safe(hwnd: HWND) -> Option<RECT> {
     unsafe {
@@ -172,11 +153,6 @@ pub fn window_class_name(hwnd: HWND) -> Option<String> {
     }
 }
 
-/// Embed our window as a child of the taskbar
-pub fn embed_in_taskbar(hwnd: HWND, taskbar_hwnd: HWND) {
-    embed_as_child(hwnd, taskbar_hwnd);
-}
-
 /// Host a layered surface inside a shell-owned window. Parenting makes the
 /// surface share the host's visibility and z-order instead of competing with
 /// it as an independent topmost popup.
@@ -192,7 +168,7 @@ pub fn embed_as_child(hwnd: HWND, parent: HWND) {
         );
 
         let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
-        let new_style = (style & !WS_POPUP_STYLE) | WS_CHILD_STYLE | WS_CLIPSIBLINGS_STYLE;
+        let new_style = (style & !WS_POPUP.0) | WS_CHILD.0 | WS_CLIPSIBLINGS.0;
         let _ = SetWindowLongW(hwnd, GWL_STYLE, new_style as i32);
 
         if current_parent != Some(parent) {
@@ -214,7 +190,7 @@ pub fn embed_as_child(hwnd: HWND, parent: HWND) {
 pub fn make_popup(hwnd: HWND, topmost: bool) {
     unsafe {
         let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
-        let new_style = (style & !WS_CHILD_STYLE & !WS_CLIPSIBLINGS_STYLE) | WS_POPUP_STYLE;
+        let new_style = (style & !WS_CHILD.0 & !WS_CLIPSIBLINGS.0) | WS_POPUP.0;
         let _ = SetWindowLongW(hwnd, GWL_STYLE, new_style as i32);
         let _ = SetParent(hwnd, None);
 
@@ -248,15 +224,9 @@ pub fn make_popup(hwnd: HWND, topmost: bool) {
 pub fn find_desktop_host() -> Option<DesktopHost> {
     unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
         if find_child_window(hwnd, "SHELLDLL_DefView").is_some() {
-            let class = wide_str("WorkerW");
-            if let Ok(worker) = unsafe {
-                FindWindowExW(
-                    None,
-                    Some(hwnd),
-                    PCWSTR::from_raw(class.as_ptr()),
-                    PCWSTR::null(),
-                )
-            } {
+            if let Ok(worker) =
+                unsafe { FindWindowExW(None, Some(hwnd), w!("WorkerW"), PCWSTR::null()) }
+            {
                 if !worker.is_invalid() {
                     let result = unsafe { &mut *(lparam.0 as *mut HWND) };
                     *result = worker;
@@ -287,8 +257,7 @@ pub fn find_desktop_host() -> Option<DesktopHost> {
             }
         }
 
-        let progman_class = wide_str("Progman");
-        let progman = FindWindowW(PCWSTR::from_raw(progman_class.as_ptr()), PCWSTR::null())
+        let progman = FindWindowW(w!("Progman"), PCWSTR::null())
             .ok()
             .filter(|hwnd| !hwnd.is_invalid())?;
 
@@ -353,46 +322,41 @@ pub fn find_desktop_host() -> Option<DesktopHost> {
     }
 }
 
-/// Move the window
-pub fn move_window(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) {
+/// Raw bytes of a registry value of any type, REG_EXPAND_SZ left unexpanded.
+pub fn read_registry_value(root: HKEY, path: PCWSTR, name: PCWSTR) -> Option<Vec<u8>> {
+    let flags = RRF_RT_ANY | RRF_NOEXPAND;
+    let mut size = 0u32;
     unsafe {
-        let _ = MoveWindow(hwnd, x, y, w, h, true);
-    }
-}
-
-/// Set up a WinEvent hook for tray location changes
-pub fn set_tray_event_hook(
-    thread_id: u32,
-    callback: unsafe extern "system" fn(HWINEVENTHOOK, u32, HWND, i32, i32, u32, u32),
-) -> Option<HWINEVENTHOOK> {
-    unsafe {
-        let hook = SetWinEventHook(
-            EVENT_OBJECT_LOCATIONCHANGE,
-            EVENT_OBJECT_LOCATIONCHANGE,
-            None,
-            Some(callback),
-            0,
-            thread_id,
-            WINEVENT_OUTOFCONTEXT,
-        );
-        if hook.is_invalid() {
-            None
-        } else {
-            Some(hook)
+        if RegGetValueW(root, path, name, flags, None, None, Some(&mut size)).is_err() || size == 0
+        {
+            return None;
         }
+        let mut buffer = vec![0u8; size as usize];
+        RegGetValueW(
+            root,
+            path,
+            name,
+            flags,
+            None,
+            Some(buffer.as_mut_ptr().cast()),
+            Some(&mut size),
+        )
+        .is_ok()
+        .then_some(buffer)
     }
 }
 
-/// Get the thread ID that owns a window
-pub fn get_window_thread_id(hwnd: HWND) -> u32 {
-    unsafe { GetWindowThreadProcessId(hwnd, None) }
-}
-
-/// Unhook a WinEvent hook
-pub fn unhook_win_event(hook: HWINEVENTHOOK) {
-    unsafe {
-        let _ = UnhookWinEvent(hook);
-    }
+/// A registry value read as UTF-16 text, without trailing nulls.
+pub fn read_registry_string(root: HKEY, path: PCWSTR, name: PCWSTR) -> Option<String> {
+    let units: Vec<u16> = read_registry_value(root, path, name)?
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect();
+    Some(
+        String::from_utf16_lossy(&units)
+            .trim_end_matches('\0')
+            .to_string(),
+    )
 }
 
 /// Convert a Rust string to a null-terminated wide string

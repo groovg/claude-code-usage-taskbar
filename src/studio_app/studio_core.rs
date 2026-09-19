@@ -235,7 +235,6 @@ impl StudioApp {
         };
         self.theme_path = Some(path.clone());
         self.settings.active_theme_path = Some(path.to_string_lossy().into_owned());
-        self.settings.custom_theme_enabled = true;
         self.dirty = false;
         if let Err(error) = app_settings::save_settings(&self.settings) {
             self.theme_error = Some(format!(
@@ -269,7 +268,6 @@ impl StudioApp {
         self.theme = theme;
         self.theme_path = Some(path.clone());
         self.settings.active_theme_path = Some(path.to_string_lossy().into_owned());
-        self.settings.custom_theme_enabled = true;
         self.selection = Selection::Surface(0);
         self.preview_dirty = true;
         self.dirty = false;
@@ -659,7 +657,6 @@ impl StudioApp {
         self.theme = fallback_theme;
         self.theme_path = Some(fallback_path.clone());
         self.settings.active_theme_path = Some(fallback_path.to_string_lossy().into_owned());
-        self.settings.custom_theme_enabled = true;
         self.selection = Selection::Surface(0);
         self.preview_dirty = true;
         self.dirty = false;

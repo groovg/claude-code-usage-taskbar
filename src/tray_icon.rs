@@ -26,13 +26,6 @@ pub struct ThemedTrayIcon {
     pub pixels: Vec<u32>,
 }
 
-/// Actions the tray message handler can request from the main window.
-pub enum TrayAction {
-    None,
-    OpenDashboard,
-    ShowContextMenu,
-}
-
 /// Load the application icons embedded by build.rs from src/icons/icon.ico.
 /// Native windows and the system tray share this source so Windows can choose
 /// the exact large or small icon instead of scaling a single bitmap.
@@ -170,13 +163,37 @@ fn create_themed_icon(icon: &ThemedTrayIcon) -> HICON {
     }
 }
 
+fn icon_data(hwnd: HWND, id: u32) -> NOTIFYICONDATAW {
+    NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: id,
+        ..Default::default()
+    }
+}
+
+/// Register or refresh one notification icon, then release `hicon`.
+fn add_or_modify(hwnd: HWND, id: u32, hicon: HICON, tooltip: &str) {
+    let mut nid = NOTIFYICONDATAW {
+        uFlags: NIF_ICON | NIF_MESSAGE | NIF_TIP,
+        uCallbackMessage: WM_APP_TRAY,
+        hIcon: hicon,
+        ..icon_data(hwnd, id)
+    };
+    copy_wide(tooltip, &mut nid.szTip);
+    unsafe {
+        // NIM_ADD succeeds on first registration. If the icon is already
+        // present, NIM_MODIFY refreshes its image, callback and tooltip.
+        if !Shell_NotifyIconW(NIM_ADD, &nid).as_bool() {
+            let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
+        }
+        let _ = DestroyIcon(hicon);
+    }
+}
+
 fn remove_id(hwnd: HWND, id: u32) {
     unsafe {
-        let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
-        nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-        nid.hWnd = hwnd;
-        nid.uID = id;
-        let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
+        let _ = Shell_NotifyIconW(NIM_DELETE, &icon_data(hwnd, id));
     }
 }
 
@@ -196,24 +213,7 @@ pub fn sync(hwnd: HWND, tooltip: &str) {
     if hicon.is_invalid() {
         return;
     }
-
-    unsafe {
-        let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
-        nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-        nid.hWnd = hwnd;
-        nid.uID = APP_TRAY_ICON_ID;
-        nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-        nid.uCallbackMessage = WM_APP_TRAY;
-        nid.hIcon = hicon;
-        copy_to_tip(tooltip, &mut nid.szTip);
-
-        // NIM_ADD succeeds on first registration. If the icon is already
-        // present, NIM_MODIFY refreshes its image, callback and tooltip.
-        if !Shell_NotifyIconW(NIM_ADD, &nid).as_bool() {
-            let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
-        }
-        let _ = DestroyIcon(hicon);
-    }
+    add_or_modify(hwnd, APP_TRAY_ICON_ID, hicon, tooltip);
 }
 
 /// Register Theme Studio roots as independent notification-area icons. The
@@ -227,20 +227,7 @@ pub fn sync_themed(hwnd: HWND, icons: &[ThemedTrayIcon]) {
             continue;
         }
         let id = themed_icon_id(icon.surface_index);
-        unsafe {
-            let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
-            nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-            nid.hWnd = hwnd;
-            nid.uID = id;
-            nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-            nid.uCallbackMessage = WM_APP_TRAY;
-            nid.hIcon = hicon;
-            copy_to_tip(&icon.tooltip, &mut nid.szTip);
-            if !Shell_NotifyIconW(NIM_ADD, &nid).as_bool() {
-                let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
-            }
-            let _ = DestroyIcon(hicon);
-        }
+        add_or_modify(hwnd, id, hicon, &icon.tooltip);
         refreshed_ids.push(id);
     }
 
@@ -265,15 +252,14 @@ pub fn notify_balloon(hwnd: HWND, title: &str, message: &str) {
         .first()
         .copied()
         .unwrap_or(APP_TRAY_ICON_ID);
+    let mut nid = NOTIFYICONDATAW {
+        uFlags: NIF_INFO,
+        dwInfoFlags: NIIF_WARNING,
+        ..icon_data(hwnd, icon_id)
+    };
+    copy_wide(title, &mut nid.szInfoTitle);
+    copy_wide(message, &mut nid.szInfo);
     unsafe {
-        let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
-        nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-        nid.hWnd = hwnd;
-        nid.uID = icon_id;
-        nid.uFlags = NIF_INFO;
-        nid.dwInfoFlags = NIIF_WARNING;
-        copy_wide(title, &mut nid.szInfoTitle);
-        copy_wide(message, &mut nid.szInfo);
         let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
     }
 }
@@ -282,16 +268,6 @@ pub fn notify_balloon(hwnd: HWND, title: &str, message: &str) {
 pub fn remove_all(hwnd: HWND) {
     remove_id(hwnd, APP_TRAY_ICON_ID);
     remove_registered_theme_icons(hwnd);
-}
-
-/// Interpret a tray callback message and return the action to take.
-pub fn handle_message(lparam: LPARAM) -> TrayAction {
-    let mouse_msg = lparam.0 as u32;
-    match mouse_msg {
-        WM_LBUTTONUP | WM_LBUTTONDBLCLK => TrayAction::OpenDashboard,
-        WM_RBUTTONUP | WM_CONTEXTMENU => TrayAction::ShowContextMenu,
-        _ => TrayAction::None,
-    }
 }
 
 fn copy_wide<const N: usize>(value: &str, buffer: &mut [u16; N]) {
@@ -304,33 +280,9 @@ fn copy_wide<const N: usize>(value: &str, buffer: &mut [u16; N]) {
     buffer[len] = 0;
 }
 
-fn copy_to_tip(value: &str, tooltip: &mut [u16; 128]) {
-    copy_wide(value, tooltip);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn tray_buttons_have_distinct_actions() {
-        assert!(matches!(
-            handle_message(LPARAM(WM_LBUTTONUP as isize)),
-            TrayAction::OpenDashboard
-        ));
-        assert!(matches!(
-            handle_message(LPARAM(WM_LBUTTONDBLCLK as isize)),
-            TrayAction::OpenDashboard
-        ));
-        assert!(matches!(
-            handle_message(LPARAM(WM_RBUTTONUP as isize)),
-            TrayAction::ShowContextMenu
-        ));
-        assert!(matches!(
-            handle_message(LPARAM(WM_CONTEXTMENU as isize)),
-            TrayAction::ShowContextMenu
-        ));
-    }
 
     #[test]
     fn theme_icon_ids_do_not_overlap_the_application_icon() {

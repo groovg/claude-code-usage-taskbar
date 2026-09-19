@@ -24,14 +24,13 @@ pub(super) fn mouse_client_point(lparam: LPARAM) -> (f64, f64) {
     (x, y)
 }
 
-pub(super) fn mouse_target_at(hwnd: HWND, lparam: LPARAM) -> Option<(usize, String)> {
+pub(super) fn mouse_target_at(hwnd: HWND, (x, y): (f64, f64)) -> Option<(usize, String)> {
     let state = lock_state();
     let state = state.as_ref()?;
     let surface_index = surface_index_for_window(state, hwnd)?;
-    let theme = effective_theme_from_state(state)?;
+    let theme = effective_theme_from_state(state);
     let scale = theme_surface_scale(&theme, surface_index).max(0.01);
     let runtime = theme_runtime_for_surface(&theme, surface_index, theme_runtime_from_state(state));
-    let (x, y) = mouse_client_point(lparam);
     let object_id = theme_engine::hit_test_mouse_event(
         &theme,
         surface_index,
@@ -50,9 +49,8 @@ pub(super) fn mouse_handler_exists(
 ) -> bool {
     let state = lock_state();
     state.as_ref().is_some_and(|state| {
-        state.active_theme.as_ref().is_some_and(|theme| {
-            theme_engine::mouse_event_script(theme, surface_index, object_id, event).is_some()
-        })
+        theme_engine::mouse_event_script(&state.active_theme, surface_index, object_id, event)
+            .is_some()
     })
 }
 
@@ -66,11 +64,9 @@ pub(super) fn dispatch_mouse_event(
         let Some(state) = state.as_ref() else {
             return false;
         };
-        let Some(theme) = state.active_theme.as_ref() else {
-            return false;
-        };
-        let Some(source) = theme_engine::mouse_event_script(theme, surface_index, object_id, event)
-            .map(str::to_string)
+        let Some(source) =
+            theme_engine::mouse_event_script(&state.active_theme, surface_index, object_id, event)
+                .map(str::to_string)
         else {
             return false;
         };
@@ -89,9 +85,7 @@ pub(super) fn execute_mouse_action_source(
         let Some(state) = state.as_mut() else {
             return false;
         };
-        let Some(theme) = state.active_theme.clone() else {
-            return false;
-        };
+        let theme = state.active_theme.clone();
         let data = state.data.clone();
         let runtime =
             theme_runtime_for_surface(&theme, surface_index, theme_runtime_from_state(state));
@@ -138,7 +132,7 @@ pub(super) fn execute_mouse_action_source(
     }
 }
 
-pub(super) fn schedule_or_dispatch_click(hwnd: HWND, surface_index: usize, object_id: String) {
+pub(super) fn schedule_or_dispatch_click(surface_index: usize, object_id: String) {
     let has_click = mouse_handler_exists(surface_index, &object_id, MouseEventKind::Click);
     if !has_click {
         return;
@@ -167,10 +161,9 @@ pub(super) fn schedule_or_dispatch_click(hwnd: HWND, surface_index: usize, objec
     } else {
         let _ = dispatch_mouse_event(surface_index, &object_id, MouseEventKind::Click);
     }
-    let _ = hwnd;
 }
 
-pub(super) fn dispatch_double_click(hwnd: HWND, surface_index: usize, object_id: String) {
+pub(super) fn dispatch_double_click(surface_index: usize, object_id: String) {
     if !mouse_handler_exists(surface_index, &object_id, MouseEventKind::DoubleClick) {
         return;
     }
@@ -187,7 +180,13 @@ pub(super) fn dispatch_double_click(hwnd: HWND, surface_index: usize, object_id:
         let _ = KillTimer(Some(owner), TIMER_MOUSE_CLICK);
     }
     let _ = dispatch_mouse_event(surface_index, &object_id, MouseEventKind::DoubleClick);
-    let _ = hwnd;
+}
+
+/// Read and clear the flag a double click sets to swallow its trailing button-up.
+pub(super) fn take_suppressed_left_up() -> bool {
+    lock_state()
+        .as_mut()
+        .is_some_and(|state| std::mem::take(&mut state.suppress_next_left_up))
 }
 
 pub(super) fn update_mouse_hover(hwnd: HWND, lparam: LPARAM) {
@@ -200,8 +199,9 @@ pub(super) fn update_mouse_hover(hwnd: HWND, lparam: LPARAM) {
         };
         let _ = TrackMouseEvent(&mut tracking);
     }
+    let point = mouse_client_point(lparam);
     for _ in 0..4 {
-        let target = mouse_target_at(hwnd, lparam);
+        let target = mouse_target_at(hwnd, point);
         let previous = {
             let mut state = lock_state();
             let Some(state) = state.as_mut() else {
@@ -279,15 +279,17 @@ pub(super) fn clear_tray_mouse_hover_if_left(hwnd: HWND) {
             return;
         };
         state.hovered_mouse_layer.clone().map(|target| {
-            let is_tray = state.active_theme.as_ref().is_some_and(|theme| {
-                theme.surfaces.get(target.0).is_some_and(|surface| {
+            let is_tray = state
+                .active_theme
+                .surfaces
+                .get(target.0)
+                .is_some_and(|surface| {
                     surface
                         .placement
                         .nest
                         .resolve(surface.placement.reference.region)
                         == SurfaceNest::TrayIcon
-                })
-            });
+                });
             (target, is_tray)
         })
     };
@@ -320,8 +322,9 @@ pub(super) unsafe fn set_surface_cursor(hwnd: HWND) -> bool {
     }
     let mut client = [point];
     MapWindowPoints(None, Some(hwnd), &mut client);
-    let packed = ((client[0].y as u32 & 0xffff) << 16) | (client[0].x as u32 & 0xffff);
-    let Some((surface, object)) = mouse_target_at(hwnd, LPARAM(packed as isize)) else {
+    // The same 16-bit range as the mouse LPARAMs the other callers decode.
+    let client = (client[0].x as i16 as f64, client[0].y as i16 as f64);
+    let Some((surface, object)) = mouse_target_at(hwnd, client) else {
         return false;
     };
     let clickable = [

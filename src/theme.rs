@@ -1,14 +1,15 @@
-use windows::core::PCWSTR;
-use windows::Win32::System::Registry::*;
+use windows::core::{w, PCWSTR};
+use windows::Win32::System::Registry::{HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
 
-use crate::native_interop::wide_str;
+use crate::native_interop::{read_registry_string, read_registry_value};
 
-const PERSONALIZE_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
-const LIGHT_THEME_KEY: &str = "SystemUsesLightTheme";
-const TASKBAR_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced";
-const TASKBAR_ALIGNMENT_KEY: &str = "TaskbarAl";
-const VERSION_PATH: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion";
-const BUILD_NUMBER_KEY: &str = "CurrentBuildNumber";
+const PERSONALIZE_PATH: PCWSTR =
+    w!(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+const LIGHT_THEME_KEY: PCWSTR = w!("SystemUsesLightTheme");
+const TASKBAR_PATH: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced");
+const TASKBAR_ALIGNMENT_KEY: PCWSTR = w!("TaskbarAl");
+const VERSION_PATH: PCWSTR = w!(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion");
+const BUILD_NUMBER_KEY: PCWSTR = w!("CurrentBuildNumber");
 const FIRST_WINDOWS_11_BUILD: u32 = 22000;
 
 /// Check if the system is in dark mode by reading the registry
@@ -33,65 +34,21 @@ pub fn taskbar_buttons_centered() -> bool {
 }
 
 fn windows_build() -> Option<u32> {
-    let bytes = read_value(HKEY_LOCAL_MACHINE, VERSION_PATH, BUILD_NUMBER_KEY)?;
-    let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-        .collect();
-    String::from_utf16_lossy(&units)
-        .trim_end_matches('\0')
+    read_registry_string(HKEY_LOCAL_MACHINE, VERSION_PATH, BUILD_NUMBER_KEY)?
         .trim()
         .parse()
         .ok()
 }
 
-fn read_dword(root: HKEY, path: &str, name: &str) -> Option<u32> {
-    let bytes = read_value(root, path, name)?;
-    (bytes.len() >= 4).then(|| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+fn read_dword(root: HKEY, path: PCWSTR, name: PCWSTR) -> Option<u32> {
+    let bytes = read_registry_value(root, path, name)?;
+    bytes.first_chunk::<4>().copied().map(u32::from_le_bytes)
 }
 
-fn read_value(root: HKEY, path: &str, name: &str) -> Option<Vec<u8>> {
-    unsafe {
-        let path = wide_str(path);
-        let name = wide_str(name);
-
-        let mut hkey = HKEY::default();
-        if RegOpenKeyExW(
-            root,
-            PCWSTR::from_raw(path.as_ptr()),
-            None,
-            KEY_READ,
-            &mut hkey,
-        )
-        .is_err()
-        {
-            return None;
-        }
-
-        let mut size: u32 = 0;
-        let result = RegQueryValueExW(
-            hkey,
-            PCWSTR::from_raw(name.as_ptr()),
-            None,
-            None,
-            None,
-            Some(&mut size),
-        );
-        if result.is_err() || size == 0 {
-            let _ = RegCloseKey(hkey);
-            return None;
-        }
-
-        let mut buffer = vec![0u8; size as usize];
-        let result = RegQueryValueExW(
-            hkey,
-            PCWSTR::from_raw(name.as_ptr()),
-            None,
-            None,
-            Some(buffer.as_mut_ptr()),
-            Some(&mut size),
-        );
-        let _ = RegCloseKey(hkey);
-        result.is_ok().then_some(buffer)
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn registry_reads_the_windows_build_number() {
+        assert!(super::windows_build().is_some_and(|build| build >= 10_000));
     }
 }
