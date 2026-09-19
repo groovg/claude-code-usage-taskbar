@@ -7,7 +7,7 @@ A Windows taskbar widget that keeps your Claude Code limits in view: the 5-hour 
 
 ![Claude Code Usage Taskbar in the Windows taskbar: 5h, 7d, Fable cap and session context](.github/widget.png)
 
-Claude Code Usage Taskbar is a maintained continuation of [Claude Code Usage Monitor](https://github.com/CodeZeno/Claude-Code-Usage-Monitor) by Craig Constable (MIT). It keeps that project's theme engine, Theme Studio, multi-account support and providers, and adds what Anthropic's newer plans and Claude Code's newer builds report. Upstream changes are merged as they land.
+Claude Code Usage Taskbar is a maintained continuation of [Claude Code Usage Monitor](https://github.com/CodeZeno/Claude-Code-Usage-Monitor) by Craig Constable (MIT). It keeps that project's theme engine, Theme Studio, multi-account support and providers, and adds what Anthropic's newer plans and Claude Code's newer builds report.
 
 ## What is new here
 
