@@ -5,7 +5,6 @@
 //! bundling SQLite or depending on a Windows SDK import library at build time.
 
 use std::ffi::{c_char, c_int, c_uchar, CStr, CString};
-use std::fmt;
 use std::path::Path;
 use std::ptr;
 
@@ -71,25 +70,14 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Error(String);
-
-impl fmt::Display for Error {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for Error {}
-
 struct Connection {
     raw: *mut Sqlite3,
 }
 
 impl Connection {
-    fn open_read_only(path: &Path) -> Result<Self, Error> {
+    fn open_read_only(path: &Path) -> Result<Self, String> {
         let filename = CString::new(path.as_os_str().as_encoded_bytes())
-            .map_err(|_| Error("SQLite database path contains a NUL byte".into()))?;
+            .map_err(|_| "SQLite database path contains a NUL byte".to_string())?;
         let mut raw = ptr::null_mut();
         let result = unsafe {
             sqlite3_open_v2(
@@ -121,9 +109,9 @@ impl Connection {
         Err(error)
     }
 
-    fn prepare(&self, sql: &str) -> Result<Statement<'_>, Error> {
+    fn prepare(&self, sql: &str) -> Result<Statement<'_>, String> {
         let sql =
-            CString::new(sql).map_err(|_| Error("SQLite statement contains a NUL byte".into()))?;
+            CString::new(sql).map_err(|_| "SQLite statement contains a NUL byte".to_string())?;
         let mut raw = ptr::null_mut();
         let result =
             unsafe { sqlite3_prepare_v2(self.raw, sql.as_ptr(), -1, &mut raw, ptr::null_mut()) };
@@ -155,9 +143,9 @@ struct Statement<'connection> {
 }
 
 impl Statement<'_> {
-    fn bind_text(&mut self, index: c_int, value: &CStr) -> Result<(), Error> {
+    fn bind_text(&mut self, index: c_int, value: &CStr) -> Result<(), String> {
         let value_bytes = c_int::try_from(value.to_bytes().len())
-            .map_err(|_| Error("SQLite parameter is too large".into()))?;
+            .map_err(|_| "SQLite parameter is too large".to_string())?;
         // SQLITE_STATIC is safe here because the caller keeps `value` alive
         // until after sqlite3_step returns.
         let result =
@@ -173,7 +161,7 @@ impl Statement<'_> {
         }
     }
 
-    fn optional_text(&mut self, column: c_int) -> Result<Option<String>, Error> {
+    fn optional_text(&mut self, column: c_int) -> Result<Option<String>, String> {
         match unsafe { sqlite3_step(self.raw) } {
             SQLITE_DONE => Ok(None),
             SQLITE_ROW => {
@@ -183,11 +171,11 @@ impl Statement<'_> {
                 }
                 let bytes = unsafe { sqlite3_column_bytes(self.raw, column) };
                 let bytes = usize::try_from(bytes)
-                    .map_err(|_| Error("SQLite returned an invalid text length".into()))?;
+                    .map_err(|_| "SQLite returned an invalid text length".to_string())?;
                 let value = unsafe { std::slice::from_raw_parts(text, bytes) };
                 String::from_utf8(value.to_vec())
                     .map(Some)
-                    .map_err(|_| Error("SQLite returned text that is not UTF-8".into()))
+                    .map_err(|_| "SQLite returned text that is not UTF-8".to_string())
             }
             result => Err(error_message(
                 self.connection.raw,
@@ -206,7 +194,7 @@ impl Drop for Statement<'_> {
     }
 }
 
-fn error_message(database: *mut Sqlite3, context: &str, result: c_int) -> Error {
+fn error_message(database: *mut Sqlite3, context: &str, result: c_int) -> String {
     let detail = if database.is_null() {
         None
     } else {
@@ -214,8 +202,8 @@ fn error_message(database: *mut Sqlite3, context: &str, result: c_int) -> Error 
         (!message.is_null()).then(|| unsafe { CStr::from_ptr(message) }.to_string_lossy())
     };
     match detail {
-        Some(detail) => Error(format!("{context} ({result}): {detail}")),
-        None => Error(format!("{context} ({result})")),
+        Some(detail) => format!("{context} ({result}): {detail}"),
+        None => format!("{context} ({result})"),
     }
 }
 
@@ -224,9 +212,9 @@ pub(crate) fn query_optional_text(
     path: &Path,
     sql: &str,
     parameter: &str,
-) -> Result<Option<String>, Error> {
-    let parameter = CString::new(parameter)
-        .map_err(|_| Error("SQLite parameter contains a NUL byte".into()))?;
+) -> Result<Option<String>, String> {
+    let parameter =
+        CString::new(parameter).map_err(|_| "SQLite parameter contains a NUL byte".to_string())?;
     let connection = Connection::open_read_only(path)?;
     let mut statement = connection.prepare(sql)?;
     statement.bind_text(1, &parameter)?;

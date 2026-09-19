@@ -1,5 +1,9 @@
-use std::sync::OnceLock;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::os::windows::process::CommandExt;
+use std::process::{Command, Stdio};
+use std::sync::LazyLock;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
 use crate::diagnose;
 use crate::models::{AppUsageData, UsageData, UsageSection};
@@ -46,21 +50,8 @@ pub struct PollFailure {
     pub error: PollError,
 }
 
-pub fn poll(
-    enabled_providers: ProviderSet,
-    settings: &crate::accounts::AccountSettings,
-    previous: Option<&AppUsageData>,
-    force: bool,
-) -> Result<AppUsageData, PollFailure> {
-    if enabled_providers
-        .iter()
-        .any(|provider| settings.get(provider).is_some())
-    {
-        accounts::poll_accounts(enabled_providers, settings, previous, force)
-    } else {
-        poll_concurrently_with(enabled_providers, poll_provider)
-    }
-}
+/// Claude and Codex fan out per account; every other provider is polled once.
+pub(crate) use accounts::poll_accounts as poll;
 
 /// Keep the previous reading for any enabled provider that failed this cycle.
 ///
@@ -99,89 +90,7 @@ pub fn carry_forward_failures(
     merged
 }
 
-fn poll_with(
-    enabled_providers: ProviderSet,
-    mut poll_provider: impl FnMut(ProviderId) -> Result<UsageData, PollError>,
-) -> Result<AppUsageData, PollFailure> {
-    let results = enabled_providers
-        .iter()
-        .map(|provider| (provider, poll_provider(provider)))
-        .collect::<Vec<_>>();
-    merge_poll_results(enabled_providers, results)
-}
-
 const MAX_CONCURRENT_PROVIDER_POLLS: usize = 3;
-
-fn poll_concurrently_with<F>(
-    enabled_providers: ProviderSet,
-    poll_provider: F,
-) -> Result<AppUsageData, PollFailure>
-where
-    F: Fn(ProviderId) -> Result<UsageData, PollError> + Sync,
-{
-    let providers = enabled_providers.iter().collect::<Vec<_>>();
-    if providers.len() <= 1 {
-        return poll_with(enabled_providers, poll_provider);
-    }
-
-    let worker_count = providers.len().min(MAX_CONCURRENT_PROVIDER_POLLS);
-    let next_provider = std::sync::atomic::AtomicUsize::new(0);
-    let mut results = std::thread::scope(|scope| {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        for _ in 0..worker_count {
-            let sender = sender.clone();
-            let providers = &providers;
-            let poll_provider = &poll_provider;
-            let next_provider = &next_provider;
-            scope.spawn(move || loop {
-                let index = next_provider.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let Some(provider) = providers.get(index).copied() else {
-                    break;
-                };
-                if sender.send((provider, poll_provider(provider))).is_err() {
-                    break;
-                }
-            });
-        }
-        drop(sender);
-        receiver.into_iter().collect::<Vec<_>>()
-    });
-    results.sort_by_key(|(provider, _)| *provider);
-    merge_poll_results(enabled_providers, results)
-}
-
-fn merge_poll_results(
-    enabled_providers: ProviderSet,
-    results: impl IntoIterator<Item = (ProviderId, Result<UsageData, PollError>)>,
-) -> Result<AppUsageData, PollFailure> {
-    let mut data = AppUsageData::default();
-    let mut first_error = None;
-    for (provider, result) in results {
-        match result {
-            Ok(usage) => {
-                data.insert(provider, usage);
-            }
-            Err(error) => {
-                if enabled_providers.len() > 1 {
-                    diagnose::log(format!(
-                        "{} usage poll failed: {error:?}",
-                        provider.descriptor().display_name
-                    ));
-                }
-                first_error.get_or_insert(PollFailure { provider, error });
-            }
-        }
-    }
-
-    if data.is_empty() {
-        Err(first_error.unwrap_or(PollFailure {
-            provider: enabled_providers.first().unwrap_or_default(),
-            error: PollError::RequestFailed,
-        }))
-    } else {
-        Ok(data)
-    }
-}
 
 mod accounts;
 mod antigravity;
@@ -194,52 +103,17 @@ mod opencode;
 
 /// Context-window usage of the newest local Claude Code session. Cheap enough
 /// to call between API polls: a directory listing and one file tail.
-pub fn claude_session_context() -> Option<crate::models::ContextSection> {
-    claude_context::read()
-}
+pub(crate) use claude_context::read as claude_session_context;
 
-struct ProviderPoller {
-    id: ProviderId,
-    poll: fn() -> Result<UsageData, PollError>,
-    credential_watch: fn(bool) -> CredentialWatchSnapshot,
-}
-
-const PROVIDER_POLLERS: [ProviderPoller; 5] = [
-    ProviderPoller {
-        id: ProviderId::Claude,
-        poll: claude::poll_claude_code,
-        credential_watch: claude::credential_watch_snapshot,
-    },
-    ProviderPoller {
-        id: ProviderId::Codex,
-        poll: codex::poll_codex,
-        credential_watch: codex_credential_watch_snapshot,
-    },
-    ProviderPoller {
-        id: ProviderId::Antigravity,
-        poll: antigravity::poll_antigravity,
-        credential_watch: antigravity_credential_watch_snapshot,
-    },
-    ProviderPoller {
-        id: ProviderId::OpenCode,
-        poll: opencode::poll_opencode,
-        credential_watch: opencode::credential_watch_snapshot,
-    },
-    ProviderPoller {
-        id: ProviderId::Cursor,
-        poll: cursor::poll_cursor,
-        credential_watch: cursor::credential_watch_snapshot,
-    },
-];
-
-fn provider_poller(provider: ProviderId) -> Option<&'static ProviderPoller> {
-    PROVIDER_POLLERS.iter().find(|poller| poller.id == provider)
-}
-
+/// The provider's default credentials, found the way its own CLI finds them.
 fn poll_provider(provider: ProviderId) -> Result<UsageData, PollError> {
-    provider_poller(provider)
-        .ok_or(PollError::RequestFailed)
-        .and_then(|poller| (poller.poll)())
+    match provider {
+        ProviderId::Claude => claude::poll_claude_code(),
+        ProviderId::Codex => codex::poll_codex(),
+        ProviderId::Antigravity => antigravity::poll_antigravity(),
+        ProviderId::OpenCode => opencode::poll_opencode(),
+        ProviderId::Cursor => cursor::poll_cursor(),
+    }
 }
 
 pub fn credential_watch_snapshot(mode: CredentialWatchMode) -> CredentialWatchSnapshot {
@@ -247,36 +121,27 @@ pub fn credential_watch_snapshot(mode: CredentialWatchMode) -> CredentialWatchSn
         CredentialWatchMode::ActiveSource(provider) => (provider, false),
         CredentialWatchMode::AllSources(provider) => (provider, true),
     };
-    provider_poller(provider)
-        .map(|poller| (poller.credential_watch)(all_sources))
-        .unwrap_or_default()
+    match provider {
+        ProviderId::Claude => claude::credential_watch_snapshot(all_sources),
+        ProviderId::Codex => codex::credential_watch_snapshot(),
+        ProviderId::Antigravity => vec![antigravity::credential_watch_signature()],
+        ProviderId::OpenCode => vec![opencode::credential_watch_signature()],
+        ProviderId::Cursor => cursor::credential_watch_snapshot(),
+    }
 }
 
-fn codex_credential_watch_snapshot(_all_sources: bool) -> CredentialWatchSnapshot {
-    codex::credential_watch_snapshot()
-}
-
-fn antigravity_credential_watch_snapshot(_all_sources: bool) -> CredentialWatchSnapshot {
-    vec![antigravity::antigravity_credential_watch_signature()]
-}
-
-fn build_agent() -> Result<ureq::Agent, PollError> {
-    static AGENT: OnceLock<Result<ureq::Agent, PollError>> = OnceLock::new();
-    // Agent clones share their connection pool, cookies, and TLS configuration.
-    AGENT
-        .get_or_init(|| {
-            let tls = ureq::tls::TlsConfig::builder()
-                .provider(ureq::tls::TlsProvider::NativeTls)
-                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-                .build();
-            Ok(ureq::Agent::config_builder()
-                .timeout_global(Some(Duration::from_secs(30)))
-                .tls_config(tls)
-                .build()
-                .into())
-        })
-        .clone()
-}
+/// The app's one HTTP agent, shared by the pollers and the updater.
+pub(crate) static HTTP_AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
+    let tls = ureq::tls::TlsConfig::builder()
+        .provider(ureq::tls::TlsProvider::NativeTls)
+        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+        .build();
+    ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(30)))
+        .tls_config(tls)
+        .build()
+        .into()
+});
 
 type HttpResponse = ureq::http::Response<ureq::Body>;
 
@@ -295,6 +160,112 @@ fn get_header_i64(response: &HttpResponse, name: &str) -> Option<i64> {
         .get(name)
         .and_then(|value| value.to_str().ok())
         .and_then(|s| s.parse::<i64>().ok())
+}
+
+fn non_empty_environment(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// Unpadded base64; `url_safe` selects `-_` instead of `+/` for 62 and 63.
+fn base64_decode(input: &str, url_safe: bool) -> Option<Vec<u8>> {
+    let (value_62, value_63) = if url_safe { (b'-', b'_') } else { (b'+', b'/') };
+    if input.len() % 4 == 1 {
+        return None;
+    }
+    let mut output = Vec::with_capacity(input.len() * 3 / 4);
+    let mut buffer = 0u32;
+    let mut bits = 0u32;
+    for byte in input.bytes() {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            _ if byte == value_62 => 62,
+            _ if byte == value_63 => 63,
+            _ => return None,
+        } as u32;
+        buffer = (buffer << 6) | value;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            output.push(((buffer >> bits) & 0xff) as u8);
+        }
+    }
+    let padding_mask = (1u32 << bits).saturating_sub(1);
+    (buffer & padding_mask == 0).then_some(output)
+}
+
+/// The first of `names` that starts (`--version`), else the first path
+/// `where.exe` reports for any of them.
+fn resolve_cli(names: &[&str]) -> Option<String> {
+    if let Some(name) = names.iter().find(|name| {
+        Command::new(name)
+            .arg("--version")
+            .creation_flags(CREATE_NO_WINDOW.0)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok()
+    }) {
+        return Some(name.to_string());
+    }
+    names.iter().find_map(|name| {
+        let output = Command::new("where.exe")
+            .arg(name)
+            .creation_flags(CREATE_NO_WINDOW.0)
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .next()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+    })
+}
+
+/// A command for a resolved CLI path; `.cmd` shims only run through cmd.exe.
+fn cli_command(path: &str) -> Command {
+    if path.to_lowercase().ends_with(".cmd") {
+        let mut command = Command::new("cmd.exe");
+        command.arg("/c").arg(path);
+        command
+    } else {
+        Command::new(path)
+    }
+}
+
+/// Run a CLI token refresh hidden and silent, killing it after 30 seconds.
+fn run_refresh(mut command: Command, what: &str) {
+    command
+        .creation_flags(CREATE_NO_WINDOW.0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            diagnose::log_error(&format!("unable to spawn {what}"), error);
+            return;
+        }
+    };
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => break,
+            Ok(None) if start.elapsed() > Duration::from_secs(30) => {
+                let _ = child.kill();
+                break;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(500)),
+        }
+    }
 }
 
 fn unix_to_system_time(unix_secs: Option<i64>) -> Option<SystemTime> {
@@ -351,19 +322,14 @@ fn parse_datetime_to_unix(s: &str) -> Option<u64> {
         return None;
     }
 
-    let mut days: u64 = 0;
-    for y in 1970..year {
-        days += if is_leap(y) { 366 } else { 365 };
-    }
-
-    let month_days = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    for m in 1..month {
-        days += month_days[m as usize];
-        if m == 2 && is_leap(year) {
-            days += 1;
-        }
-    }
-    days += day - 1;
+    let days = (1970..year)
+        .map(|year| if is_leap(year) { 366 } else { 365 })
+        .sum::<u64>()
+        + (1..month)
+            .map(|month| days_in_month(year, month))
+            .sum::<u64>()
+        + day
+        - 1;
 
     let local_seconds = days
         .checked_mul(86_400)?
@@ -431,22 +397,14 @@ pub fn time_until_display_change(resets_at: Option<SystemTime>) -> Option<Durati
     Some(time_until_display_change_from_secs(remaining.as_secs()))
 }
 
+/// The text counts whole days, hours or minutes: it changes one second after
+/// the next boundary of the largest unit that fits.
 fn time_until_display_change_from_secs(total_secs: u64) -> Duration {
-    let total_mins = total_secs / 60;
-    let total_hours = total_secs / 3600;
-    let total_days = total_secs / 86400;
-
-    let current_bucket_start = if total_days >= 1 {
-        total_days * 86400
-    } else if total_hours >= 1 {
-        total_hours * 3600
-    } else if total_mins >= 1 {
-        total_mins * 60
-    } else {
-        total_secs
-    };
-
-    Duration::from_secs(total_secs.saturating_sub(current_bucket_start) + 1)
+    let unit = [86_400, 3_600, 60]
+        .into_iter()
+        .find(|unit| total_secs >= *unit)
+        .unwrap_or(1);
+    Duration::from_secs(total_secs % unit + 1)
 }
 
 /// Returns true if either section has reached "now" (reset time has passed).

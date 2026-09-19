@@ -1,11 +1,11 @@
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::ffi::c_void;
-use std::hash::{Hash, Hasher};
 
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
+use windows::core::HSTRING;
+use windows::Win32::Security::Credentials::{CredFree, CredReadW, CREDENTIALW, CRED_TYPE_GENERIC};
 
-use super::{build_agent, parse_iso8601, PollError};
+use super::{parse_iso8601, PollError, HTTP_AGENT};
 use crate::diagnose;
 use crate::models::{UsageData, UsageSection};
 
@@ -44,7 +44,7 @@ struct AntigravityModelInfo {
 }
 
 #[derive(Deserialize)]
-pub(super) struct AntigravityQuotaInfo {
+struct AntigravityQuotaInfo {
     #[serde(rename = "remainingFraction")]
     remaining_fraction: Option<f64>,
     #[serde(rename = "resetTime")]
@@ -57,7 +57,7 @@ pub(super) struct AntigravityQuotaSummaryResponse {
 }
 
 #[derive(Deserialize)]
-pub(super) struct AntigravityQuotaSummaryGroup {
+struct AntigravityQuotaSummaryGroup {
     #[serde(rename = "displayName")]
     display_name: Option<String>,
     description: Option<String>,
@@ -65,7 +65,7 @@ pub(super) struct AntigravityQuotaSummaryGroup {
 }
 
 #[derive(Clone, Deserialize)]
-pub(super) struct AntigravityQuotaSummaryBucket {
+struct AntigravityQuotaSummaryBucket {
     #[serde(rename = "bucketId")]
     bucket_id: Option<String>,
     #[serde(rename = "displayName")]
@@ -75,33 +75,6 @@ pub(super) struct AntigravityQuotaSummaryBucket {
     remaining_fraction: Option<f64>,
     #[serde(rename = "resetTime")]
     reset_time: Option<String>,
-}
-
-#[repr(C)]
-struct CredentialW {
-    flags: u32,
-    type_: u32,
-    target_name: *mut u16,
-    comment: *mut u16,
-    last_written: u64,
-    credential_blob_size: u32,
-    credential_blob: *mut u8,
-    persist: u32,
-    attribute_count: u32,
-    attributes: *mut c_void,
-    target_alias: *mut u16,
-    user_name: *mut u16,
-}
-
-#[link(name = "Advapi32")]
-extern "system" {
-    fn CredReadW(
-        target_name: *const u16,
-        type_: u32,
-        reserved_flags: u32,
-        credential: *mut *mut CredentialW,
-    ) -> i32;
-    fn CredFree(buffer: *mut c_void);
 }
 
 pub(super) fn poll_antigravity() -> Result<UsageData, PollError> {
@@ -116,21 +89,18 @@ pub(super) fn poll_antigravity() -> Result<UsageData, PollError> {
     fetch_antigravity_usage(&creds.access_token)
 }
 
-pub(super) fn antigravity_credential_watch_signature() -> String {
-    let Some(content) = read_windows_generic_credential(ANTIGRAVITY_CREDENTIAL_TARGET) else {
-        return format!("{ANTIGRAVITY_CREDENTIAL_TARGET}|missing");
-    };
-
-    let mut hasher = DefaultHasher::new();
-    content.hash(&mut hasher);
-    format!(
-        "{ANTIGRAVITY_CREDENTIAL_TARGET}|present|{}|{}",
-        content.len(),
-        hasher.finish()
-    )
+pub(super) fn credential_watch_signature() -> String {
+    match read_windows_generic_credential(ANTIGRAVITY_CREDENTIAL_TARGET) {
+        Some(content) => format!(
+            "{ANTIGRAVITY_CREDENTIAL_TARGET}|present|{}|{}",
+            content.len(),
+            crate::accounts::fingerprint(&content)
+        ),
+        None => format!("{ANTIGRAVITY_CREDENTIAL_TARGET}|missing"),
+    }
 }
 
-pub(super) fn fetch_antigravity_usage(token: &str) -> Result<UsageData, PollError> {
+fn fetch_antigravity_usage(token: &str) -> Result<UsageData, PollError> {
     let mut auth_error = false;
     let mut last_error = PollError::RequestFailed;
 
@@ -149,13 +119,29 @@ pub(super) fn fetch_antigravity_usage(token: &str) -> Result<UsageData, PollErro
     }
 }
 
-pub(super) fn fetch_antigravity_usage_from_endpoint(
+fn fetch_antigravity_usage_from_endpoint(
     base_url: &str,
     token: &str,
 ) -> Result<UsageData, PollError> {
-    let project = fetch_antigravity_project(base_url, token)?;
+    let project = post_json::<AntigravityLoadResponse>(
+        base_url,
+        "loadCodeAssist",
+        token,
+        serde_json::json!({ "metadata": { "ideType": "ANTIGRAVITY" } }),
+    )?
+    .project
+    .filter(|project| !project.is_empty());
+
     if let Some(project) = project.as_deref() {
-        match fetch_antigravity_quota_summary(base_url, token, project) {
+        match post_json(
+            base_url,
+            "retrieveUserQuotaSummary",
+            token,
+            serde_json::json!({ "project": project }),
+        )
+        .and_then(|response| {
+            antigravity_usage_from_summary(response).ok_or(PollError::RequestFailed)
+        }) {
             Ok(data) => return Ok(data),
             Err(PollError::AuthRequired) => return Err(PollError::AuthRequired),
             Err(error) => diagnose::log(format!(
@@ -164,171 +150,72 @@ pub(super) fn fetch_antigravity_usage_from_endpoint(
         }
     }
 
-    let session = fetch_antigravity_model_quota(base_url, token, project.as_deref())?;
-    let weekly = UsageSection::default();
-
-    Ok(UsageData {
-        session,
-        weekly,
-        weekly_label: None,
-        monthly: None,
-        scoped: Vec::new(),
-        context: None,
-        credits: None,
-        stale: false,
-    })
-}
-
-pub(super) fn fetch_antigravity_project(
-    base_url: &str,
-    token: &str,
-) -> Result<Option<String>, PollError> {
-    let agent = build_agent()?;
-    let body = serde_json::json!({
-        "metadata": {
-            "ideType": "ANTIGRAVITY"
-        }
-    });
-
-    let mut resp = match agent
-        .post(&format!("{base_url}/v1internal:loadCodeAssist"))
-        .header("Authorization", &format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .header("User-Agent", "antigravity")
-        .send_json(&body)
-    {
-        Ok(resp) => resp,
-        Err(ureq::Error::StatusCode(code)) if code == 401 || code == 403 => {
-            diagnose::log(format!(
-                "Antigravity loadCodeAssist returned auth error status {code}"
-            ));
-            return Err(PollError::AuthRequired);
-        }
-        Err(error) => {
-            diagnose::log_error("Antigravity loadCodeAssist request failed", error);
-            return Err(PollError::RequestFailed);
-        }
-    };
-
-    let response: AntigravityLoadResponse = match resp.body_mut().read_json() {
-        Ok(response) => response,
-        Err(error) => {
-            diagnose::log_error("unable to parse Antigravity loadCodeAssist response", error);
-            return Err(PollError::RequestFailed);
-        }
-    };
-
-    Ok(response.project.filter(|project| !project.is_empty()))
-}
-
-pub(super) fn fetch_antigravity_model_quota(
-    base_url: &str,
-    token: &str,
-    project: Option<&str>,
-) -> Result<UsageSection, PollError> {
-    let agent = build_agent()?;
     let body = match project {
         Some(project) => serde_json::json!({ "project": project }),
         None => serde_json::json!({}),
     };
+    let response: AntigravityModelsResponse =
+        post_json(base_url, "fetchAvailableModels", token, body)?;
+    let session =
+        best_antigravity_section(response.models.into_iter().filter_map(|(model, info)| {
+            let quota = info.quota_info?;
+            if !is_antigravity_display_model(&model) {
+                return None;
+            }
+            section_from_remaining(quota.remaining_fraction, quota.reset_time.as_deref())
+        }))
+        .ok_or(PollError::RequestFailed)?;
 
-    let mut resp = match agent
-        .post(&format!("{base_url}/v1internal:fetchAvailableModels"))
+    Ok(UsageData {
+        session,
+        ..Default::default()
+    })
+}
+
+/// POST one `v1internal` method and read its JSON reply.
+fn post_json<T: DeserializeOwned>(
+    base_url: &str,
+    method: &str,
+    token: &str,
+    body: serde_json::Value,
+) -> Result<T, PollError> {
+    let mut response = match HTTP_AGENT
+        .post(&format!("{base_url}/v1internal:{method}"))
         .header("Authorization", &format!("Bearer {token}"))
         .header("Content-Type", "application/json")
         .header("User-Agent", "antigravity")
         .send_json(&body)
     {
-        Ok(resp) => resp,
-        Err(ureq::Error::StatusCode(code)) if code == 401 || code == 403 => {
+        Ok(response) => response,
+        Err(ureq::Error::StatusCode(code @ (401 | 403))) => {
             diagnose::log(format!(
-                "Antigravity fetchAvailableModels returned auth error status {code}"
+                "Antigravity {method} returned auth error status {code}"
             ));
             return Err(PollError::AuthRequired);
         }
         Err(error) => {
-            diagnose::log_error("Antigravity fetchAvailableModels request failed", error);
+            diagnose::log_error(&format!("Antigravity {method} request failed"), error);
             return Err(PollError::RequestFailed);
         }
     };
-
-    let response: AntigravityModelsResponse = match resp.body_mut().read_json() {
-        Ok(response) => response,
-        Err(error) => {
-            diagnose::log_error(
-                "unable to parse Antigravity fetchAvailableModels response",
-                error,
-            );
-            return Err(PollError::RequestFailed);
-        }
-    };
-
-    best_antigravity_section(response.models.into_iter().filter_map(|(model, info)| {
-        let quota = info.quota_info?;
-        if !is_antigravity_display_model(&model) {
-            return None;
-        }
-        antigravity_section_from_quota(quota)
-    }))
-    .ok_or(PollError::RequestFailed)
-}
-
-pub(super) fn fetch_antigravity_quota_summary(
-    base_url: &str,
-    token: &str,
-    project: &str,
-) -> Result<UsageData, PollError> {
-    let agent = build_agent()?;
-    let body = serde_json::json!({ "project": project });
-
-    let mut resp = match agent
-        .post(&format!("{base_url}/v1internal:retrieveUserQuotaSummary"))
-        .header("Authorization", &format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .header("User-Agent", "antigravity")
-        .send_json(&body)
-    {
-        Ok(resp) => resp,
-        Err(ureq::Error::StatusCode(code)) if code == 401 || code == 403 => {
-            return Err(PollError::AuthRequired);
-        }
-        Err(error) => {
-            diagnose::log_error("Antigravity retrieveUserQuotaSummary request failed", error);
-            return Err(PollError::RequestFailed);
-        }
-    };
-
-    let response: AntigravityQuotaSummaryResponse = match resp.body_mut().read_json() {
-        Ok(response) => response,
-        Err(error) => {
-            diagnose::log_error(
-                "unable to parse Antigravity retrieveUserQuotaSummary response",
-                error,
-            );
-            return Err(PollError::RequestFailed);
-        }
-    };
-
-    antigravity_usage_from_summary(response).ok_or(PollError::RequestFailed)
-}
-
-pub(super) fn antigravity_section_from_quota(quota: AntigravityQuotaInfo) -> Option<UsageSection> {
-    let remaining = quota.remaining_fraction?.clamp(0.0, 1.0);
-    Some(UsageSection {
-        available: true,
-        percentage: (1.0 - remaining) * 100.0,
-        resets_at: parse_iso8601(quota.reset_time.as_deref()),
+    response.body_mut().read_json().map_err(|error| {
+        diagnose::log_error(
+            &format!("unable to parse Antigravity {method} response"),
+            error,
+        );
+        PollError::RequestFailed
     })
 }
 
-pub(super) fn antigravity_section_from_summary_bucket(
-    bucket: &AntigravityQuotaSummaryBucket,
+pub(super) fn section_from_remaining(
+    remaining_fraction: Option<f64>,
+    reset_time: Option<&str>,
 ) -> Option<UsageSection> {
-    let remaining = bucket.remaining_fraction?.clamp(0.0, 1.0);
+    let remaining = remaining_fraction?.clamp(0.0, 1.0);
     Some(UsageSection {
         available: true,
         percentage: (1.0 - remaining) * 100.0,
-        resets_at: parse_iso8601(bucket.reset_time.as_deref()),
+        resets_at: parse_iso8601(reset_time),
     })
 }
 
@@ -353,14 +240,14 @@ pub(super) fn antigravity_usage_from_summary(
     fallback
 }
 
-pub(super) fn antigravity_usage_from_summary_group(
-    group: AntigravityQuotaSummaryGroup,
-) -> Option<UsageData> {
+fn antigravity_usage_from_summary_group(group: AntigravityQuotaSummaryGroup) -> Option<UsageData> {
     let mut data = UsageData::default();
     let mut has_quota = false;
 
     for bucket in group.buckets.unwrap_or_default() {
-        let Some(section) = antigravity_section_from_summary_bucket(&bucket) else {
+        let Some(section) =
+            section_from_remaining(bucket.remaining_fraction, bucket.reset_time.as_deref())
+        else {
             continue;
         };
 
@@ -380,7 +267,7 @@ pub(super) fn antigravity_usage_from_summary_group(
     has_quota.then_some(data)
 }
 
-pub(super) fn is_antigravity_gemini_summary_group(group: &AntigravityQuotaSummaryGroup) -> bool {
+fn is_antigravity_gemini_summary_group(group: &AntigravityQuotaSummaryGroup) -> bool {
     group
         .display_name
         .as_deref()
@@ -403,7 +290,7 @@ pub(super) fn is_antigravity_gemini_summary_group(group: &AntigravityQuotaSummar
         })
 }
 
-pub(super) fn best_antigravity_section<I>(sections: I) -> Option<UsageSection>
+fn best_antigravity_section<I>(sections: I) -> Option<UsageSection>
 where
     I: IntoIterator<Item = UsageSection>,
 {
@@ -415,7 +302,7 @@ where
     })
 }
 
-pub(super) fn is_antigravity_display_model(model: &str) -> bool {
+fn is_antigravity_display_model(model: &str) -> bool {
     model.starts_with("gemini")
         || model.starts_with("claude")
         || model.starts_with("gpt")
@@ -430,12 +317,16 @@ fn read_antigravity_credentials() -> Option<AntigravityTokenData> {
 }
 
 fn read_windows_generic_credential(target: &str) -> Option<String> {
-    const CRED_TYPE_GENERIC: u32 = 1;
-
-    let target_wide: Vec<u16> = target.encode_utf16().chain(std::iter::once(0)).collect();
-    let mut credential: *mut CredentialW = std::ptr::null_mut();
-    let ok = unsafe { CredReadW(target_wide.as_ptr(), CRED_TYPE_GENERIC, 0, &mut credential) };
-    if ok == 0 || credential.is_null() {
+    let mut credential: *mut CREDENTIALW = std::ptr::null_mut();
+    let read = unsafe {
+        CredReadW(
+            &HSTRING::from(target),
+            CRED_TYPE_GENERIC,
+            None,
+            &mut credential,
+        )
+    };
+    if read.is_err() || credential.is_null() {
         diagnose::log(format!(
             "unable to read Windows generic credential target {target}"
         ));
@@ -443,17 +334,14 @@ fn read_windows_generic_credential(target: &str) -> Option<String> {
     }
 
     unsafe {
-        let credentials = &*credential;
-        if credentials.credential_blob_size == 0 || credentials.credential_blob.is_null() {
-            CredFree(credential as *mut c_void);
-            return None;
-        }
-        let bytes = std::slice::from_raw_parts(
-            credentials.credential_blob,
-            credentials.credential_blob_size as usize,
-        );
-        let text = String::from_utf8(bytes.to_vec()).ok();
-        CredFree(credential as *mut c_void);
+        let blob = (*credential).CredentialBlob;
+        let size = (*credential).CredentialBlobSize as usize;
+        let text = if size == 0 || blob.is_null() {
+            None
+        } else {
+            String::from_utf8(std::slice::from_raw_parts(blob, size).to_vec()).ok()
+        };
+        CredFree(credential.cast());
         text
     }
 }

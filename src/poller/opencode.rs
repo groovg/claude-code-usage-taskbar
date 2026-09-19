@@ -1,11 +1,9 @@
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use serde::Deserialize;
 
-use super::{build_agent, parse_iso8601, PollError};
+use super::{non_empty_environment, parse_iso8601, PollError, HTTP_AGENT};
 use crate::diagnose;
 use crate::models::{UsageData, UsageSection};
 
@@ -36,11 +34,11 @@ struct UsageWindow {
     resets_at: Option<SystemTime>,
 }
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, PartialEq)]
 struct DashboardUsage {
-    rolling: Option<UsageWindow>,
-    weekly: Option<UsageWindow>,
-    monthly: Option<UsageWindow>,
+    rolling: UsageWindow,
+    weekly: UsageWindow,
+    monthly: UsageWindow,
 }
 
 // The console JSON API serializes microcent amounts as strings (JavaScript BigInts).
@@ -88,56 +86,32 @@ pub(super) fn poll_opencode() -> Result<UsageData, PollError> {
     poll_dashboard(&credentials)
 }
 
-pub(super) fn credential_watch_snapshot(_all_sources: bool) -> Vec<String> {
-    vec![credential_watch_signature()]
-}
-
 fn poll_dashboard(credentials: &DashboardCredentials) -> Result<UsageData, PollError> {
-    let usage = fetch_dashboard_usage(credentials).inspect_err(|error| {
+    let usage = fetch_go_status(credentials, GO_STATUS_URL).inspect_err(|error| {
         diagnose::log(format!(
             "OpenCode dashboard poll failed via {}: {error:?}",
             credentials.source
         ));
     })?;
 
-    if usage.rolling.is_none() && usage.weekly.is_none() && usage.monthly.is_none() {
-        diagnose::log(format!(
-            "OpenCode dashboard returned no usage windows from {}",
-            credentials.source
-        ));
-        return Err(PollError::RequestFailed);
-    }
-
-    let session = usage
-        .rolling
-        .as_ref()
-        .map(section_from_window)
-        .unwrap_or_default();
     let (weekly, weekly_label) = select_long_window(&usage);
-
     Ok(UsageData {
-        session,
+        session: section_from_window(&usage.rolling),
         weekly,
         weekly_label,
         // The monthly window is kept available to themes alongside the
         // auto-selected `weekly` slot (which prefers the more constrained
         // of the two windows, as before).
-        monthly: usage.monthly.as_ref().map(section_from_window),
-        scoped: Vec::new(),
-        context: None,
-        credits: None,
-        stale: false,
+        monthly: Some(section_from_window(&usage.monthly)),
+        ..Default::default()
     })
 }
 
 fn select_long_window(usage: &DashboardUsage) -> (UsageSection, Option<String>) {
-    match (&usage.weekly, &usage.monthly) {
-        (Some(weekly), Some(monthly)) if monthly.usage_percent > weekly.usage_percent => {
-            (section_from_window(monthly), Some("30d".to_string()))
-        }
-        (Some(weekly), _) => (section_from_window(weekly), Some("7d".to_string())),
-        (None, Some(monthly)) => (section_from_window(monthly), Some("30d".to_string())),
-        (None, None) => (UsageSection::default(), None),
+    if usage.monthly.usage_percent > usage.weekly.usage_percent {
+        (section_from_window(&usage.monthly), Some("30d".to_string()))
+    } else {
+        (section_from_window(&usage.weekly), Some("7d".to_string()))
     }
 }
 
@@ -183,10 +157,6 @@ fn read_dashboard_config(path: &Path) -> Option<DashboardCredentials> {
     })
 }
 
-fn fetch_dashboard_usage(credentials: &DashboardCredentials) -> Result<DashboardUsage, PollError> {
-    fetch_go_status(credentials, GO_STATUS_URL)
-}
-
 fn fetch_go_status(
     credentials: &DashboardCredentials,
     url: &str,
@@ -201,7 +171,7 @@ fn fetch_go_status(
         format!("auth={}", credentials.auth_cookie)
     };
 
-    let mut response = match build_agent()?
+    let mut response = match HTTP_AGENT
         .get(url)
         .header("Accept", "application/json")
         .header("x-org-id", &credentials.workspace_id)
@@ -233,18 +203,15 @@ fn usage_from_status(status: Option<GoStatus>) -> Result<DashboardUsage, PollErr
         PollError::RequestFailed
     })?;
     Ok(DashboardUsage {
-        rolling: Some(window_from_meter(
+        rolling: window_from_meter(
             &access.meters.five_hour.meter,
             access.meters.five_hour.resets_at.as_deref(),
-        )?),
-        weekly: Some(window_from_meter(
+        )?,
+        weekly: window_from_meter(
             &access.meters.week.meter,
             access.meters.week.resets_at.as_deref(),
-        )?),
-        monthly: Some(window_from_meter(
-            &access.meters.month,
-            Some(&access.ends_at),
-        )?),
+        )?,
+        monthly: window_from_meter(&access.meters.month, Some(&access.ends_at))?,
     })
 }
 
@@ -287,7 +254,7 @@ fn dashboard_config_paths() -> Vec<PathBuf> {
         paths.push(config_home.join("opencode-bar").join("opencode-go.json"));
         paths.push(config_home.join("opencode-quota").join("opencode-go.json"));
     }
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = crate::accounts::home_dir() {
         paths.push(
             home.join(".config")
                 .join("opencode-bar")
@@ -302,13 +269,6 @@ fn dashboard_config_paths() -> Vec<PathBuf> {
     paths
 }
 
-fn non_empty_environment(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
 fn valid_workspace_id(value: &str) -> bool {
     !value.is_empty()
         && value
@@ -320,46 +280,22 @@ fn valid_cookie(value: &str) -> bool {
     !value.is_empty() && !value.bytes().any(|byte| matches!(byte, b'\r' | b'\n'))
 }
 
-fn credential_watch_signature() -> String {
-    let mut parts = Vec::new();
-    match read_dashboard_credentials() {
-        Some(credentials) => {
-            let mut hasher = DefaultHasher::new();
-            credentials.workspace_id.hash(&mut hasher);
-            credentials.auth_cookie.hash(&mut hasher);
-            parts.push(format!(
-                "dashboard|present|{}|{}|{:x}|{}",
-                credentials.workspace_id.len(),
-                credentials.auth_cookie.len(),
-                hasher.finish(),
-                credentials.source
-            ));
-        }
-        None => parts.push("dashboard|missing".to_string()),
-    }
+pub(super) fn credential_watch_signature() -> String {
+    let mut parts = vec![match read_dashboard_credentials() {
+        Some(credentials) => format!(
+            "dashboard|present|{}|{}",
+            crate::accounts::fingerprint(&format!(
+                "{}|{}",
+                credentials.workspace_id, credentials.auth_cookie
+            )),
+            credentials.source
+        ),
+        None => "dashboard|missing".to_string(),
+    }];
     for path in dashboard_config_paths() {
-        parts.push(path_signature("config", &path));
+        parts.push(format!("config|{}", crate::accounts::file_signature(&path)));
     }
     parts.join(";;")
-}
-
-fn path_signature(kind: &str, path: &Path) -> String {
-    match std::fs::metadata(path) {
-        Ok(metadata) => {
-            let modified = metadata
-                .modified()
-                .ok()
-                .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-                .map(|value| value.as_secs())
-                .unwrap_or(0);
-            format!(
-                "{kind}:{}|present|{}|{modified}",
-                path.display(),
-                metadata.len()
-            )
-        }
-        Err(_) => format!("{kind}:{}|missing", path.display()),
-    }
 }
 
 #[cfg(test)]
@@ -395,13 +331,13 @@ mod tests {
     #[test]
     fn console_status_maps_meter_percentages_and_absolute_resets() {
         let usage = usage_from_status(serde_json::from_str(GO_STATUS_JSON).unwrap()).unwrap();
-        let rolling = usage.rolling.as_ref().unwrap();
+        let rolling = &usage.rolling;
         assert_eq!(rolling.usage_percent, 12.5);
         assert_eq!(
             rolling.resets_at,
             parse_iso8601(Some("2026-09-17T05:00:00Z"))
         );
-        let weekly = usage.weekly.as_ref().unwrap();
+        let weekly = &usage.weekly;
         assert_eq!(weekly.usage_percent, 45.0);
         assert_eq!(
             weekly.resets_at,
@@ -419,7 +355,7 @@ mod tests {
             .replace("\"250000000\"", "\"0\"")
             .replace("\"2026-09-17T05:00:00.000Z\"", "null");
         let usage = usage_from_status(serde_json::from_str(&json).unwrap()).unwrap();
-        let section = section_from_window(usage.rolling.as_ref().unwrap());
+        let section = section_from_window(&usage.rolling);
         assert!(section.available);
         assert_eq!(section.percentage, 0.0);
         assert_eq!(section.resets_at, None);
@@ -522,7 +458,7 @@ mod tests {
             ("auth=test-token; theme=dark", "auth=test-token; theme=dark"),
         ] {
             let (result, request) = mock_status_request(200, GO_STATUS_JSON, cookie);
-            assert_eq!(result.unwrap().rolling.unwrap().usage_percent, 12.5);
+            assert_eq!(result.unwrap().rolling.usage_percent, 12.5);
             let request = request.to_ascii_lowercase();
             assert!(request.starts_with("get /console/api/go/status http/1.1\r\n"));
             assert!(request.contains("\r\nx-org-id: wrk_example\r\n"));
@@ -557,16 +493,14 @@ mod tests {
 
     #[test]
     fn most_constrained_long_window_is_selected() {
+        let window = |usage_percent| UsageWindow {
+            usage_percent,
+            resets_at: Some(std::time::UNIX_EPOCH),
+        };
         let usage = DashboardUsage {
-            weekly: Some(UsageWindow {
-                usage_percent: 40.0,
-                resets_at: Some(UNIX_EPOCH),
-            }),
-            monthly: Some(UsageWindow {
-                usage_percent: 70.0,
-                resets_at: Some(UNIX_EPOCH),
-            }),
-            ..Default::default()
+            rolling: window(10.0),
+            weekly: window(40.0),
+            monthly: window(70.0),
         };
         let (section, label) = select_long_window(&usage);
         assert_eq!(section.percentage, 70.0);
@@ -574,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn idle_opencode_windows_are_available_and_missing_windows_are_not() {
+    fn idle_opencode_windows_are_available() {
         let window = UsageWindow {
             usage_percent: 0.0,
             resets_at: None,
@@ -583,13 +517,13 @@ mod tests {
         assert!(section.available);
         assert_eq!(section.percentage, 0.0);
         let usage = DashboardUsage {
-            monthly: Some(window),
-            ..Default::default()
+            rolling: window.clone(),
+            weekly: window.clone(),
+            monthly: window,
         };
         let (section, label) = select_long_window(&usage);
         assert!(section.available);
-        assert_eq!(label.as_deref(), Some("30d"));
-        assert!(!select_long_window(&DashboardUsage::default()).0.available);
+        assert_eq!(label.as_deref(), Some("7d"));
     }
 
     #[test]

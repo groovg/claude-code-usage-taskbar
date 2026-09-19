@@ -7,17 +7,24 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{HWND, WAIT_OBJECT_0, WAIT_TIMEOUT};
-use windows::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
+use windows::Win32::Foundation::{CloseHandle, HWND};
+use windows::Win32::System::Threading::{
+    OpenProcess, WaitForSingleObject, CREATE_NEW_CONSOLE, CREATE_NO_WINDOW, PROCESS_SYNCHRONIZE,
+};
+use windows::Win32::UI::Shell::FOLDERID_LocalAppData;
 use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
 
+use crate::native_interop::wide_str;
+use crate::poller::HTTP_AGENT;
+
+/// `CARGO_PKG_REPOSITORY` as a GitHub API call.
+const LATEST_RELEASE_URL: &str =
+    "https://api.github.com/repos/groovg/claude-code-usage-taskbar/releases/latest";
 const GITHUB_API_ACCEPT: &str = "application/vnd.github+json";
 const GITHUB_API_VERSION: &str = "2022-11-28";
 const RELEASE_ASSET_NAME: &str = "claude-code-usage-taskbar.exe";
 const HELPER_EXE_NAME: &str = "updater-helper.exe";
 const DOWNLOAD_EXE_NAME: &str = "update-download.exe";
-const CREATE_NO_WINDOW: u32 = 0x08000000;
-const CREATE_NEW_CONSOLE: u32 = 0x00000010;
 // Keep this aligned with the package identifier used in winget-pkgs.
 const WINGET_PACKAGE_ID: &str = "groovg.ClaudeCodeUsageTaskbar";
 
@@ -99,7 +106,7 @@ pub fn begin_winget_update() -> Result<(), String> {
         .arg("-NoLogo")
         .arg("-Command")
         .arg(&command)
-        .creation_flags(CREATE_NEW_CONSOLE)
+        .creation_flags(CREATE_NEW_CONSOLE.0)
         .spawn()
         .map_err(|e| format!("Unable to launch WinGet update command: {e}"))?;
 
@@ -111,7 +118,7 @@ pub fn begin_self_update(release: &ReleaseDescriptor) -> Result<(), String> {
         std::env::current_exe().map_err(|e| format!("Unable to locate current executable: {e}"))?;
     ensure_target_location_writable(&current_exe)?;
 
-    let stage_dir = updates_dir()?;
+    let stage_dir = updates_dir();
     std::fs::create_dir_all(&stage_dir)
         .map_err(|e| format!("Unable to create updater working directory: {e}"))?;
 
@@ -142,7 +149,7 @@ pub fn begin_self_update(release: &ReleaseDescriptor) -> Result<(), String> {
         .arg(target)
         .arg(source)
         .arg(pid)
-        .creation_flags(CREATE_NO_WINDOW)
+        .creation_flags(CREATE_NO_WINDOW.0)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -160,7 +167,7 @@ fn apply_update(target: PathBuf, source: PathBuf, pid: u32) -> Result<(), String
         ));
     }
 
-    let _ = wait_for_process_exit(pid, Duration::from_secs(30));
+    wait_for_process_exit(pid, Duration::from_secs(30));
     replace_target_binary(&target, &source)?;
     relaunch_target(&target)?;
     let _ = std::fs::remove_file(&source);
@@ -169,12 +176,8 @@ fn apply_update(target: PathBuf, source: PathBuf, pid: u32) -> Result<(), String
 }
 
 fn fetch_latest_release() -> Result<Option<ReleaseDescriptor>, String> {
-    let (owner, repo) = github_repo()?;
-    let url = format!("https://api.github.com/repos/{owner}/{repo}/releases/latest");
-    let agent = build_agent()?;
-
-    let mut response = agent
-        .get(&url)
+    let mut response = HTTP_AGENT
+        .get(LATEST_RELEASE_URL)
         .header("Accept", GITHUB_API_ACCEPT)
         .header("User-Agent", user_agent())
         .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
@@ -211,21 +214,8 @@ fn fetch_latest_release() -> Result<Option<ReleaseDescriptor>, String> {
     }))
 }
 
-fn build_agent() -> Result<ureq::Agent, String> {
-    let tls = ureq::tls::TlsConfig::builder()
-        .provider(ureq::tls::TlsProvider::NativeTls)
-        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-        .build();
-    Ok(ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(30)))
-        .tls_config(tls)
-        .build()
-        .into())
-}
-
 fn download_release_asset(url: &str, partial_path: &Path, final_path: &Path) -> Result<(), String> {
-    let agent = build_agent()?;
-    let response = agent
+    let response = HTTP_AGENT
         .get(url)
         .header("User-Agent", user_agent())
         .call()
@@ -299,7 +289,7 @@ fn relaunch_target(target: &Path) -> Result<(), String> {
     }
 
     command
-        .creation_flags(CREATE_NO_WINDOW)
+        .creation_flags(CREATE_NO_WINDOW.0)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -313,39 +303,25 @@ fn relaunch_target(target: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn wait_for_process_exit(pid: u32, timeout: Duration) -> Result<(), String> {
+/// Best effort: the replacement retries while the file is still locked.
+fn wait_for_process_exit(pid: u32, timeout: Duration) {
     if pid == 0 {
-        return Ok(());
+        return;
     }
 
     unsafe {
-        let handle = OpenProcess(PROCESS_SYNCHRONIZE, false, pid)
-            .map_err(|e| format!("Unable to monitor the running app process: {e}"))?;
-
-        let result = WaitForSingleObject(handle, timeout.as_millis().min(u32::MAX as u128) as u32);
-        let _ = windows::Win32::Foundation::CloseHandle(handle);
-
-        if result == WAIT_OBJECT_0 {
-            Ok(())
-        } else if result == WAIT_TIMEOUT {
-            Err("Timed out waiting for the running app to exit.".to_string())
-        } else {
-            Err("Unable to confirm that the running app has exited.".to_string())
+        if let Ok(handle) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid) {
+            WaitForSingleObject(handle, timeout.as_millis().min(u32::MAX as u128) as u32);
+            let _ = CloseHandle(handle);
         }
     }
 }
 
-fn updates_dir() -> Result<PathBuf, String> {
-    dirs::data_local_dir()
-        .map(|dir| dir.join("ClaudeCodeUsageTaskbar").join("updates"))
-        .or_else(|| {
-            Some(
-                std::env::temp_dir()
-                    .join("ClaudeCodeUsageTaskbar")
-                    .join("updates"),
-            )
-        })
-        .ok_or_else(|| "Unable to resolve a writable local updates directory.".to_string())
+fn updates_dir() -> PathBuf {
+    crate::accounts::known_folder(FOLDERID_LocalAppData)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("ClaudeCodeUsageTaskbar")
+        .join("updates")
 }
 
 fn winget_upgrade_command(pid: u32, target: &str, working_dir: &str) -> String {
@@ -406,22 +382,6 @@ fn ensure_target_location_writable(target: &Path) -> Result<(), String> {
             "The current install location is not writable. Move the app to a user-writable folder or install it somewhere outside Program Files. {error}"
         )),
     }
-}
-
-fn github_repo() -> Result<(&'static str, &'static str), String> {
-    let repository = env!("CARGO_PKG_REPOSITORY").trim_end_matches('/');
-    let parts: Vec<&str> = repository.split('/').collect();
-    if parts.len() < 2 {
-        return Err("Package repository URL is not configured for GitHub releases.".to_string());
-    }
-
-    let owner = parts[parts.len() - 2];
-    let repo = parts[parts.len() - 1];
-    if owner.is_empty() || repo.is_empty() {
-        return Err("Package repository URL is not configured for GitHub releases.".to_string());
-    }
-
-    Ok((owner, repo))
 }
 
 fn user_agent() -> &'static str {
@@ -509,6 +469,16 @@ fn show_error_message(title: &str, message: &str) {
     }
 }
 
-fn wide_str(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain(std::iter::once(0)).collect()
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_release_url_follows_the_package_repository() {
+        assert_eq!(
+            super::LATEST_RELEASE_URL,
+            format!(
+                "{}/releases/latest",
+                env!("CARGO_PKG_REPOSITORY").replace("github.com/", "api.github.com/repos/")
+            )
+        );
+    }
 }

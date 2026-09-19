@@ -21,8 +21,8 @@ const LONG_WINDOW: u64 = 1_000_000;
 /// five seconds, the file changes only when a turn completes.
 static LAST: Mutex<Option<(PathBuf, SystemTime, ContextSection)>> = Mutex::new(None);
 
-pub(super) fn read() -> Option<ContextSection> {
-    let config = config_directory()?;
+pub(crate) fn read() -> Option<ContextSection> {
+    let config = crate::accounts::default_config_directory(crate::providers::ProviderId::Claude)?;
     let (transcript, updated_at) = newest_transcript(&config.join("projects"))?;
     if let Ok(last) = LAST.lock() {
         if let Some((path, modified, section)) = last.as_ref() {
@@ -37,16 +37,10 @@ pub(super) fn read() -> Option<ContextSection> {
     // up after the next turn rather than immediately.
     section.window = context_window(&config, cwd.as_deref());
     section.percentage = (section.tokens as f64 / section.window as f64 * 100.0).clamp(0.0, 100.0);
-    section.updated_at = Some(updated_at);
     if let Ok(mut last) = LAST.lock() {
         *last = Some((transcript, updated_at, section.clone()));
     }
     Some(section)
-}
-
-fn config_directory() -> Option<PathBuf> {
-    crate::accounts::environment_directory(crate::providers::ProviderId::Claude)
-        .or_else(|| dirs::home_dir().map(|home| home.join(".claude")))
 }
 
 /// The most recently written `*.jsonl` directly under any project directory.

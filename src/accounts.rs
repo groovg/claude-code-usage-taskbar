@@ -1,11 +1,32 @@
 //! Named credential sources. Settings contain paths and labels, never tokens.
+use std::ffi::OsString;
+use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use windows::core::GUID;
+use windows::Win32::System::Com::CoTaskMemFree;
+use windows::Win32::UI::Shell::{FOLDERID_Profile, SHGetKnownFolderPath, KNOWN_FOLDER_FLAG};
 
 use crate::providers::ProviderId;
 
-/// Stable non-secret key for source paths and file metadata (not token contents).
+/// A shell known folder such as `FOLDERID_RoamingAppData`.
+pub fn known_folder(id: GUID) -> Option<PathBuf> {
+    unsafe {
+        let path = SHGetKnownFolderPath(&id, KNOWN_FOLDER_FLAG(0), None).ok()?;
+        let folder = PathBuf::from(OsString::from_wide(path.as_wide()));
+        CoTaskMemFree(Some(path.0.cast_const().cast()));
+        Some(folder)
+    }
+}
+
+/// The user profile folder, which is not necessarily `%USERPROFILE%`.
+pub fn home_dir() -> Option<PathBuf> {
+    known_folder(FOLDERID_Profile)
+}
+
+/// Stable 64-bit FNV-1a key. Not a secure hash: only paths and file metadata
+/// may be persisted through it, never token contents.
 pub fn fingerprint(value: &str) -> String {
     let hash = value.bytes().fold(0xcbf29ce484222325u64, |hash, byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
@@ -30,21 +51,26 @@ pub fn source_key(path: &Path) -> String {
     }
 }
 
+/// The CLI's config directory: its environment override, else `~/.claude` or
+/// `~/.codex`.
+pub fn default_config_directory(provider: ProviderId) -> Option<PathBuf> {
+    environment_directory(provider).or_else(|| {
+        Some(home_dir()?.join(if provider == ProviderId::Claude {
+            ".claude"
+        } else {
+            ".codex"
+        }))
+    })
+}
+
 pub fn default_credential_path(provider: ProviderId) -> Option<PathBuf> {
-    let directory = environment_directory(provider).or_else(|| {
-        dirs::home_dir().map(|home| {
-            home.join(if provider == ProviderId::Claude {
-                ".claude"
-            } else {
-                ".codex"
-            })
-        })
-    })?;
-    Some(directory.join(if provider == ProviderId::Claude {
-        ".credentials.json"
-    } else {
-        "auth.json"
-    }))
+    Some(
+        default_config_directory(provider)?.join(if provider == ProviderId::Claude {
+            ".credentials.json"
+        } else {
+            "auth.json"
+        }),
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -200,10 +226,10 @@ fn environment_directory_value(value: Option<std::ffi::OsString>) -> Option<Path
 pub fn expand_path(path: &Path) -> Option<PathBuf> {
     let text = path.to_string_lossy();
     if text == "~" {
-        return dirs::home_dir();
+        return home_dir();
     }
     if let Some(tail) = text.strip_prefix("~/").or_else(|| text.strip_prefix("~\\")) {
-        return Some(dirs::home_dir()?.join(tail));
+        return Some(home_dir()?.join(tail));
     }
     if path.is_absolute() {
         Some(path.to_path_buf())
@@ -298,7 +324,7 @@ mod tests {
         );
         assert_eq!(
             environment_directory_value(Some("~/.codex-work".into())),
-            dirs::home_dir().map(|home| home.join(".codex-work"))
+            home_dir().map(|home| home.join(".codex-work"))
         );
     }
 

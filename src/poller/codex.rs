@@ -1,17 +1,14 @@
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, UNIX_EPOCH};
 
 use serde::Deserialize;
 
-use super::{build_agent, unix_to_system_time, PollError};
+use super::{cli_command, resolve_cli, run_refresh, unix_to_system_time, PollError, HTTP_AGENT};
 use crate::app_settings;
 use crate::diagnose;
 use crate::models::{CodexCreditsState, CreditsSection, UsageData, UsageSection};
 
 const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
-const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Deserialize)]
 struct CodexAuthFile {
@@ -84,7 +81,7 @@ pub(super) fn poll_account(path: &Path) -> Result<UsageData, PollError> {
         }
     };
 
-    match fetch_codex_usage_at(&creds.access_token, creds.account_id.as_deref(), Some(path)) {
+    match fetch_codex_usage_at(&creds.access_token, creds.account_id.as_deref(), path) {
         Ok(data) => Ok(data),
         Err(PollError::AuthRequired) => {
             if path.file_name().is_some_and(|name| name == "auth.json") {
@@ -96,7 +93,7 @@ pub(super) fn poll_account(path: &Path) -> Result<UsageData, PollError> {
             fetch_codex_usage_at(
                 &refreshed.access_token,
                 refreshed.account_id.as_deref(),
-                Some(path),
+                path,
             )
         }
         Err(error) => Err(error),
@@ -106,11 +103,10 @@ pub(super) fn poll_account(path: &Path) -> Result<UsageData, PollError> {
 fn fetch_codex_usage_at(
     token: &str,
     account_id: Option<&str>,
-    path: Option<&Path>,
+    path: &Path,
 ) -> Result<UsageData, PollError> {
     let account_id = account_id.filter(|value| !value.is_empty());
-    let agent = build_agent()?;
-    let mut request = agent
+    let mut request = HTTP_AGENT
         .get(CODEX_USAGE_URL)
         .header("Authorization", &format!("Bearer {token}"))
         .header("User-Agent", "codex-cli");
@@ -141,21 +137,13 @@ fn fetch_codex_usage_at(
         }
     };
 
-    codex_usage_from_response_at(response, account_id, path).ok_or(PollError::RequestFailed)
+    codex_usage_from_response(response, account_id, path).ok_or(PollError::RequestFailed)
 }
 
-#[cfg(test)]
-pub(super) fn codex_usage_from_response(
+fn codex_usage_from_response(
     response: CodexUsageResponse,
     account_id: Option<&str>,
-) -> Option<UsageData> {
-    codex_usage_from_response_at(response, account_id, None)
-}
-
-fn codex_usage_from_response_at(
-    response: CodexUsageResponse,
-    account_id: Option<&str>,
-    path: Option<&Path>,
+    path: &Path,
 ) -> Option<UsageData> {
     let credits = response.credits.flatten();
     let details = *response.rate_limit.flatten()?;
@@ -181,26 +169,13 @@ fn codex_usage_from_response_at(
     }
 
     data.credits = credits.and_then(|credits| {
-        let state_path = path.map(|path| {
-            app_settings::app_data_directory().join(credit_state_file_name(path, account_id))
-        });
-        let previous = match &state_path {
-            Some(path) => std::fs::read(path)
-                .ok()
-                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-                .or_else(|| {
-                    app_settings::load_codex_credits().filter(|state| {
-                        account_id.is_some() && state.account_id.as_deref() == account_id
-                    })
-                }),
-            None => app_settings::load_codex_credits(),
-        };
+        let state_path =
+            app_settings::app_data_directory().join(credit_state_file_name(path, account_id));
+        let previous = std::fs::read(&state_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok());
         let (state, section) = codex_credits(previous, &credits, details.limit_reached, account_id);
-        let saved = match &state_path {
-            Some(path) => app_settings::write_json_atomic(path, &state),
-            None => app_settings::save_codex_credits(&state),
-        };
-        if let Err(error) = saved {
+        if let Err(error) = app_settings::write_json_atomic(&state_path, &state) {
             diagnose::log(format!("unable to persist Codex credit baseline: {error}"));
         }
         section
@@ -297,23 +272,10 @@ pub(super) fn codex_section_from_window(window: &CodexRateLimitWindow) -> UsageS
 }
 
 pub(super) fn credential_watch_snapshot() -> Vec<String> {
-    let Some(path) = codex_auth_path() else {
-        return vec!["codex:auth-path-missing".into()];
-    };
-    let key = format!("codex:{}", path.display());
-    let signature = match std::fs::metadata(path) {
-        Ok(metadata) => {
-            let modified = metadata
-                .modified()
-                .ok()
-                .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-                .map(|value| value.as_nanos())
-                .unwrap_or(0);
-            format!("{key}|present|{}|{modified}", metadata.len())
-        }
-        Err(_) => format!("{key}|missing"),
-    };
-    vec![signature]
+    vec![codex_auth_path().map_or_else(
+        || "codex:auth-path-missing".into(),
+        |path| crate::accounts::file_signature(&path),
+    )]
 }
 
 pub(super) fn codex_auth_path() -> Option<PathBuf> {
@@ -322,7 +284,11 @@ pub(super) fn codex_auth_path() -> Option<PathBuf> {
             crate::accounts::environment_directory(crate::providers::ProviderId::Codex)?;
         return Some(codex_home.join("auth.json"));
     }
-    Some(dirs::home_dir()?.join(".codex").join("auth.json"))
+    Some(
+        crate::accounts::home_dir()?
+            .join(".codex")
+            .join("auth.json"),
+    )
 }
 
 fn read_codex_credentials_at(auth_path: &Path) -> Option<CodexTokenData> {
@@ -345,99 +311,23 @@ fn read_codex_credentials_at(auth_path: &Path) -> Option<CodexTokenData> {
 }
 
 fn cli_refresh_codex_token(directory: &Path) {
-    let codex_path = resolve_windows_codex_path();
-    let is_cmd = codex_path.to_lowercase().ends_with(".cmd");
-    let is_ps1 = codex_path.to_lowercase().ends_with(".ps1");
+    let codex_path = resolve_cli(&["codex.cmd", "codex.ps1", "codex.exe", "codex"])
+        .unwrap_or_else(|| "codex.cmd".to_string());
     diagnose::log(format!(
         "attempting Windows Codex token refresh via {codex_path}"
     ));
 
-    let args: &[&str] = &["exec", "."];
-    let mut command = if is_cmd {
-        let mut command = Command::new("cmd.exe");
-        command.arg("/c").arg(&codex_path).args(args);
-        command
-    } else if is_ps1 {
+    let mut command = if codex_path.to_lowercase().ends_with(".ps1") {
         let mut command = Command::new("powershell.exe");
         command
-            .arg("-NoProfile")
-            .arg("-ExecutionPolicy")
-            .arg("Bypass")
-            .arg("-File")
-            .arg(&codex_path)
-            .args(args);
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+            .arg(&codex_path);
         command
     } else {
-        let mut command = Command::new(&codex_path);
-        command.args(args);
-        command
+        cli_command(&codex_path)
     };
-    command
-        .env("CODEX_HOME", directory)
-        .creation_flags(CREATE_NO_WINDOW)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            diagnose::log_error("unable to spawn Windows Codex token refresh", error);
-            return;
-        }
-    };
-    wait_for_refresh(&mut child);
-}
-
-fn resolve_windows_codex_path() -> String {
-    for name in ["codex.cmd", "codex.ps1", "codex.exe", "codex"] {
-        if Command::new(name)
-            .arg("--version")
-            .creation_flags(CREATE_NO_WINDOW)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok()
-        {
-            return name.to_string();
-        }
-    }
-
-    for name in ["codex.cmd", "codex.ps1", "codex.exe", "codex"] {
-        if let Ok(output) = Command::new("where.exe")
-            .arg(name)
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-        {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                if let Some(path) = stdout
-                    .lines()
-                    .next()
-                    .map(str::trim)
-                    .filter(|path| !path.is_empty())
-                {
-                    return path.to_string();
-                }
-            }
-        }
-    }
-    "codex.cmd".to_string()
-}
-
-fn wait_for_refresh(child: &mut std::process::Child) {
-    let start = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if start.elapsed() > Duration::from_secs(30) => {
-                let _ = child.kill();
-                break;
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(500)),
-            Err(_) => break,
-        }
-    }
+    command.args(["exec", "."]).env("CODEX_HOME", directory);
+    run_refresh(command, "Windows Codex token refresh");
 }
 
 #[cfg(test)]
@@ -465,7 +355,8 @@ mod tests {
     fn usage_from_json(json: &str) -> UsageData {
         let response: CodexUsageResponse =
             serde_json::from_str(json).expect("the fixture should deserialize");
-        codex_usage_from_response(response, None).expect("the fixture should carry rate limits")
+        codex_usage_from_response(response, None, Path::new("C:\\account-tests\\auth.json"))
+            .expect("the fixture should carry rate limits")
     }
 
     fn credits(balance: &str, has_credits: bool) -> CodexCredits {

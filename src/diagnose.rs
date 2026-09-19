@@ -4,21 +4,10 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-struct DiagnoseState {
-    file: Mutex<File>,
-}
+static LOG: OnceLock<Mutex<File>> = OnceLock::new();
 
-static DIAGNOSE_STATE: OnceLock<DiagnoseState> = OnceLock::new();
-
-pub fn init() -> Result<PathBuf, String> {
-    init_file(false)
-}
-
-pub fn init_append() -> Result<PathBuf, String> {
-    init_file(true)
-}
-
-fn init_file(append: bool) -> Result<PathBuf, String> {
+/// Open the diagnostic log; a child process appends to its parent's.
+pub fn init(append: bool) -> Result<PathBuf, String> {
     let path = std::env::temp_dir().join("claude-code-usage-taskbar.log");
     let mut options = OpenOptions::new();
     options.create(true);
@@ -31,9 +20,7 @@ fn init_file(append: bool) -> Result<PathBuf, String> {
         .open(&path)
         .map_err(|e| format!("Unable to open diagnostic log file {}: {e}", path.display()))?;
 
-    let _ = DIAGNOSE_STATE.set(DiagnoseState {
-        file: Mutex::new(file),
-    });
+    let _ = LOG.set(Mutex::new(file));
 
     log(if append {
         "diagnostic logging enabled for child process"
@@ -44,11 +31,11 @@ fn init_file(append: bool) -> Result<PathBuf, String> {
 }
 
 pub fn is_enabled() -> bool {
-    DIAGNOSE_STATE.get().is_some()
+    LOG.get().is_some()
 }
 
 pub fn log(message: impl AsRef<str>) {
-    let Some(state) = DIAGNOSE_STATE.get() else {
+    let Some(file) = LOG.get() else {
         return;
     };
 
@@ -57,7 +44,7 @@ pub fn log(message: impl AsRef<str>) {
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
 
-    if let Ok(mut file) = state.file.lock() {
+    if let Ok(mut file) = file.lock() {
         let _ = writeln!(file, "[{timestamp}] {}", message.as_ref());
         let _ = file.flush();
     }

@@ -11,8 +11,16 @@
 //! Everything here is read-only, runs as the signed-in user, and degrades to
 //! `None` whenever the layout is not what we expect.
 
-use std::ffi::c_void;
 use std::path::{Path, PathBuf};
+
+use windows::Win32::Foundation::{LocalFree, HLOCAL};
+use windows::Win32::Security::Cryptography::{
+    BCryptDecrypt, BCryptDestroyKey, BCryptGenerateSymmetricKey, CryptUnprotectData,
+    BCRYPT_AES_GCM_ALG_HANDLE, BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO,
+    BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION, BCRYPT_FLAGS, BCRYPT_KEY_HANDLE,
+    CRYPT_INTEGER_BLOB,
+};
+use windows::Win32::UI::Shell::FOLDERID_RoamingAppData;
 
 use crate::diagnose;
 
@@ -27,7 +35,6 @@ const GCM_TAG_LEN: usize = 16;
 /// Desktop entries are keyed `"<install>:<user>:<base url>:<scopes>"`; the
 /// inference scope marks the token the usage endpoint accepts.
 const INFERENCE_SCOPE: &str = "user:inference";
-const BCRYPT_INIT_AUTH_MODE_INFO_VERSION: u32 = 1;
 
 pub(super) struct DesktopToken {
     pub(super) access_token: String,
@@ -35,7 +42,11 @@ pub(super) struct DesktopToken {
 }
 
 pub(super) fn config_path() -> Option<PathBuf> {
-    Some(dirs::config_dir()?.join("Claude").join("config.json"))
+    Some(
+        crate::accounts::known_folder(FOLDERID_RoamingAppData)?
+            .join("Claude")
+            .join("config.json"),
+    )
 }
 
 fn local_state_path(config_path: &Path) -> PathBuf {
@@ -46,15 +57,13 @@ pub(super) fn read_token(config_path: &Path) -> Option<DesktopToken> {
     let config = match std::fs::read_to_string(config_path) {
         Ok(config) => config,
         Err(error) => {
-            if diagnose::is_enabled() {
-                diagnose::log_error(
-                    &format!(
-                        "unable to read Claude desktop config at {}",
-                        config_path.display()
-                    ),
-                    error,
-                );
-            }
+            diagnose::log_error(
+                &format!(
+                    "unable to read Claude desktop config at {}",
+                    config_path.display()
+                ),
+                error,
+            );
             return None;
         }
     };
@@ -68,11 +77,10 @@ pub(super) fn read_token(config_path: &Path) -> Option<DesktopToken> {
 
     // The app writes both caches and does not always refresh both, so an
     // expired V2 entry must not mask a live legacy one: take the best across
-    // all caches rather than the first that parses.
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as i64)
-        .unwrap_or(0);
+    // all caches rather than the first that parses. Live before expired, then
+    // the later expiry, is simply the later expiry; a token without one is
+    // taken at its word. Ties keep the earlier cache.
+    let expiry = |token: &DesktopToken| token.expires_at.unwrap_or(i64::MAX);
     let mut best: Option<DesktopToken> = None;
     for (name, cache) in &caches {
         let Some(plaintext) = decrypt_os_crypt_value(cache, &key) else {
@@ -91,24 +99,13 @@ pub(super) fn read_token(config_path: &Path) -> Option<DesktopToken> {
         };
         if best
             .as_ref()
-            .is_none_or(|current| token_rank(&token, now_ms) > token_rank(current, now_ms))
+            .is_none_or(|current| expiry(&token) > expiry(current))
         {
             best = Some(token);
         }
     }
 
     best
-}
-
-/// Live before expired, then the later expiry. A token without an expiry is
-/// taken at its word.
-fn token_rank(token: &DesktopToken, now_ms: i64) -> (bool, i64) {
-    (
-        token
-            .expires_at
-            .is_none_or(|expires_at| expires_at > now_ms),
-        token.expires_at.unwrap_or(i64::MAX),
-    )
 }
 
 /// Signature over the encrypted cache rather than the file's mtime: the
@@ -126,7 +123,7 @@ pub(super) fn watch_signature(config_path: &Path) -> String {
 
     let mut signature = format!("{key}|present");
     for (name, cache) in caches {
-        signature.push_str(&format!("|{name}:{}", fnv1a(cache.as_bytes())));
+        signature.push_str(&format!("|{name}:{}", crate::accounts::fingerprint(&cache)));
     }
     signature
 }
@@ -203,293 +200,70 @@ fn decrypt_os_crypt_value(value: &str, key: &[u8]) -> Option<Vec<u8>> {
     aes_gcm_decrypt(key, nonce, ciphertext, tag)
 }
 
+/// Chromium writes standard, padded base64.
 fn base64_decode(input: &str) -> Option<Vec<u8>> {
-    let input = input.trim_end_matches('=');
-    if input.len() % 4 == 1 {
-        return None;
-    }
-    let mut output = Vec::with_capacity(input.len() * 3 / 4);
-    let mut buffer = 0u32;
-    let mut bits = 0u32;
-    for byte in input.bytes() {
-        let value = match byte {
-            b'A'..=b'Z' => byte - b'A',
-            b'a'..=b'z' => byte - b'a' + 26,
-            b'0'..=b'9' => byte - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            _ => return None,
-        } as u32;
-        buffer = (buffer << 6) | value;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            output.push(((buffer >> bits) & 0xff) as u8);
-        }
-    }
-    let padding_mask = (1u32 << bits).saturating_sub(1);
-    (buffer & padding_mask == 0).then_some(output)
-}
-
-fn fnv1a(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
-    for byte in bytes {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(0x100_0000_01b3);
-    }
-    hash
-}
-
-fn wide(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
-#[repr(C)]
-struct CryptIntegerBlob {
-    cb_data: u32,
-    pb_data: *mut u8,
-}
-
-#[repr(C)]
-struct AuthenticatedCipherModeInfo {
-    cb_size: u32,
-    dw_info_version: u32,
-    pb_nonce: *mut u8,
-    cb_nonce: u32,
-    pb_auth_data: *mut u8,
-    cb_auth_data: u32,
-    pb_tag: *mut u8,
-    cb_tag: u32,
-    pb_mac_context: *mut u8,
-    cb_mac_context: u32,
-    cb_aad: u32,
-    cb_data: u64,
-    dw_flags: u32,
-}
-
-#[link(name = "crypt32")]
-extern "system" {
-    fn CryptUnprotectData(
-        data_in: *const CryptIntegerBlob,
-        data_description: *mut *mut u16,
-        optional_entropy: *const CryptIntegerBlob,
-        reserved: *mut c_void,
-        prompt_struct: *mut c_void,
-        flags: u32,
-        data_out: *mut CryptIntegerBlob,
-    ) -> i32;
-}
-
-extern "system" {
-    fn LocalFree(mem: *mut c_void) -> *mut c_void;
-}
-
-#[link(name = "bcrypt")]
-extern "system" {
-    fn BCryptOpenAlgorithmProvider(
-        algorithm: *mut *mut c_void,
-        id: *const u16,
-        implementation: *const u16,
-        flags: u32,
-    ) -> i32;
-    fn BCryptCloseAlgorithmProvider(algorithm: *mut c_void, flags: u32) -> i32;
-    fn BCryptGetProperty(
-        object: *mut c_void,
-        property: *const u16,
-        output: *mut u8,
-        output_len: u32,
-        result: *mut u32,
-        flags: u32,
-    ) -> i32;
-    fn BCryptSetProperty(
-        object: *mut c_void,
-        property: *const u16,
-        input: *const u8,
-        input_len: u32,
-        flags: u32,
-    ) -> i32;
-    fn BCryptGenerateSymmetricKey(
-        algorithm: *mut c_void,
-        key: *mut *mut c_void,
-        key_object: *mut u8,
-        key_object_len: u32,
-        secret: *const u8,
-        secret_len: u32,
-        flags: u32,
-    ) -> i32;
-    fn BCryptDestroyKey(key: *mut c_void) -> i32;
-    fn BCryptDecrypt(
-        key: *mut c_void,
-        input: *const u8,
-        input_len: u32,
-        padding_info: *const c_void,
-        iv: *mut u8,
-        iv_len: u32,
-        output: *mut u8,
-        output_len: u32,
-        result: *mut u32,
-        flags: u32,
-    ) -> i32;
+    super::base64_decode(input.trim_end_matches('='), false)
 }
 
 fn dpapi_unprotect(data: &[u8]) -> Option<Vec<u8>> {
-    let input = CryptIntegerBlob {
-        cb_data: u32::try_from(data.len()).ok()?,
-        pb_data: data.as_ptr() as *mut u8,
+    let input = CRYPT_INTEGER_BLOB {
+        cbData: u32::try_from(data.len()).ok()?,
+        pbData: data.as_ptr().cast_mut(),
     };
-    let mut output = CryptIntegerBlob {
-        cb_data: 0,
-        pb_data: std::ptr::null_mut(),
-    };
-
-    let ok = unsafe {
-        CryptUnprotectData(
-            &input,
-            std::ptr::null_mut(),
-            std::ptr::null(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            0,
-            &mut output,
-        )
-    };
-
-    if ok == 0 || output.pb_data.is_null() {
+    let mut output = CRYPT_INTEGER_BLOB::default();
+    let unwrapped = unsafe { CryptUnprotectData(&input, None, None, None, None, 0, &mut output) };
+    if unwrapped.is_err() || output.pbData.is_null() {
         diagnose::log("unable to unwrap the Claude desktop OSCrypt key with DPAPI");
         return None;
     }
 
-    Some(unsafe {
-        let key = std::slice::from_raw_parts(output.pb_data, output.cb_data as usize).to_vec();
-        LocalFree(output.pb_data as *mut c_void);
-        key
-    })
+    unsafe {
+        let key = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
+        LocalFree(Some(HLOCAL(output.pbData.cast())));
+        Some(key)
+    }
 }
 
 fn aes_gcm_decrypt(key: &[u8], nonce: &[u8], ciphertext: &[u8], tag: &[u8]) -> Option<Vec<u8>> {
-    let algorithm_id = wide("AES");
-    let mut algorithm: *mut c_void = std::ptr::null_mut();
-    if unsafe {
-        BCryptOpenAlgorithmProvider(&mut algorithm, algorithm_id.as_ptr(), std::ptr::null(), 0)
-    } != 0
-    {
-        diagnose::log("unable to open the AES provider for the Claude desktop token cache");
-        return None;
-    }
-
-    let plaintext = with_gcm_key(algorithm, key, |key_handle| {
-        decrypt_with_key(key_handle, nonce, ciphertext, tag)
-    });
-
-    unsafe { BCryptCloseAlgorithmProvider(algorithm, 0) };
-    plaintext
-}
-
-fn with_gcm_key(
-    algorithm: *mut c_void,
-    key: &[u8],
-    decrypt: impl FnOnce(*mut c_void) -> Option<Vec<u8>>,
-) -> Option<Vec<u8>> {
-    let chaining_property = wide("ChainingMode");
-    let chaining_gcm = wide("ChainingModeGCM");
-    if unsafe {
-        BCryptSetProperty(
-            algorithm,
-            chaining_property.as_ptr(),
-            chaining_gcm.as_ptr() as *const u8,
-            u32::try_from(std::mem::size_of_val(chaining_gcm.as_slice())).ok()?,
-            0,
-        )
-    } != 0
-    {
-        diagnose::log("unable to select GCM chaining for the Claude desktop token cache");
-        return None;
-    }
-
-    let object_length_property = wide("ObjectLength");
-    let mut object_length = 0u32;
-    let mut written = 0u32;
-    if unsafe {
-        BCryptGetProperty(
-            algorithm,
-            object_length_property.as_ptr(),
-            &mut object_length as *mut u32 as *mut u8,
-            u32::try_from(std::mem::size_of::<u32>()).ok()?,
-            &mut written,
-            0,
-        )
-    } != 0
-    {
-        return None;
-    }
-
-    // The key object buffer must outlive the key handle it backs.
-    let mut key_object = vec![0u8; object_length as usize];
-    let mut key_handle: *mut c_void = std::ptr::null_mut();
-    if unsafe {
-        BCryptGenerateSymmetricKey(
-            algorithm,
-            &mut key_handle,
-            key_object.as_mut_ptr(),
-            object_length,
-            key.as_ptr(),
-            u32::try_from(key.len()).ok()?,
-            0,
-        )
-    } != 0
-    {
+    // The AES-GCM pseudo-handle needs no provider to open, configure or close,
+    // and CNG allocates the key object itself.
+    let mut key_handle = BCRYPT_KEY_HANDLE::default();
+    let status = unsafe {
+        BCryptGenerateSymmetricKey(BCRYPT_AES_GCM_ALG_HANDLE, &mut key_handle, None, key, 0)
+    };
+    if status.0 != 0 {
         diagnose::log("unable to import the Claude desktop OSCrypt key");
         return None;
     }
 
-    let plaintext = decrypt(key_handle);
-    unsafe { BCryptDestroyKey(key_handle) };
-    drop(key_object);
-    plaintext
-}
-
-fn decrypt_with_key(
-    key_handle: *mut c_void,
-    nonce: &[u8],
-    ciphertext: &[u8],
-    tag: &[u8],
-) -> Option<Vec<u8>> {
-    let mut nonce = nonce.to_vec();
-    let mut tag = tag.to_vec();
-    let mode_info = AuthenticatedCipherModeInfo {
-        cb_size: u32::try_from(std::mem::size_of::<AuthenticatedCipherModeInfo>()).ok()?,
-        dw_info_version: BCRYPT_INIT_AUTH_MODE_INFO_VERSION,
-        pb_nonce: nonce.as_mut_ptr(),
-        cb_nonce: u32::try_from(nonce.len()).ok()?,
-        pb_auth_data: std::ptr::null_mut(),
-        cb_auth_data: 0,
-        pb_tag: tag.as_mut_ptr(),
-        cb_tag: u32::try_from(tag.len()).ok()?,
-        pb_mac_context: std::ptr::null_mut(),
-        cb_mac_context: 0,
-        cb_aad: 0,
-        cb_data: 0,
-        dw_flags: 0,
+    // Decryption only reads the nonce and the tag.
+    let mode_info = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO {
+        cbSize: std::mem::size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>() as u32,
+        dwInfoVersion: BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION,
+        pbNonce: nonce.as_ptr().cast_mut(),
+        cbNonce: nonce.len() as u32,
+        pbTag: tag.as_ptr().cast_mut(),
+        cbTag: tag.len() as u32,
+        ..Default::default()
     };
-
     let mut plaintext = vec![0u8; ciphertext.len()];
     let mut written = 0u32;
     let status = unsafe {
         BCryptDecrypt(
             key_handle,
-            ciphertext.as_ptr(),
-            u32::try_from(ciphertext.len()).ok()?,
-            &mode_info as *const AuthenticatedCipherModeInfo as *const c_void,
-            std::ptr::null_mut(),
-            0,
-            plaintext.as_mut_ptr(),
-            u32::try_from(plaintext.len()).ok()?,
+            Some(ciphertext),
+            Some(std::ptr::from_ref(&mode_info).cast()),
+            None,
+            Some(&mut plaintext),
             &mut written,
-            0,
+            BCRYPT_FLAGS(0),
         )
     };
+    unsafe {
+        let _ = BCryptDestroyKey(key_handle);
+    }
 
-    if status != 0 {
+    if status.0 != 0 {
         diagnose::log("Claude desktop token cache failed AES-GCM authentication");
         return None;
     }
@@ -580,6 +354,42 @@ mod tests {
         assert_eq!(base64_decode("YWJjZA==").unwrap(), b"abcd");
         assert!(base64_decode("a").is_none());
         assert!(base64_decode("a-b_").is_none());
+    }
+
+    #[test]
+    fn decrypts_an_os_crypt_value_with_aes_gcm() {
+        // Sealed by an independent AES-256-GCM implementation: key 0..32,
+        // nonce 100..112, no associated data.
+        const BLOB: &str = "djEwZGVmZ2hpamtsbW5vMzm3CAqdN/JSWCqbvxdQiDGndDDiApUX1bTCK56BnzO2nS+rKXy5Pt+AExKcLL7ifTLgk1U4JArW08mun+jX73vNryzsegM0s1nZdySzBNFSSmJJjt5TfVZg97h0YXPs2gfszg==";
+        let key: Vec<u8> = (0..32).collect();
+        let plaintext = decrypt_os_crypt_value(BLOB, &key).expect("the fixture should decrypt");
+        let token = select_token(std::str::from_utf8(&plaintext).unwrap()).unwrap();
+        assert_eq!(token.access_token, "sk-ant-fixture");
+        assert_eq!(token.expires_at, Some(1818644595762));
+        // A wrong key fails authentication instead of yielding garbage.
+        assert!(decrypt_os_crypt_value(BLOB, &[0u8; 32]).is_none());
+    }
+
+    #[test]
+    fn dpapi_unwraps_what_this_user_wrapped() {
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::{LocalFree, HLOCAL};
+        use windows::Win32::Security::Cryptography::{CryptProtectData, CRYPT_INTEGER_BLOB};
+
+        let secret = b"os-crypt key fixture";
+        let input = CRYPT_INTEGER_BLOB {
+            cbData: secret.len() as u32,
+            pbData: secret.as_ptr() as *mut u8,
+        };
+        let mut wrapped = CRYPT_INTEGER_BLOB::default();
+        unsafe { CryptProtectData(&input, PCWSTR::null(), None, None, None, 0, &mut wrapped) }
+            .unwrap();
+        let bytes =
+            unsafe { std::slice::from_raw_parts(wrapped.pbData, wrapped.cbData as usize) }.to_vec();
+        unsafe { LocalFree(Some(HLOCAL(wrapped.pbData.cast()))) };
+
+        assert_eq!(dpapi_unprotect(&bytes).as_deref(), Some(&secret[..]));
+        assert!(dpapi_unprotect(b"not a DPAPI blob").is_none());
     }
 
     /// Ignored by default: this one proves the real DPAPI + AES-GCM path

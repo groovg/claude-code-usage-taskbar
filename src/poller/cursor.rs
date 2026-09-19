@@ -1,11 +1,11 @@
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
+use windows::Win32::UI::Shell::FOLDERID_RoamingAppData;
 
-use super::{build_agent, parse_iso8601, PollError};
+use super::{base64_decode, non_empty_environment, parse_iso8601, PollError, HTTP_AGENT};
+use crate::accounts::{file_signature, fingerprint};
 use crate::diagnose;
 use crate::models::{UsageData, UsageSection};
 
@@ -46,12 +46,12 @@ pub(super) fn poll_cursor() -> Result<UsageData, PollError> {
     fetch_cursor_usage(&cookie)
 }
 
-pub(super) fn credential_watch_snapshot(_all_sources: bool) -> Vec<String> {
+pub(super) fn credential_watch_snapshot() -> Vec<String> {
     let environment = non_empty_environment(CURSOR_SESSION_TOKEN_ENV)
-        .map(|value| secret_signature("environment", &value))
+        .map(|value| format!("environment|present|{}", fingerprint(&value)))
         .unwrap_or_else(|| "environment|missing".into());
     let database = cursor_state_db_path()
-        .map(|path| path_signature("database", &path))
+        .map(|path| format!("database|{}", file_signature(&path)))
         .unwrap_or_else(|| "database|missing".into());
     vec![environment, database]
 }
@@ -94,7 +94,7 @@ fn cursor_cookie_from_access_token(access_token: &str) -> Option<String> {
 
 fn extract_cursor_user_id(jwt: &str) -> Option<String> {
     let payload = jwt.split('.').nth(1)?;
-    let decoded = base64_url_decode(payload)?;
+    let decoded = base64_decode(payload, true)?;
     let json: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
     let subject = json.get("sub")?.as_str()?;
     Some(
@@ -105,35 +105,8 @@ fn extract_cursor_user_id(jwt: &str) -> Option<String> {
     )
 }
 
-fn base64_url_decode(input: &str) -> Option<Vec<u8>> {
-    if input.len() % 4 == 1 {
-        return None;
-    }
-    let mut output = Vec::with_capacity(input.len() * 3 / 4);
-    let mut buffer = 0u32;
-    let mut bits = 0u32;
-    for byte in input.bytes() {
-        let value = match byte {
-            b'A'..=b'Z' => byte - b'A',
-            b'a'..=b'z' => byte - b'a' + 26,
-            b'0'..=b'9' => byte - b'0' + 52,
-            b'-' => 62,
-            b'_' => 63,
-            _ => return None,
-        } as u32;
-        buffer = (buffer << 6) | value;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            output.push(((buffer >> bits) & 0xff) as u8);
-        }
-    }
-    let padding_mask = (1u32 << bits).saturating_sub(1);
-    (buffer & padding_mask == 0).then_some(output)
-}
-
 fn cursor_state_db_path() -> Option<PathBuf> {
-    let path = dirs::config_dir()?
+    let path = crate::accounts::known_folder(FOLDERID_RoamingAppData)?
         .join("Cursor")
         .join("User")
         .join("globalStorage")
@@ -178,7 +151,7 @@ fn query_cursor_access_token_from_copy(path: &Path) -> Option<String> {
     }
 }
 
-fn query_cursor_access_token(path: &Path) -> Result<Option<String>, crate::winsqlite::Error> {
+fn query_cursor_access_token(path: &Path) -> Result<Option<String>, String> {
     crate::winsqlite::query_optional_text(
         path,
         "SELECT value FROM ItemTable WHERE key = ?1",
@@ -189,7 +162,7 @@ fn query_cursor_access_token(path: &Path) -> Result<Option<String>, crate::winsq
 
 fn fetch_cursor_usage(cookie: &str) -> Result<UsageData, PollError> {
     let cookie_header = format!("WorkosCursorSessionToken={cookie}");
-    let mut response = match build_agent()?
+    let mut response = match HTTP_AGENT
         .get(CURSOR_USAGE_SUMMARY_URL)
         .header("Cookie", &cookie_header)
         .header("User-Agent", "Mozilla/5.0")
@@ -230,44 +203,8 @@ fn cursor_usage_from_summary(response: CursorUsageSummaryResponse) -> Option<Usa
         session: section(plan.auto_percent_used.or(plan.total_percent_used)),
         weekly: section(plan.api_percent_used),
         weekly_label: Some("API".into()),
-        monthly: None,
-        scoped: Vec::new(),
-        context: None,
-        credits: None,
-        stale: false,
+        ..Default::default()
     })
-}
-
-fn non_empty_environment(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
-fn secret_signature(source: &str, value: &str) -> String {
-    let mut hasher = DefaultHasher::new();
-    value.hash(&mut hasher);
-    format!("{source}|present|{}|{:x}", value.len(), hasher.finish())
-}
-
-fn path_signature(kind: &str, path: &Path) -> String {
-    match std::fs::metadata(path) {
-        Ok(metadata) => {
-            let modified = metadata
-                .modified()
-                .ok()
-                .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-                .map(|value| value.as_secs())
-                .unwrap_or(0);
-            format!(
-                "{kind}:{}|present|{}|{modified}",
-                path.display(),
-                metadata.len()
-            )
-        }
-        Err(_) => format!("{kind}:{}|missing", path.display()),
-    }
 }
 
 #[cfg(test)]
@@ -286,7 +223,7 @@ mod tests {
 
     #[test]
     fn rejects_malformed_base64_and_cookie_header_injection() {
-        assert!(base64_url_decode("a").is_none());
+        assert!(base64_decode("a", true).is_none());
         assert!(normalize_cursor_session_cookie("value\r\nInjected: yes").is_none());
     }
 

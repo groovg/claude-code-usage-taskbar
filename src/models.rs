@@ -6,36 +6,12 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::providers::ProviderId;
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct UsageSection {
     /// The provider reported this window, even if unused and without a reset time.
     pub available: bool,
     pub percentage: f64,
     pub resets_at: Option<SystemTime>,
-}
-
-impl<'de> Deserialize<'de> for UsageSection {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct StoredSection {
-            available: Option<bool>,
-            percentage: f64,
-            resets_at: Option<SystemTime>,
-        }
-        let stored = StoredSection::deserialize(deserializer)?;
-        Ok(Self {
-            // Older caches lost the distinction between an idle window and an
-            // absent one. Preserve evidence of presence until a fresh poll.
-            available: stored
-                .available
-                .unwrap_or(stored.resets_at.is_some() || stored.percentage != 0.0),
-            percentage: stored.percentage,
-            resets_at: stored.resets_at,
-        })
-    }
 }
 
 /// Paid credits that carry a provider past its included allowance.
@@ -101,8 +77,6 @@ pub struct ContextSection {
     /// several sessions open can tell whose context this is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
-    /// When the transcript last changed.
-    pub updated_at: Option<SystemTime>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -306,8 +280,7 @@ impl AppUsageData {
                     .filter(|account| account.provider == ProviderId::Claude)
                     .filter_map(|account| account.usage.as_mut()),
             );
-        // Every transcript write bumps `updated_at`; only the figures warrant
-        // a redraw.
+        // Only the figures warrant a redraw.
         let figures = |context: &Option<ContextSection>| {
             context
                 .as_ref()
@@ -396,10 +369,8 @@ impl<'de> Deserialize<'de> for AppUsageData {
         let mut data: Self = values
             .into_iter()
             .filter_map(|(key, usage)| {
-                let usage = serde_json::from_value::<Option<UsageData>>(usage).ok()??;
-                ProviderId::from_cache_key(&key)
-                    .or_else(|| ProviderId::from_key(&key))
-                    .map(|provider| (provider, usage))
+                let usage = serde_json::from_value::<UsageData>(usage).ok()?;
+                ProviderId::from_cache_key(&key).map(|provider| (provider, usage))
             })
             .collect();
         data.accounts = accounts;
@@ -412,7 +383,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn usage_cache_preserves_idle_window_presence_and_reads_legacy_sections() {
+    fn usage_cache_preserves_idle_window_presence() {
         for available in [false, true] {
             let section = UsageSection {
                 available,
@@ -424,21 +395,6 @@ mod tests {
                 serde_json::from_value::<UsageSection>(json).unwrap(),
                 section
             );
-        }
-        for (json, expected) in [
-            (r#"{"percentage":0,"resets_at":null}"#, false),
-            (r#"{"percentage":42,"resets_at":null}"#, true),
-            (
-                r#"{"percentage":0,"resets_at":{"secs_since_epoch":0,"nanos_since_epoch":0}}"#,
-                true,
-            ),
-            (
-                r#"{"available":false,"percentage":42,"resets_at":null}"#,
-                false,
-            ),
-        ] {
-            let section: UsageSection = serde_json::from_str(json).unwrap();
-            assert_eq!(section.available, expected);
         }
     }
 
@@ -475,11 +431,11 @@ mod tests {
     }
 
     #[test]
-    fn usage_cache_accepts_nulls_from_the_legacy_struct_format() {
+    fn usage_cache_skips_null_providers() {
         let decoded: AppUsageData = serde_json::from_str(
             r#"{
                 "claude_code": null,
-                "codex": {"session":{"percentage":42.0,"resets_at":null},"weekly":{"percentage":0.0,"resets_at":null}},
+                "codex": {"session":{"available":true,"percentage":42.0,"resets_at":null},"weekly":{"available":false,"percentage":0.0,"resets_at":null}},
                 "antigravity": null
                 ,"opencode": null
             }"#,

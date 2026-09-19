@@ -1528,7 +1528,6 @@ fn compact_fluent_quad_widget_respects_usage_direction() {
                     percentage: 25.0,
                     model: None,
                     project: None,
-                    updated_at: None,
                 }),
                 ..Default::default()
             },
@@ -2499,7 +2498,6 @@ fn claude_model_caps_and_session_context_are_available_to_templates() {
                 percentage: 14.3,
                 model: Some("claude-fable-5-1".into()),
                 project: None,
-                updated_at: None,
             }),
             ..Default::default()
         },

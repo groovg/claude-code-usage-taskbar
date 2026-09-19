@@ -4,11 +4,13 @@ use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
+use windows::Win32::System::Threading::CREATE_NO_WINDOW;
+use windows::Win32::UI::Shell::FOLDERID_RoamingAppData;
 
 use super::claude_desktop;
 use super::{
-    build_agent, get_header_f64, get_header_i64, parse_iso8601, unix_to_system_time, HttpResponse,
-    PollError,
+    cli_command, get_header_f64, get_header_i64, parse_iso8601, resolve_cli, run_refresh,
+    unix_to_system_time, HttpResponse, PollError, HTTP_AGENT,
 };
 use crate::diagnose;
 use crate::models::{CreditsSection, ScopedLimit, UsageData};
@@ -16,7 +18,6 @@ use crate::models::{CreditsSection, ScopedLimit, UsageData};
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
 const MODEL_FALLBACK_CHAIN: &[&str] = &["claude-3-haiku-20240307", "claude-haiku-4-5-20251001"];
-const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Deserialize)]
 struct UsageResponse {
@@ -120,21 +121,14 @@ pub(super) fn poll_claude_code() -> Result<UsageData, PollError> {
 /// default path — falls through to the desktop app. A custom export stays
 /// pinned, so a multi-account setup can never borrow another account's token.
 pub(super) fn poll_account(path: &Path) -> Result<UsageData, PollError> {
-    let mut credentials =
+    let credentials =
         match read_credentials_from_source(&CredentialSource::Windows(path.to_path_buf())) {
             Some(credentials) => credentials,
             None => desktop_credentials_for_default_path(path).ok_or(PollError::NoCredentials)?,
         };
 
     // Refresh against whichever source actually produced the token.
-    let source = credentials.source.clone();
-    if is_token_expired(credentials.expires_at) {
-        cli_refresh_token(&source);
-        credentials = read_credentials_from_source(&source).ok_or(PollError::TokenExpired)?;
-        if is_token_expired(credentials.expires_at) {
-            return Err(PollError::TokenExpired);
-        }
-    }
+    let credentials = refresh_credentials(credentials)?;
     fetch_usage_with_fallback(&credentials.access_token)
 }
 
@@ -188,9 +182,7 @@ fn fetch_remote_usage(token: &str) -> Result<UsageData, PollError> {
 }
 
 pub(super) fn try_usage_endpoint(token: &str) -> Result<Option<UsageData>, PollError> {
-    let agent = build_agent()?;
-
-    let mut resp = match agent
+    let mut resp = match HTTP_AGENT
         .get(USAGE_URL)
         .header("Authorization", &format!("Bearer {token}"))
         .header("anthropic-beta", "oauth-2025-04-20")
@@ -325,8 +317,6 @@ fn claude_credits(spend: &SpendResponse, data: &UsageData) -> Option<CreditsSect
 }
 
 pub(super) fn fetch_usage_via_messages(token: &str) -> Result<UsageData, PollError> {
-    let agent = build_agent()?;
-
     for model in MODEL_FALLBACK_CHAIN {
         let body = serde_json::json!({
             "model": model,
@@ -334,7 +324,7 @@ pub(super) fn fetch_usage_via_messages(token: &str) -> Result<UsageData, PollErr
             "messages": [{"role": "user", "content": "."}]
         });
 
-        let response = match agent
+        let response = match HTTP_AGENT
             .post(MESSAGES_URL)
             .header("Authorization", &format!("Bearer {token}"))
             .header("anthropic-version", "2023-06-01")
@@ -483,38 +473,17 @@ fn cli_refresh_token(source: &CredentialSource) {
 
 fn cli_refresh_windows_token(directory: &Path) {
     let claude_path = resolve_windows_claude_path();
-    let is_cmd = claude_path.to_lowercase().ends_with(".cmd");
     diagnose::log(format!(
         "attempting Windows Claude token refresh via {claude_path}"
     ));
 
-    let args: &[&str] = &["-p", "."];
-    let mut command = if is_cmd {
-        let mut command = Command::new("cmd.exe");
-        command.arg("/c").arg(&claude_path).args(args);
-        command
-    } else {
-        let mut command = Command::new(&claude_path);
-        command.args(args);
-        command
-    };
+    let mut command = cli_command(&claude_path);
     command
+        .args(["-p", "."])
         .env("CLAUDE_CONFIG_DIR", directory)
         .env_remove("CLAUDECODE")
-        .env_remove("CLAUDE_CODE_ENTRYPOINT")
-        .creation_flags(CREATE_NO_WINDOW)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            diagnose::log_error("unable to spawn Windows Claude token refresh", error);
-            return;
-        }
-    };
-    wait_for_refresh(&mut child);
+        .env_remove("CLAUDE_CODE_ENTRYPOINT");
+    run_refresh(command, "Windows Claude token refresh");
 }
 
 fn cli_refresh_wsl_token(distro: &str) {
@@ -530,68 +499,25 @@ fn cli_refresh_wsl_token(distro: &str) {
         .arg("-lic")
         .arg("export CLAUDE_CONFIG_DIR=\"$HOME/.claude\"; if command -v claude >/dev/null 2>&1; then claude -p .; elif [ -x \"$HOME/.local/bin/claude\" ]; then \"$HOME/.local/bin/claude\" -p .; else exit 127; fi")
         .env_remove("CLAUDECODE")
-        .env_remove("CLAUDE_CODE_ENTRYPOINT")
-        .creation_flags(CREATE_NO_WINDOW)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            diagnose::log_error("unable to spawn WSL Claude token refresh", error);
-            return;
-        }
-    };
-    wait_for_refresh(&mut child);
+        .env_remove("CLAUDE_CODE_ENTRYPOINT");
+    run_refresh(command, "WSL Claude token refresh");
 }
 
 fn resolve_windows_claude_path() -> String {
-    for name in ["claude.cmd", "claude"] {
-        if Command::new(name)
-            .arg("--version")
-            .creation_flags(CREATE_NO_WINDOW)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok()
-        {
-            return name.to_string();
-        }
-    }
-
-    for name in ["claude.cmd", "claude"] {
-        if let Ok(output) = Command::new("where.exe")
-            .arg(name)
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-        {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                if let Some(path) = stdout
-                    .lines()
-                    .next()
-                    .map(str::trim)
-                    .filter(|path| !path.is_empty())
-                {
-                    return path.to_string();
-                }
-            }
-        }
-    }
-
-    if let Some(bundled) = bundled_desktop_claude_path() {
-        return bundled.to_string_lossy().into_owned();
-    }
-
-    "claude.cmd".to_string()
+    resolve_cli(&["claude.cmd", "claude"])
+        .or_else(|| {
+            bundled_desktop_claude_path().map(|bundled| bundled.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "claude.cmd".to_string())
 }
 
 /// The desktop app ships its own Claude Code build under
 /// `%APPDATA%\Claude\claude-code\<version>\claude.exe`, which is the only
 /// Claude binary present when the standalone CLI was never installed.
 fn bundled_desktop_claude_path() -> Option<PathBuf> {
-    let versions = dirs::config_dir()?.join("Claude").join("claude-code");
+    let versions = crate::accounts::known_folder(FOLDERID_RoamingAppData)?
+        .join("Claude")
+        .join("claude-code");
     let mut candidates: Vec<PathBuf> = std::fs::read_dir(versions)
         .ok()?
         .flatten()
@@ -625,12 +551,10 @@ fn read_windows_credentials(path: &Path) -> Option<Credentials> {
     let content = match std::fs::read_to_string(path) {
         Ok(content) => content,
         Err(error) => {
-            if diagnose::is_enabled() {
-                diagnose::log_error(
-                    &format!("unable to read Windows credentials at {}", path.display()),
-                    error,
-                );
-            }
+            diagnose::log_error(
+                &format!("unable to read Windows credentials at {}", path.display()),
+                error,
+            );
             return None;
         }
     };
@@ -664,7 +588,7 @@ fn read_wsl_credentials(distro: &str) -> Option<Credentials> {
             .arg("sh")
             .arg("-lc")
             .arg("cat ~/.claude/.credentials.json")
-            .creation_flags(CREATE_NO_WINDOW)
+            .creation_flags(CREATE_NO_WINDOW.0)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null()),
         Duration::from_secs(5),
@@ -731,7 +655,9 @@ fn windows_credential_source() -> Option<CredentialSource> {
             .map(|directory| CredentialSource::Windows(directory.join(".credentials.json")));
     }
     Some(CredentialSource::Windows(
-        dirs::home_dir()?.join(".claude").join(".credentials.json"),
+        crate::accounts::home_dir()?
+            .join(".claude")
+            .join(".credentials.json"),
     ))
 }
 
@@ -755,25 +681,9 @@ pub(super) fn native_credential_path() -> Option<PathBuf> {
 
 fn credential_watch_signature(source: &CredentialSource) -> Option<String> {
     match source {
-        CredentialSource::Windows(path) => Some(windows_credential_watch_signature(path)),
+        CredentialSource::Windows(path) => Some(crate::accounts::file_signature(path)),
         CredentialSource::DesktopApp(path) => Some(claude_desktop::watch_signature(path)),
         CredentialSource::Wsl { distro } => wsl_credential_watch_signature(distro),
-    }
-}
-
-fn windows_credential_watch_signature(path: &PathBuf) -> String {
-    let key = format!("win:{}", path.display());
-    match std::fs::metadata(path) {
-        Ok(metadata) => {
-            let modified = metadata
-                .modified()
-                .ok()
-                .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-                .map(|value| value.as_nanos())
-                .unwrap_or(0);
-            format!("{key}|present|{}|{modified}", metadata.len())
-        }
-        Err(_) => format!("{key}|missing"),
     }
 }
 
@@ -788,7 +698,7 @@ fn wsl_credential_watch_signature(distro: &str) -> Option<String> {
             .arg(
                 "if [ -f ~/.claude/.credentials.json ]; then stat -c 'present|%s|%Y' ~/.claude/.credentials.json; else echo missing; fi",
             )
-            .creation_flags(CREATE_NO_WINDOW)
+            .creation_flags(CREATE_NO_WINDOW.0)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null()),
         Duration::from_secs(5),
@@ -805,7 +715,7 @@ fn list_wsl_distros() -> Vec<String> {
     let output = match run_with_timeout(
         Command::new("wsl.exe")
             .args(["-l", "-q"])
-            .creation_flags(CREATE_NO_WINDOW)
+            .creation_flags(CREATE_NO_WINDOW.0)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null()),
         Duration::from_secs(5),
@@ -882,21 +792,6 @@ fn run_with_timeout(command: &mut Command, timeout: Duration) -> Option<std::pro
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(100)),
             Err(_) => return None,
-        }
-    }
-}
-
-fn wait_for_refresh(child: &mut std::process::Child) {
-    let start = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if start.elapsed() > Duration::from_secs(30) => {
-                let _ = child.kill();
-                break;
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(500)),
-            Err(_) => break,
         }
     }
 }

@@ -45,7 +45,7 @@ impl Target {
     }
 }
 
-pub(super) fn poll_accounts(
+pub(crate) fn poll_accounts(
     enabled: ProviderSet,
     settings: &AccountSettings,
     previous: Option<&AppUsageData>,
@@ -68,7 +68,7 @@ pub(super) fn poll_accounts(
 }
 
 #[cfg(test)]
-fn poll_accounts_with<F>(
+pub(super) fn poll_accounts_with<F>(
     enabled: ProviderSet,
     settings: &AccountSettings,
     poll: F,
