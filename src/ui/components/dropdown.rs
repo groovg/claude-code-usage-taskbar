@@ -1,6 +1,6 @@
 use eframe::egui;
 
-use crate::ui::theme::{accent, selected_menu_fill};
+use crate::ui::theme::{ACCENT, SELECTED_MENU_FILL};
 use crate::ui::tokens::{CONTROL_CORNER_RADIUS, CONTROL_HEIGHT, DROPDOWN_CORNER_RADIUS};
 
 const MAX_VISIBLE_OPTIONS: usize = 6;
@@ -287,7 +287,7 @@ pub(crate) fn dropdown_selectable_label(
         ui.allocate_exact_size(egui::vec2(width, CONTROL_HEIGHT), egui::Sense::click());
     let visuals = ui.style().interact_selectable(&response, selected);
     let fill = if selected {
-        selected_menu_fill()
+        SELECTED_MENU_FILL
     } else if response.hovered() || response.highlighted() || response.has_focus() {
         visuals.bg_fill
     } else {
@@ -334,7 +334,7 @@ pub(crate) fn dropdown_selectable_label(
         );
         ui.painter()
             .with_clip_rect(marker_clip)
-            .rect_filled(response.rect, 4.0, accent());
+            .rect_filled(response.rect, 4.0, ACCENT);
     }
     if natural_text_width > text_width {
         response.on_hover_text(label)

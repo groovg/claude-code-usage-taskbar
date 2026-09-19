@@ -374,24 +374,13 @@ fn build_ui_fallback_subset() {
     let codepoints = (' '..='~')
         .chain(['\u{2014}', '\u{2018}', '\u{2019}'])
         .collect::<BTreeSet<_>>();
-    let options = SubsetOptions::default()
-        .strip_hints(true)
-        .retain_layout_tables(false)
-        .retain_names(false)
-        .drop_variations(true);
-    let (subset, stats) = subset_font_with_options(UBUNTU_LIGHT, &codepoints, &options)
-        .expect("Failed to build the UI fallback font subset");
-
-    let output = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR was not set"))
-        .join("ui-fallback.ttf");
-    write_if_changed(&output, &subset)
-        .unwrap_or_else(|error| panic!("Failed to write {}: {error}", output.display()));
-
-    println!(
-        "cargo:warning=UI fallback font subset: {} characters, {} -> {} bytes",
-        codepoints.len(),
-        stats.original_size,
-        stats.subset_size
+    write_subset(
+        UBUNTU_LIGHT,
+        &codepoints,
+        "ui-fallback.ttf",
+        "Failed to build the UI fallback font subset",
+        "UI fallback font subset",
+        "characters",
     );
 }
 
@@ -426,22 +415,40 @@ fn build_lucide_subset() {
                 .unicode()
         })
         .collect::<BTreeSet<_>>();
+    write_subset(
+        LUCIDE_FONT_BYTES,
+        &codepoints,
+        "lucide-subset.ttf",
+        "Failed to build the Lucide icon font subset",
+        "Lucide font subset",
+        "icons",
+    );
+}
 
+/// Subsets `font` to `codepoints`, writes it to OUT_DIR/`file_name` and reports
+/// "`label`: <count> `unit`, <before> -> <after> bytes" as a cargo warning.
+fn write_subset(
+    font: &[u8],
+    codepoints: &BTreeSet<char>,
+    file_name: &str,
+    failure: &str,
+    label: &str,
+    unit: &str,
+) {
     let options = SubsetOptions::default()
         .strip_hints(true)
         .retain_layout_tables(false)
         .retain_names(false)
         .drop_variations(true);
-    let (subset, stats) = subset_font_with_options(LUCIDE_FONT_BYTES, &codepoints, &options)
-        .expect("Failed to build the Lucide icon font subset");
+    let (subset, stats) = subset_font_with_options(font, codepoints, &options).expect(failure);
 
-    let output = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR was not set"))
-        .join("lucide-subset.ttf");
+    let output =
+        PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR was not set")).join(file_name);
     write_if_changed(&output, &subset)
         .unwrap_or_else(|error| panic!("Failed to write {}: {error}", output.display()));
 
     println!(
-        "cargo:warning=Lucide font subset: {} icons, {} -> {} bytes",
+        "cargo:warning={label}: {} {unit}, {} -> {} bytes",
         codepoints.len(),
         stats.original_size,
         stats.subset_size

@@ -1,6 +1,6 @@
 use eframe::egui;
 
-use crate::ui::theme::{muted, section_border, section_surface, setting_separator_color};
+use crate::ui::theme::{MUTED, SECTION_BORDER, SECTION_SURFACE, SETTING_SEPARATOR_COLOR};
 use crate::ui::tokens::{
     CONTROL_HEIGHT, INSPECTOR_CONTROL_MAX_WIDTH, INSPECTOR_LABEL_WIDTH, INSPECTOR_RIGHT_GUTTER,
 };
@@ -45,8 +45,8 @@ pub(crate) fn settings_section(ui: &mut egui::Ui, title: &str, body: impl FnOnce
     ui.label(egui::RichText::new(title).size(25.0).strong());
     ui.add_space(10.0);
     egui::Frame::new()
-        .fill(section_surface())
-        .stroke(egui::Stroke::new(1.0, section_border()))
+        .fill(SECTION_SURFACE)
+        .stroke(egui::Stroke::new(1.0, SECTION_BORDER))
         .corner_radius(12)
         .inner_margin(egui::Margin::symmetric(20, 8))
         .show(ui, body);
@@ -81,7 +81,7 @@ pub(crate) fn setting_row(
     label_ui.set_clip_rect(label_rect.intersect(ui.clip_rect()));
     label_ui.add_space(8.0);
     label_ui.label(egui::RichText::new(title).size(16.0).strong());
-    label_ui.label(egui::RichText::new(detail).size(14.0).color(muted()));
+    label_ui.label(egui::RichText::new(detail).size(14.0).color(MUTED));
 
     let mut control_ui = ui.new_child(
         egui::UiBuilder::new()
@@ -98,7 +98,7 @@ pub(crate) fn setting_separator(ui: &mut egui::Ui) {
     ui.painter().hline(
         rect.x_range(),
         rect.center().y,
-        egui::Stroke::new(1.0, setting_separator_color()),
+        egui::Stroke::new(1.0, SETTING_SEPARATOR_COLOR),
     );
 }
 
@@ -108,7 +108,7 @@ pub(crate) fn inspector_row(ui: &mut egui::Ui, label: &str, body: impl FnOnce(&m
             egui::vec2(INSPECTOR_LABEL_WIDTH, CONTROL_HEIGHT),
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
-                ui.label(egui::RichText::new(label).color(muted()));
+                ui.label(egui::RichText::new(label).color(MUTED));
             },
         );
         let available_width = ui.available_width().max(1.0);

@@ -1,6 +1,6 @@
 use eframe::egui;
 
-use crate::ui::theme::{accent, anchor_idle_fill, anchor_outline};
+use crate::ui::theme::{ACCENT, ANCHOR_IDLE_FILL, ANCHOR_OUTLINE};
 use crate::ui::tokens::{ANCHOR_CELL_GAP, ANCHOR_CELL_SIZE, CONTROL_HEIGHT};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,7 +62,7 @@ fn show_grid(ui: &mut egui::Ui, selected: &mut AnchorPoint) -> egui::Response {
             egui::vec2(ANCHOR_CELL_SIZE, ANCHOR_CELL_SIZE),
         )
     };
-    let outline = anchor_outline();
+    let outline = ANCHOR_OUTLINE;
     let connector = egui::Stroke::new(1.0, outline);
     for row in [0, 2] {
         for column in 0..2 {
@@ -95,11 +95,11 @@ fn show_grid(ui: &mut egui::Ui, selected: &mut AnchorPoint) -> egui::Response {
                 cell,
                 0.0,
                 if is_selected {
-                    accent()
+                    ACCENT
                 } else if is_hovered {
                     outline
                 } else {
-                    anchor_idle_fill()
+                    ANCHOR_IDLE_FILL
                 },
             );
             ui.painter().rect_stroke(

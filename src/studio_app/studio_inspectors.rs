@@ -85,13 +85,7 @@ pub(super) fn numeric_expression_control(
         .trim()
         .parse::<f64>()
         .is_ok_and(|number| number.is_finite());
-    let stored_expression_mode = ui.data_mut(|data| data.get_temp::<bool>(id));
-    let expression_mode = stored_expression_mode.unwrap_or(!is_simple) || !is_simple;
-    if expression_mode && stored_expression_mode != Some(true) {
-        ui.data_mut(|data| data.insert_temp(id, true));
-    }
-
-    let backup_id = id.with("pre-expression-value");
+    let expression_mode = stored_expression_mode(ui, id, is_simple);
     let mut edit_clicked = false;
     let preview = expression_mode.then(|| {
         theme_engine::evaluate(&value.0, context)
@@ -117,32 +111,58 @@ pub(super) fn numeric_expression_control(
                     }
                 },
             );
-            match action {
-                crate::ui::components::compound_field::CompoundFieldAction::Open => {
-                    if !expression_mode {
-                        ui.data_mut(|data| data.insert_temp(backup_id, value.0.clone()));
-                        ui.data_mut(|data| data.insert_temp(id, true));
-                    }
-                    edit_clicked = true;
-                }
-                crate::ui::components::compound_field::CompoundFieldAction::Remove => {
-                    value.0 = ui
-                        .data_mut(|data| data.remove_temp::<String>(backup_id))
-                        .unwrap_or_else(|| {
-                            let resolved = theme_engine::evaluate(&value.0, context)
-                                .ok()
-                                .filter(|number| number.is_finite())
-                                .unwrap_or_default();
-                            format_number_for_ui(resolved)
-                        });
-                    ui.data_mut(|data| data.insert_temp(id, false));
-                    edit_clicked = false;
-                }
-                crate::ui::components::compound_field::CompoundFieldAction::None => {}
-            }
+            edit_clicked =
+                apply_expression_action(ui, id, action, expression_mode, value, |expression| {
+                    let resolved = theme_engine::evaluate(expression, context)
+                        .ok()
+                        .filter(|number| number.is_finite())
+                        .unwrap_or_default();
+                    format_number_for_ui(resolved)
+                });
         });
     });
     edit_clicked
+}
+
+/// Whether a value-or-expression control shows its expression. The choice is
+/// remembered per control; a value that is not a plain constant always shows
+/// as an expression.
+fn stored_expression_mode(ui: &egui::Ui, id: egui::Id, is_simple: bool) -> bool {
+    let stored_expression_mode = ui.data_mut(|data| data.get_temp::<bool>(id));
+    let expression_mode = stored_expression_mode.unwrap_or(!is_simple) || !is_simple;
+    if expression_mode && stored_expression_mode != Some(true) {
+        ui.data_mut(|data| data.insert_temp(id, true));
+    }
+    expression_mode
+}
+
+/// Opening the expression helper keeps a backup of the plain value; removing
+/// the expression restores that backup, or `fallback` of the expression.
+/// Returns whether the helper should open.
+fn apply_expression_action(
+    ui: &egui::Ui,
+    id: egui::Id,
+    action: HelperFieldAction,
+    expression_mode: bool,
+    value: &mut Expression,
+    fallback: impl FnOnce(&str) -> String,
+) -> bool {
+    let backup_id = id.with("pre-expression-value");
+    if action.remove {
+        value.0 = ui
+            .data_mut(|data| data.remove_temp::<String>(backup_id))
+            .unwrap_or_else(|| fallback(&value.0));
+        ui.data_mut(|data| data.insert_temp(id, false));
+        false
+    } else if action.open {
+        if !expression_mode {
+            ui.data_mut(|data| data.insert_temp(backup_id, value.0.clone()));
+            ui.data_mut(|data| data.insert_temp(id, true));
+        }
+        true
+    } else {
+        false
+    }
 }
 
 pub(super) fn render_controls(
@@ -202,13 +222,7 @@ pub(super) fn expression_control(
             .parse::<f32>()
             .is_ok_and(|number| number.is_finite() && (0.0..=100.0).contains(&number)),
     };
-    let stored_expression_mode = ui.data_mut(|data| data.get_temp::<bool>(id));
-    let expression_mode = stored_expression_mode.unwrap_or(!is_simple) || !is_simple;
-    if expression_mode && stored_expression_mode != Some(true) {
-        ui.data_mut(|data| data.insert_temp(id, true));
-    }
-
-    let backup_id = id.with("pre-expression-value");
+    let expression_mode = stored_expression_mode(ui, id, is_simple);
     let mut edit_clicked = false;
     let preview = expression_mode.then(|| {
         theme_engine::evaluate(&value.0, context)
@@ -287,115 +301,62 @@ pub(super) fn expression_control(
                     }
                 },
             );
-            match action {
-                crate::ui::components::compound_field::CompoundFieldAction::Open => {
-                    if !expression_mode {
-                        ui.data_mut(|data| data.insert_temp(backup_id, value.0.clone()));
-                        ui.data_mut(|data| data.insert_temp(id, true));
-                    }
-                    edit_clicked = true;
-                }
-                crate::ui::components::compound_field::CompoundFieldAction::Remove => {
-                    value.0 = ui
-                        .data_mut(|data| data.remove_temp::<String>(backup_id))
-                        .unwrap_or_else(|| match kind {
-                            ExpressionControlKind::Boolean => "true".into(),
-                            ExpressionControlKind::Percentage => "100".into(),
-                        });
-                    ui.data_mut(|data| data.insert_temp(id, false));
-                    edit_clicked = false;
-                }
-                crate::ui::components::compound_field::CompoundFieldAction::None => {}
-            }
+            edit_clicked =
+                apply_expression_action(ui, id, action, expression_mode, value, |_| match kind {
+                    ExpressionControlKind::Boolean => "true".into(),
+                    ExpressionControlKind::Percentage => "100".into(),
+                });
         });
     });
     edit_clicked
 }
 
-pub(super) fn placement_offset_expression_control(
+/// A plain number that can be replaced by an optional expression, such as a
+/// placement offset or a segment count.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn optional_expression_control<N: egui::emath::Numeric + std::fmt::Display>(
     ui: &mut egui::Ui,
     id: egui::Id,
     label: &str,
-    value: &mut i32,
+    value: &mut N,
+    range: Option<std::ops::RangeInclusive<N>>,
     expression: &mut Option<Expression>,
     context: &DataContext,
+    format_preview: fn(f64) -> String,
 ) -> bool {
     let mut edit_clicked = false;
     let preview = expression.as_ref().map(|formula| {
         theme_engine::evaluate(&formula.0, context)
             .ok()
             .filter(|number| number.is_finite())
-            .map(format_number_for_ui)
+            .map(format_preview)
             .unwrap_or_else(|| "Invalid expression".into())
     });
     ui.push_id(id, |ui| {
         labeled(ui, label, |ui| {
             let available_width = inspector_control_width(ui);
-            match crate::ui::components::compound_field::expression_or_value(
+            let action = crate::ui::components::compound_field::expression_or_value(
                 ui,
                 id,
                 available_width,
                 preview.as_deref().map(|value| (value, egui::Align::Center)),
                 "an expression",
                 |ui, width| {
-                    NumberField::new(value).show(ui, width);
-                },
-            ) {
-                crate::ui::components::compound_field::CompoundFieldAction::Open => {
-                    if expression.is_none() {
-                        *expression = Some(Expression(value.to_string()));
+                    let field = NumberField::new(value);
+                    match range {
+                        Some(range) => field.range(range),
+                        None => field,
                     }
-                    edit_clicked = true;
-                }
-                crate::ui::components::compound_field::CompoundFieldAction::Remove => {
-                    *expression = None;
-                }
-                crate::ui::components::compound_field::CompoundFieldAction::None => {}
-            }
-        });
-    });
-    edit_clicked
-}
-
-pub(super) fn segment_count_expression_control(
-    ui: &mut egui::Ui,
-    id: egui::Id,
-    label: &str,
-    value: &mut u16,
-    expression: &mut Option<Expression>,
-    context: &DataContext,
-) -> bool {
-    let mut edit_clicked = false;
-    let preview = expression.as_ref().map(|formula| {
-        theme_engine::evaluate(&formula.0, context)
-            .ok()
-            .filter(|number| number.is_finite())
-            .map(|number| format!("{number:.0}"))
-            .unwrap_or_else(|| "Invalid expression".into())
-    });
-    ui.push_id(id, |ui| {
-        labeled(ui, label, |ui| {
-            let available_width = inspector_control_width(ui);
-            match crate::ui::components::compound_field::expression_or_value(
-                ui,
-                id,
-                available_width,
-                preview.as_deref().map(|value| (value, egui::Align::Center)),
-                "an expression",
-                |ui, width| {
-                    NumberField::new(value).range(0..=100).show(ui, width);
+                    .show(ui, width);
                 },
-            ) {
-                crate::ui::components::compound_field::CompoundFieldAction::Open => {
-                    if expression.is_none() {
-                        *expression = Some(Expression(value.to_string()));
-                    }
-                    edit_clicked = true;
+            );
+            if action.remove {
+                *expression = None;
+            } else if action.open {
+                if expression.is_none() {
+                    *expression = Some(Expression(value.to_string()));
                 }
-                crate::ui::components::compound_field::CompoundFieldAction::Remove => {
-                    *expression = None;
-                }
-                crate::ui::components::compound_field::CompoundFieldAction::None => {}
+                edit_clicked = true;
             }
         });
     });
@@ -658,26 +619,14 @@ pub(super) fn appearance_inspector(
                     *asset_requested = true;
                 }
             });
-            labeled(ui, language.text("Fit"), |ui| {
-                Dropdown::from_id_salt(id.with("background-image-fit"))
-                    .width(inspector_control_width(ui))
-                    .selected_text(image_fit_name(language, *fit))
-                    .show_ui(ui, |ui| {
-                        for value in [
-                            ImageFit::Contain,
-                            ImageFit::Cover,
-                            ImageFit::Stretch,
-                            ImageFit::Original,
-                        ] {
-                            dropdown_selectable_value(
-                                ui,
-                                fit,
-                                value,
-                                image_fit_name(language, value),
-                            );
-                        }
-                    });
-            });
+            enum_dropdown(
+                ui,
+                language.text("Fit"),
+                id.with("background-image-fit"),
+                fit,
+                IMAGE_FITS,
+                language,
+            );
         }
     }
     let mut border_enabled = object.border.is_some();
@@ -818,41 +767,23 @@ pub(super) fn layer_properties_inspector(
     ) {
         requested = Some(content_request);
     }
-    labeled(ui, language.text("Children layout"), |ui| {
-        Dropdown::from_id_salt(id.with("child-layout"))
-            .width(inspector_control_width(ui))
-            .selected_text(child_layout_name(language, object.layout))
-            .show_ui(ui, |ui| {
-                for value in [ChildLayout::Freeform, ChildLayout::Row, ChildLayout::Column] {
-                    dropdown_selectable_value(
-                        ui,
-                        &mut object.layout,
-                        value,
-                        child_layout_name(language, value),
-                    );
-                }
-            });
-    });
+    enum_dropdown(
+        ui,
+        language.text("Children layout"),
+        id.with("child-layout"),
+        &mut object.layout,
+        CHILD_LAYOUTS,
+        language,
+    );
     if object.layout != ChildLayout::Freeform {
-        labeled(ui, language.text("Cross-axis"), |ui| {
-            Dropdown::from_id_salt(id.with("child-alignment"))
-                .width(inspector_control_width(ui))
-                .selected_text(child_alignment_name(language, object.align))
-                .show_ui(ui, |ui| {
-                    for value in [
-                        ChildAlignment::Start,
-                        ChildAlignment::Center,
-                        ChildAlignment::End,
-                    ] {
-                        dropdown_selectable_value(
-                            ui,
-                            &mut object.align,
-                            value,
-                            child_alignment_name(language, value),
-                        );
-                    }
-                });
-        });
+        enum_dropdown(
+            ui,
+            language.text("Cross-axis"),
+            id.with("child-alignment"),
+            &mut object.align,
+            CHILD_ALIGNMENTS,
+            language,
+        );
         if numeric_expression_control(
             ui,
             id.with("gap"),
@@ -920,41 +851,22 @@ pub(super) fn content_inspector(
                     ExpressionField::TextFontSize,
                 ));
             }
-            labeled(ui, language.text("Weight"), |ui| {
-                Dropdown::from_id_salt("weight")
-                    .width(inspector_control_width(ui))
-                    .selected_text(font_weight_name(language, *weight))
-                    .show_ui(ui, |ui| {
-                        for v in [
-                            FontWeight::Light,
-                            FontWeight::Regular,
-                            FontWeight::Medium,
-                            FontWeight::Semibold,
-                            FontWeight::Bold,
-                        ] {
-                            dropdown_selectable_value(ui, weight, v, font_weight_name(language, v));
-                        }
-                    });
-            });
-            labeled(ui, language.text("Rendering"), |ui| {
-                Dropdown::from_id_salt("font_rendering")
-                    .width(inspector_control_width(ui))
-                    .selected_text(font_rendering_name(language, *rendering))
-                    .show_ui(ui, |ui| {
-                        for value in [
-                            FontRendering::Antialiased,
-                            FontRendering::ClearType,
-                            FontRendering::Aliased,
-                        ] {
-                            dropdown_selectable_value(
-                                ui,
-                                rendering,
-                                value,
-                                font_rendering_name(language, value),
-                            );
-                        }
-                    });
-            });
+            enum_dropdown(
+                ui,
+                language.text("Weight"),
+                "weight",
+                weight,
+                FONT_WEIGHTS,
+                language,
+            );
+            enum_dropdown(
+                ui,
+                language.text("Rendering"),
+                "font_rendering",
+                rendering,
+                FONT_RENDERINGS,
+                language,
+            );
             if numeric_expression_control(
                 ui,
                 id.with("font-contrast"),
@@ -966,16 +878,14 @@ pub(super) fn content_inspector(
                     ExpressionField::TextFontContrast,
                 ));
             }
-            labeled(ui, language.text("Align"), |ui| {
-                Dropdown::from_id_salt("text_align")
-                    .width(inspector_control_width(ui))
-                    .selected_text(text_align_name(language, *align))
-                    .show_ui(ui, |ui| {
-                        for v in [TextAlign::Left, TextAlign::Center, TextAlign::Right] {
-                            dropdown_selectable_value(ui, align, v, text_align_name(language, v));
-                        }
-                    });
-            });
+            enum_dropdown(
+                ui,
+                language.text("Align"),
+                "text_align",
+                align,
+                TEXT_ALIGNS,
+                language,
+            );
             paint_control(ui, language.text("Colour"), color);
         }
         SceneContent::Progress {
@@ -999,26 +909,14 @@ pub(super) fn content_inspector(
                     ExpressionField::ProgressValue,
                 ));
             }
-            labeled(ui, language.text("Direction"), |ui| {
-                Dropdown::from_id_salt("progress_direction")
-                    .width(inspector_control_width(ui))
-                    .selected_text(progress_direction_name(language, *direction))
-                    .show_ui(ui, |ui| {
-                        for v in [
-                            ProgressDirection::LeftToRight,
-                            ProgressDirection::RightToLeft,
-                            ProgressDirection::BottomToTop,
-                            ProgressDirection::TopToBottom,
-                        ] {
-                            dropdown_selectable_value(
-                                ui,
-                                direction,
-                                v,
-                                progress_direction_name(language, v),
-                            );
-                        }
-                    });
-            });
+            enum_dropdown(
+                ui,
+                language.text("Direction"),
+                "progress_direction",
+                direction,
+                PROGRESS_DIRECTIONS,
+                language,
+            );
             paint_control(ui, language.text("Fill"), fill);
             paint_control(ui, language.text("Track"), track);
             if numeric_expression_control(
@@ -1032,13 +930,15 @@ pub(super) fn content_inspector(
                     ExpressionField::ProgressCornerRadius,
                 ));
             }
-            if segment_count_expression_control(
+            if optional_expression_control(
                 ui,
                 id.with("segments"),
                 language.text("Segments"),
                 segments,
+                Some(0..=100),
                 segments_expression,
                 context,
+                |number| format!("{number:.0}"),
             ) {
                 requested = Some(LayerInspectorRequest::Expression(
                     ExpressionField::ProgressSegments,
@@ -1059,67 +959,71 @@ pub(super) fn content_inspector(
     }
     requested
 }
-pub(super) fn image_fit_name(language: LanguageId, value: ImageFit) -> &'static str {
-    match value {
-        ImageFit::Contain => language.text("Contain"),
-        ImageFit::Cover => language.text("Cover"),
-        ImageFit::Stretch => language.text("Stretch"),
-        ImageFit::Original => language.text("Original"),
-    }
-}
+// English locale keys for each variant, in dropdown order.
+const IMAGE_FITS: &[(ImageFit, &str)] = &[
+    (ImageFit::Contain, "Contain"),
+    (ImageFit::Cover, "Cover"),
+    (ImageFit::Stretch, "Stretch"),
+    (ImageFit::Original, "Original"),
+];
+const CHILD_LAYOUTS: &[(ChildLayout, &str)] = &[
+    (ChildLayout::Freeform, "Freeform"),
+    (ChildLayout::Row, "Row"),
+    (ChildLayout::Column, "Column"),
+];
+const CHILD_ALIGNMENTS: &[(ChildAlignment, &str)] = &[
+    (ChildAlignment::Start, "Start"),
+    (ChildAlignment::Center, "Center"),
+    (ChildAlignment::End, "End"),
+];
+const FONT_WEIGHTS: &[(FontWeight, &str)] = &[
+    (FontWeight::Light, "Light"),
+    (FontWeight::Regular, "Regular"),
+    (FontWeight::Medium, "Medium"),
+    (FontWeight::Semibold, "Semibold"),
+    (FontWeight::Bold, "Bold"),
+];
+// "ClearType" has no translation, so it reads the same in every language.
+const FONT_RENDERINGS: &[(FontRendering, &str)] = &[
+    (FontRendering::Antialiased, "Antialiased"),
+    (FontRendering::ClearType, "ClearType"),
+    (FontRendering::Aliased, "Aliased"),
+];
+const TEXT_ALIGNS: &[(TextAlign, &str)] = &[
+    (TextAlign::Left, "Left"),
+    (TextAlign::Center, "Center"),
+    (TextAlign::Right, "Right"),
+];
+const PROGRESS_DIRECTIONS: &[(ProgressDirection, &str)] = &[
+    (ProgressDirection::LeftToRight, "Left to right"),
+    (ProgressDirection::RightToLeft, "Right to left"),
+    (ProgressDirection::BottomToTop, "Bottom to top"),
+    (ProgressDirection::TopToBottom, "Top to bottom"),
+];
 
-pub(super) fn child_layout_name(language: LanguageId, value: ChildLayout) -> &'static str {
-    match value {
-        ChildLayout::Freeform => language.text("Freeform"),
-        ChildLayout::Row => language.text("Row"),
-        ChildLayout::Column => language.text("Column"),
-    }
-}
-
-pub(super) fn child_alignment_name(language: LanguageId, value: ChildAlignment) -> &'static str {
-    match value {
-        ChildAlignment::Start => language.text("Start"),
-        ChildAlignment::Center => language.text("Center"),
-        ChildAlignment::End => language.text("End"),
-    }
-}
-
-pub(super) fn font_weight_name(language: LanguageId, value: FontWeight) -> &'static str {
-    match value {
-        FontWeight::Light => language.text("Light"),
-        FontWeight::Regular => language.text("Regular"),
-        FontWeight::Medium => language.text("Medium"),
-        FontWeight::Semibold => language.text("Semibold"),
-        FontWeight::Bold => language.text("Bold"),
-    }
-}
-
-pub(super) fn font_rendering_name(language: LanguageId, value: FontRendering) -> &'static str {
-    match value {
-        FontRendering::Antialiased => language.text("Antialiased"),
-        FontRendering::ClearType => "ClearType",
-        FontRendering::Aliased => language.text("Aliased"),
-    }
-}
-
-pub(super) fn text_align_name(language: LanguageId, value: TextAlign) -> &'static str {
-    match value {
-        TextAlign::Left => language.text("Left"),
-        TextAlign::Center => language.text("Center"),
-        TextAlign::Right => language.text("Right"),
-    }
-}
-
-pub(super) fn progress_direction_name(
+/// A labeled inspector dropdown over the variants listed in `options`.
+fn enum_dropdown<T: Copy + PartialEq>(
+    ui: &mut egui::Ui,
+    label: &str,
+    id_salt: impl egui::AsIdSalt,
+    value: &mut T,
+    options: &[(T, &'static str)],
     language: LanguageId,
-    value: ProgressDirection,
-) -> &'static str {
-    match value {
-        ProgressDirection::LeftToRight => language.text("Left to right"),
-        ProgressDirection::RightToLeft => language.text("Right to left"),
-        ProgressDirection::BottomToTop => language.text("Bottom to top"),
-        ProgressDirection::TopToBottom => language.text("Top to bottom"),
-    }
+) {
+    labeled(ui, label, |ui| {
+        let selected = options
+            .iter()
+            .find(|(option, _)| *option == *value)
+            .map_or("", |(_, name)| language.text(name));
+        Dropdown::from_id_salt(id_salt)
+            .width(inspector_control_width(ui))
+            .selected_text(selected)
+            .show_ui(ui, |ui| {
+                for &(option, name) in options {
+                    dropdown_selectable_value(ui, value, option, language.text(name));
+                }
+            });
+    });
 }
 
 pub(super) fn reference_target_name(language: LanguageId, target: ReferenceTarget) -> String {
@@ -1141,14 +1045,5 @@ pub(super) fn surface_nest_name(language: LanguageId, nest: SurfaceNest) -> &'st
         SurfaceNest::TrayIcon => language.text("Tray Icon"),
         SurfaceNest::Desktop => language.text("Desktop"),
         SurfaceNest::Floating => language.text("Floating"),
-    }
-}
-pub(super) fn interval_name(language: LanguageId, value: u32) -> &'static str {
-    match value {
-        POLL_1_MIN => language.text("Every minute"),
-        POLL_5_MIN => language.text("Every 5 minutes"),
-        POLL_15_MIN => language.text("Every 15 minutes"),
-        POLL_1_HOUR => language.text("Every hour"),
-        _ => language.text("Custom"),
     }
 }

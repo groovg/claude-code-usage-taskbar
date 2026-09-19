@@ -13,7 +13,7 @@ impl StudioApp {
         let mut delete = false;
 
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(language.text("Context menu")).color(muted()));
+            ui.label(egui::RichText::new(language.text("Context menu")).color(MUTED));
             Dropdown::from_id_salt("context-menu-library-v2")
                 .width(260.0)
                 .selected_text(if read_only {
@@ -612,41 +612,17 @@ impl StudioApp {
         let Some((path, name)) = self.delete_context_menu_confirmation.take() else {
             return;
         };
-        let language = self.language();
-        let mut decision = 0;
-        crate::ui::components::modal::Modal::new(
-            language.text("Delete context menu?"),
+        let decision = confirm_delete(
+            context,
+            self.language(),
+            "Delete context menu?",
             "delete-context-menu-dialog",
-        )
-        .width(310.0)
-        .fixed_height(110.0)
-        .show(context, |ui| {
-            ui.label(
-                language
-                    .text("Are you sure you want to delete {name}?")
-                    .replace("{name}", &name),
-            );
-            ui.add_space(10.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new(language.text("Delete context menu"))
-                                .color(egui::Color32::WHITE),
-                        )
-                        .fill(egui::Color32::from_rgb(178, 48, 48)),
-                    )
-                    .clicked()
-                {
-                    decision = 1;
-                }
-                if ui.button(language.text("Cancel")).clicked() {
-                    decision = 2;
-                }
-            });
-        });
+            "Are you sure you want to delete {name}?",
+            &name,
+            "Delete context menu",
+        );
         match decision {
-            1 => match context_menu::delete_context_menu(&path) {
+            Some(true) => match context_menu::delete_context_menu(&path) {
                 Ok(()) => {
                     self.context_menu = context_menu::classic_context_menu();
                     self.context_menu_path = context_menu::ensure_builtin_context_menus().ok();
@@ -658,8 +634,8 @@ impl StudioApp {
                 }
                 Err(error) => self.theme_error = Some(error),
             },
-            2 => {}
-            _ => self.delete_context_menu_confirmation = Some((path, name)),
+            Some(false) => {}
+            None => self.delete_context_menu_confirmation = Some((path, name)),
         }
     }
 
@@ -691,7 +667,7 @@ impl StudioApp {
         if read_only {
             inspector_heading(ui, &format!("ID: {}", item.id));
         } else {
-            inspector_prefixed_name_editor(
+            inspector_name_editor(
                 ui,
                 &mut item.id,
                 ui.make_persistent_id(("context-menu-item-id", &path)),
@@ -700,11 +676,10 @@ impl StudioApp {
             );
         }
         ui.add_space(6.0);
-        crate::ui::components::collapsible::inspector_section(
-            ui,
-            ui.make_persistent_id(("context-menu-item-section", &path)),
-            language.text("Item"),
-            |ui| {
+        egui::CollapsingHeader::new(language.text("Item"))
+            .id_salt(ui.make_persistent_id(("context-menu-item-section", &path)))
+            .default_open(true)
+            .show(ui, |ui| {
                 ui.add_enabled_ui(!read_only, |ui| {
                     open_expression_helper = expression_control(
                         ui,
@@ -735,7 +710,7 @@ impl StudioApp {
                                     .text("Text items are informational and cannot be clicked."),
                             )
                             .small()
-                            .color(muted()),
+                            .color(MUTED),
                         );
                     }
                 }
@@ -756,8 +731,7 @@ impl StudioApp {
                         });
                     });
                 }
-            },
-        );
+            });
 
         changed |= before != serde_json::to_string(&item).unwrap_or_default();
         if changed {

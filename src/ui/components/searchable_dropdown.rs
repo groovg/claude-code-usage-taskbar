@@ -2,7 +2,7 @@ use eframe::egui;
 
 use crate::ui::components::dropdown::{dropdown_scroll_height, dropdown_selectable_label};
 use crate::ui::components::text_field::singleline;
-use crate::ui::theme::muted;
+use crate::ui::theme::MUTED;
 use crate::ui::tokens::CONTROL_HEIGHT;
 
 /// A searchable text field backed by a caller-provided list of options.
@@ -55,7 +55,7 @@ pub(crate) fn searchable_dropdown<T: AsRef<str>>(
                         }
                     }
                     if !found {
-                        ui.label(egui::RichText::new(no_results_text).color(muted()));
+                        ui.label(egui::RichText::new(no_results_text).color(MUTED));
                     }
                 });
         });

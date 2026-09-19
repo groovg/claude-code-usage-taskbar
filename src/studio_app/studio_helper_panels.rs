@@ -1,4 +1,6 @@
 use super::*;
+use TextTemplateFormat as Format;
+use TextTemplateValueKind as Kind;
 
 #[derive(Clone, Copy)]
 pub(super) struct TextTemplateValue {
@@ -8,547 +10,112 @@ pub(super) struct TextTemplateValue {
     pub(super) kind: TextTemplateValueKind,
 }
 
+const fn v(
+    group: &'static str,
+    label: &'static str,
+    expression: &'static str,
+    kind: TextTemplateValueKind,
+) -> TextTemplateValue {
+    TextTemplateValue {
+        group,
+        label,
+        expression,
+        kind,
+    }
+}
+
+#[rustfmt::skip]
 pub(super) const TEXT_TEMPLATE_VALUES: &[TextTemplateValue] = &[
-    TextTemplateValue {
-        group: "Date and time",
-        label: "Current date and time",
-        expression: "time.now.unix",
-        kind: TextTemplateValueKind::Timestamp,
-    },
-    TextTemplateValue {
-        group: "Application",
-        label: "App version",
-        expression: "app.version",
-        kind: TextTemplateValueKind::Text,
-    },
-    TextTemplateValue {
-        group: "Application",
-        label: "App version major",
-        expression: "app.version.major",
-        kind: TextTemplateValueKind::Number,
-    },
-    TextTemplateValue {
-        group: "Application",
-        label: "App version minor",
-        expression: "app.version.minor",
-        kind: TextTemplateValueKind::Number,
-    },
-    TextTemplateValue {
-        group: "Application",
-        label: "App version patch",
-        expression: "app.version.patch",
-        kind: TextTemplateValueKind::Number,
-    },
-    TextTemplateValue {
-        group: "General",
-        label: "Enabled provider count",
-        expression: "providers.count",
-        kind: TextTemplateValueKind::Number,
-    },
-    TextTemplateValue {
-        group: "General",
-        label: "Counting down",
-        expression: "display.countdown",
-        kind: TextTemplateValueKind::Number,
-    },
-    TextTemplateValue {
-        group: "Active provider",
-        label: "Session summary",
-        expression: "active.session",
-        kind: TextTemplateValueKind::UsageSummary,
-    },
-    TextTemplateValue {
-        group: "Active provider",
-        label: "Session used",
-        expression: "active.session.percentage",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "Active provider",
-        label: "Session remaining",
-        expression: "active.session.remaining",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "Active provider",
-        label: "Session shown",
-        expression: "active.session.display",
-        kind: TextTemplateValueKind::DisplayPercentage,
-    },
-    TextTemplateValue {
-        group: "Active provider",
-        label: "Session reset",
-        expression: "active.session.reset.seconds",
-        kind: TextTemplateValueKind::Duration,
-    },
-    TextTemplateValue {
-        group: "Active provider",
-        label: "Session reset date and time",
-        expression: "active.session.reset.unix",
-        kind: TextTemplateValueKind::Timestamp,
-    },
-    TextTemplateValue {
-        group: "Active provider",
-        label: "Weekly summary",
-        expression: "active.weekly",
-        kind: TextTemplateValueKind::UsageSummary,
-    },
-    TextTemplateValue {
-        group: "Active provider",
-        label: "Weekly used",
-        expression: "active.weekly.percentage",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "Active provider",
-        label: "Weekly remaining",
-        expression: "active.weekly.remaining",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "Active provider",
-        label: "Weekly shown",
-        expression: "active.weekly.display",
-        kind: TextTemplateValueKind::DisplayPercentage,
-    },
-    TextTemplateValue {
-        group: "Active provider",
-        label: "Weekly reset",
-        expression: "active.weekly.reset.seconds",
-        kind: TextTemplateValueKind::Duration,
-    },
-    TextTemplateValue {
-        group: "Active provider",
-        label: "Weekly reset date and time",
-        expression: "active.weekly.reset.unix",
-        kind: TextTemplateValueKind::Timestamp,
-    },
-    TextTemplateValue {
-        group: "Claude Code",
-        label: "Session summary",
-        expression: "claude.session",
-        kind: TextTemplateValueKind::UsageSummary,
-    },
-    TextTemplateValue {
-        group: "Claude Code",
-        label: "Session used",
-        expression: "claude.session.percentage",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "Claude Code",
-        label: "Session remaining",
-        expression: "claude.session.remaining",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "Claude Code",
-        label: "Session shown",
-        expression: "claude.session.display",
-        kind: TextTemplateValueKind::DisplayPercentage,
-    },
-    TextTemplateValue {
-        group: "Claude Code",
-        label: "Session reset",
-        expression: "claude.session.reset.seconds",
-        kind: TextTemplateValueKind::Duration,
-    },
-    TextTemplateValue {
-        group: "Claude Code",
-        label: "Weekly summary",
-        expression: "claude.weekly",
-        kind: TextTemplateValueKind::UsageSummary,
-    },
-    TextTemplateValue {
-        group: "Claude Code",
-        label: "Weekly used",
-        expression: "claude.weekly.percentage",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "Claude Code",
-        label: "Weekly remaining",
-        expression: "claude.weekly.remaining",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "Claude Code",
-        label: "Weekly shown",
-        expression: "claude.weekly.display",
-        kind: TextTemplateValueKind::DisplayPercentage,
-    },
-    TextTemplateValue {
-        group: "Claude Code",
-        label: "Weekly reset",
-        expression: "claude.weekly.reset.seconds",
-        kind: TextTemplateValueKind::Duration,
-    },
-    TextTemplateValue {
-        group: "Claude Code",
-        label: "Model cap name (Fable)",
-        expression: "claude.scoped.label",
-        kind: TextTemplateValueKind::Text,
-    },
-    TextTemplateValue {
-        group: "Claude Code",
-        label: "Model cap summary",
-        expression: "claude.scoped",
-        kind: TextTemplateValueKind::UsageSummary,
-    },
-    TextTemplateValue {
-        group: "Claude Code",
-        label: "Model cap used",
-        expression: "claude.scoped.percentage",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "Claude Code",
-        label: "Model cap shown",
-        expression: "claude.scoped.display",
-        kind: TextTemplateValueKind::DisplayPercentage,
-    },
-    TextTemplateValue {
-        group: "Claude Code",
-        label: "Model cap reset",
-        expression: "claude.scoped.reset.seconds",
-        kind: TextTemplateValueKind::Duration,
-    },
-    TextTemplateValue {
-        group: "Claude Code",
-        label: "Session context summary",
-        expression: "claude.context",
-        kind: TextTemplateValueKind::UsageSummary,
-    },
-    TextTemplateValue {
-        group: "Claude Code",
-        label: "Session context used",
-        expression: "claude.context.percentage",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "Claude Code",
-        label: "Session context tokens",
-        expression: "claude.context.tokens",
-        kind: TextTemplateValueKind::Number,
-    },
-    TextTemplateValue {
-        group: "Claude Code",
-        label: "Session context window",
-        expression: "claude.context.window",
-        kind: TextTemplateValueKind::Number,
-    },
-    TextTemplateValue {
-        group: "Claude Code",
-        label: "Session context project folder",
-        expression: "claude.context.project",
-        kind: TextTemplateValueKind::Text,
-    },
-    TextTemplateValue {
-        group: "Codex",
-        label: "Session summary",
-        expression: "codex.session",
-        kind: TextTemplateValueKind::UsageSummary,
-    },
-    TextTemplateValue {
-        group: "Codex",
-        label: "Session used",
-        expression: "codex.session.percentage",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "Codex",
-        label: "Session remaining",
-        expression: "codex.session.remaining",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "Codex",
-        label: "Session shown",
-        expression: "codex.session.display",
-        kind: TextTemplateValueKind::DisplayPercentage,
-    },
-    TextTemplateValue {
-        group: "Codex",
-        label: "Session reset",
-        expression: "codex.session.reset.seconds",
-        kind: TextTemplateValueKind::Duration,
-    },
-    TextTemplateValue {
-        group: "Codex",
-        label: "Five-hour summary (exact)",
-        expression: "codex.five_hour",
-        kind: TextTemplateValueKind::UsageSummary,
-    },
-    TextTemplateValue {
-        group: "Codex",
-        label: "Five-hour used (exact)",
-        expression: "codex.five_hour.percentage",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "Codex",
-        label: "Five-hour remaining (exact)",
-        expression: "codex.five_hour.remaining",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "Codex",
-        label: "Five-hour shown (exact)",
-        expression: "codex.five_hour.display",
-        kind: TextTemplateValueKind::DisplayPercentage,
-    },
-    TextTemplateValue {
-        group: "Codex",
-        label: "Five-hour reset (exact)",
-        expression: "codex.five_hour.reset.seconds",
-        kind: TextTemplateValueKind::Duration,
-    },
-    TextTemplateValue {
-        group: "Codex",
-        label: "Five-hour reset date and time (exact)",
-        expression: "codex.five_hour.reset.unix",
-        kind: TextTemplateValueKind::Timestamp,
-    },
-    TextTemplateValue {
-        group: "Codex",
-        label: "Weekly summary",
-        expression: "codex.weekly",
-        kind: TextTemplateValueKind::UsageSummary,
-    },
-    TextTemplateValue {
-        group: "Codex",
-        label: "Weekly used",
-        expression: "codex.weekly.percentage",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "Codex",
-        label: "Weekly remaining",
-        expression: "codex.weekly.remaining",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "Codex",
-        label: "Weekly shown",
-        expression: "codex.weekly.display",
-        kind: TextTemplateValueKind::DisplayPercentage,
-    },
-    TextTemplateValue {
-        group: "Codex",
-        label: "Weekly reset",
-        expression: "codex.weekly.reset.seconds",
-        kind: TextTemplateValueKind::Duration,
-    },
-    TextTemplateValue {
-        group: "Codex",
-        label: "Weekly reset date and time",
-        expression: "codex.weekly.reset.unix",
-        kind: TextTemplateValueKind::Timestamp,
-    },
-    TextTemplateValue {
-        group: "Antigravity",
-        label: "Session summary",
-        expression: "antigravity.session",
-        kind: TextTemplateValueKind::UsageSummary,
-    },
-    TextTemplateValue {
-        group: "Antigravity",
-        label: "Session used",
-        expression: "antigravity.session.percentage",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "Antigravity",
-        label: "Session remaining",
-        expression: "antigravity.session.remaining",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "Antigravity",
-        label: "Session shown",
-        expression: "antigravity.session.display",
-        kind: TextTemplateValueKind::DisplayPercentage,
-    },
-    TextTemplateValue {
-        group: "Antigravity",
-        label: "Session reset",
-        expression: "antigravity.session.reset.seconds",
-        kind: TextTemplateValueKind::Duration,
-    },
-    TextTemplateValue {
-        group: "Antigravity",
-        label: "Weekly summary",
-        expression: "antigravity.weekly",
-        kind: TextTemplateValueKind::UsageSummary,
-    },
-    TextTemplateValue {
-        group: "Antigravity",
-        label: "Weekly used",
-        expression: "antigravity.weekly.percentage",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "Antigravity",
-        label: "Weekly remaining",
-        expression: "antigravity.weekly.remaining",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "Antigravity",
-        label: "Weekly shown",
-        expression: "antigravity.weekly.display",
-        kind: TextTemplateValueKind::DisplayPercentage,
-    },
-    TextTemplateValue {
-        group: "Antigravity",
-        label: "Weekly reset",
-        expression: "antigravity.weekly.reset.seconds",
-        kind: TextTemplateValueKind::Duration,
-    },
-    TextTemplateValue {
-        group: "OpenCode",
-        label: "Session summary",
-        expression: "opencode.session",
-        kind: TextTemplateValueKind::UsageSummary,
-    },
-    TextTemplateValue {
-        group: "OpenCode",
-        label: "Session used",
-        expression: "opencode.session.percentage",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "OpenCode",
-        label: "Session remaining",
-        expression: "opencode.session.remaining",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "OpenCode",
-        label: "Session shown",
-        expression: "opencode.session.display",
-        kind: TextTemplateValueKind::DisplayPercentage,
-    },
-    TextTemplateValue {
-        group: "OpenCode",
-        label: "Session reset",
-        expression: "opencode.session.reset.seconds",
-        kind: TextTemplateValueKind::Duration,
-    },
-    TextTemplateValue {
-        group: "OpenCode",
-        label: "Long-window label",
-        expression: "opencode.weekly.label",
-        kind: TextTemplateValueKind::Text,
-    },
-    TextTemplateValue {
-        group: "OpenCode",
-        label: "Long-window summary",
-        expression: "opencode.weekly",
-        kind: TextTemplateValueKind::UsageSummary,
-    },
-    TextTemplateValue {
-        group: "OpenCode",
-        label: "Long-window used",
-        expression: "opencode.weekly.percentage",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "OpenCode",
-        label: "Long-window remaining",
-        expression: "opencode.weekly.remaining",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "OpenCode",
-        label: "Long-window shown",
-        expression: "opencode.weekly.display",
-        kind: TextTemplateValueKind::DisplayPercentage,
-    },
-    TextTemplateValue {
-        group: "OpenCode",
-        label: "Long-window reset",
-        expression: "opencode.weekly.reset.seconds",
-        kind: TextTemplateValueKind::Duration,
-    },
-    TextTemplateValue {
-        group: "Cursor",
-        label: "Auto summary",
-        expression: "cursor.session",
-        kind: TextTemplateValueKind::UsageSummary,
-    },
-    TextTemplateValue {
-        group: "Cursor",
-        label: "Auto used",
-        expression: "cursor.session.percentage",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "Cursor",
-        label: "Auto remaining",
-        expression: "cursor.session.remaining",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "Cursor",
-        label: "Auto shown",
-        expression: "cursor.session.display",
-        kind: TextTemplateValueKind::DisplayPercentage,
-    },
-    TextTemplateValue {
-        group: "Cursor",
-        label: "Auto reset",
-        expression: "cursor.session.reset.seconds",
-        kind: TextTemplateValueKind::Duration,
-    },
-    TextTemplateValue {
-        group: "Cursor",
-        label: "API summary",
-        expression: "cursor.weekly",
-        kind: TextTemplateValueKind::UsageSummary,
-    },
-    TextTemplateValue {
-        group: "Cursor",
-        label: "API used",
-        expression: "cursor.weekly.percentage",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "Cursor",
-        label: "API remaining",
-        expression: "cursor.weekly.remaining",
-        kind: TextTemplateValueKind::Percentage,
-    },
-    TextTemplateValue {
-        group: "Cursor",
-        label: "API shown",
-        expression: "cursor.weekly.display",
-        kind: TextTemplateValueKind::DisplayPercentage,
-    },
-    TextTemplateValue {
-        group: "Cursor",
-        label: "API reset",
-        expression: "cursor.weekly.reset.seconds",
-        kind: TextTemplateValueKind::Duration,
-    },
-    TextTemplateValue {
-        group: "Labels",
-        label: "Session window label",
-        expression: "i18n.session_window",
-        kind: TextTemplateValueKind::Text,
-    },
-    TextTemplateValue {
-        group: "Labels",
-        label: "Weekly window label",
-        expression: "i18n.weekly_window",
-        kind: TextTemplateValueKind::Text,
-    },
-    TextTemplateValue {
-        group: "Labels",
-        label: "Now label",
-        expression: "i18n.now",
-        kind: TextTemplateValueKind::Text,
-    },
+    v("Date and time", "Current date and time", "time.now.unix", Kind::Timestamp),
+    v("Application", "App version", "app.version", Kind::Text),
+    v("Application", "App version major", "app.version.major", Kind::Number),
+    v("Application", "App version minor", "app.version.minor", Kind::Number),
+    v("Application", "App version patch", "app.version.patch", Kind::Number),
+    v("General", "Enabled provider count", "providers.count", Kind::Number),
+    v("General", "Counting down", "display.countdown", Kind::Number),
+    v("Active provider", "Session summary", "active.session", Kind::UsageSummary),
+    v("Active provider", "Session used", "active.session.percentage", Kind::Percentage),
+    v("Active provider", "Session remaining", "active.session.remaining", Kind::Percentage),
+    v("Active provider", "Session shown", "active.session.display", Kind::DisplayPercentage),
+    v("Active provider", "Session reset", "active.session.reset.seconds", Kind::Duration),
+    v("Active provider", "Session reset date and time", "active.session.reset.unix", Kind::Timestamp),
+    v("Active provider", "Weekly summary", "active.weekly", Kind::UsageSummary),
+    v("Active provider", "Weekly used", "active.weekly.percentage", Kind::Percentage),
+    v("Active provider", "Weekly remaining", "active.weekly.remaining", Kind::Percentage),
+    v("Active provider", "Weekly shown", "active.weekly.display", Kind::DisplayPercentage),
+    v("Active provider", "Weekly reset", "active.weekly.reset.seconds", Kind::Duration),
+    v("Active provider", "Weekly reset date and time", "active.weekly.reset.unix", Kind::Timestamp),
+    v("Claude Code", "Session summary", "claude.session", Kind::UsageSummary),
+    v("Claude Code", "Session used", "claude.session.percentage", Kind::Percentage),
+    v("Claude Code", "Session remaining", "claude.session.remaining", Kind::Percentage),
+    v("Claude Code", "Session shown", "claude.session.display", Kind::DisplayPercentage),
+    v("Claude Code", "Session reset", "claude.session.reset.seconds", Kind::Duration),
+    v("Claude Code", "Weekly summary", "claude.weekly", Kind::UsageSummary),
+    v("Claude Code", "Weekly used", "claude.weekly.percentage", Kind::Percentage),
+    v("Claude Code", "Weekly remaining", "claude.weekly.remaining", Kind::Percentage),
+    v("Claude Code", "Weekly shown", "claude.weekly.display", Kind::DisplayPercentage),
+    v("Claude Code", "Weekly reset", "claude.weekly.reset.seconds", Kind::Duration),
+    v("Claude Code", "Model cap name (Fable)", "claude.scoped.label", Kind::Text),
+    v("Claude Code", "Model cap summary", "claude.scoped", Kind::UsageSummary),
+    v("Claude Code", "Model cap used", "claude.scoped.percentage", Kind::Percentage),
+    v("Claude Code", "Model cap shown", "claude.scoped.display", Kind::DisplayPercentage),
+    v("Claude Code", "Model cap reset", "claude.scoped.reset.seconds", Kind::Duration),
+    v("Claude Code", "Session context summary", "claude.context", Kind::UsageSummary),
+    v("Claude Code", "Session context used", "claude.context.percentage", Kind::Percentage),
+    v("Claude Code", "Session context tokens", "claude.context.tokens", Kind::Number),
+    v("Claude Code", "Session context window", "claude.context.window", Kind::Number),
+    v("Claude Code", "Session context project folder", "claude.context.project", Kind::Text),
+    v("Codex", "Session summary", "codex.session", Kind::UsageSummary),
+    v("Codex", "Session used", "codex.session.percentage", Kind::Percentage),
+    v("Codex", "Session remaining", "codex.session.remaining", Kind::Percentage),
+    v("Codex", "Session shown", "codex.session.display", Kind::DisplayPercentage),
+    v("Codex", "Session reset", "codex.session.reset.seconds", Kind::Duration),
+    v("Codex", "Five-hour summary (exact)", "codex.five_hour", Kind::UsageSummary),
+    v("Codex", "Five-hour used (exact)", "codex.five_hour.percentage", Kind::Percentage),
+    v("Codex", "Five-hour remaining (exact)", "codex.five_hour.remaining", Kind::Percentage),
+    v("Codex", "Five-hour shown (exact)", "codex.five_hour.display", Kind::DisplayPercentage),
+    v("Codex", "Five-hour reset (exact)", "codex.five_hour.reset.seconds", Kind::Duration),
+    v("Codex", "Five-hour reset date and time (exact)", "codex.five_hour.reset.unix", Kind::Timestamp),
+    v("Codex", "Weekly summary", "codex.weekly", Kind::UsageSummary),
+    v("Codex", "Weekly used", "codex.weekly.percentage", Kind::Percentage),
+    v("Codex", "Weekly remaining", "codex.weekly.remaining", Kind::Percentage),
+    v("Codex", "Weekly shown", "codex.weekly.display", Kind::DisplayPercentage),
+    v("Codex", "Weekly reset", "codex.weekly.reset.seconds", Kind::Duration),
+    v("Codex", "Weekly reset date and time", "codex.weekly.reset.unix", Kind::Timestamp),
+    v("Antigravity", "Session summary", "antigravity.session", Kind::UsageSummary),
+    v("Antigravity", "Session used", "antigravity.session.percentage", Kind::Percentage),
+    v("Antigravity", "Session remaining", "antigravity.session.remaining", Kind::Percentage),
+    v("Antigravity", "Session shown", "antigravity.session.display", Kind::DisplayPercentage),
+    v("Antigravity", "Session reset", "antigravity.session.reset.seconds", Kind::Duration),
+    v("Antigravity", "Weekly summary", "antigravity.weekly", Kind::UsageSummary),
+    v("Antigravity", "Weekly used", "antigravity.weekly.percentage", Kind::Percentage),
+    v("Antigravity", "Weekly remaining", "antigravity.weekly.remaining", Kind::Percentage),
+    v("Antigravity", "Weekly shown", "antigravity.weekly.display", Kind::DisplayPercentage),
+    v("Antigravity", "Weekly reset", "antigravity.weekly.reset.seconds", Kind::Duration),
+    v("OpenCode", "Session summary", "opencode.session", Kind::UsageSummary),
+    v("OpenCode", "Session used", "opencode.session.percentage", Kind::Percentage),
+    v("OpenCode", "Session remaining", "opencode.session.remaining", Kind::Percentage),
+    v("OpenCode", "Session shown", "opencode.session.display", Kind::DisplayPercentage),
+    v("OpenCode", "Session reset", "opencode.session.reset.seconds", Kind::Duration),
+    v("OpenCode", "Long-window label", "opencode.weekly.label", Kind::Text),
+    v("OpenCode", "Long-window summary", "opencode.weekly", Kind::UsageSummary),
+    v("OpenCode", "Long-window used", "opencode.weekly.percentage", Kind::Percentage),
+    v("OpenCode", "Long-window remaining", "opencode.weekly.remaining", Kind::Percentage),
+    v("OpenCode", "Long-window shown", "opencode.weekly.display", Kind::DisplayPercentage),
+    v("OpenCode", "Long-window reset", "opencode.weekly.reset.seconds", Kind::Duration),
+    v("Cursor", "Auto summary", "cursor.session", Kind::UsageSummary),
+    v("Cursor", "Auto used", "cursor.session.percentage", Kind::Percentage),
+    v("Cursor", "Auto remaining", "cursor.session.remaining", Kind::Percentage),
+    v("Cursor", "Auto shown", "cursor.session.display", Kind::DisplayPercentage),
+    v("Cursor", "Auto reset", "cursor.session.reset.seconds", Kind::Duration),
+    v("Cursor", "API summary", "cursor.weekly", Kind::UsageSummary),
+    v("Cursor", "API used", "cursor.weekly.percentage", Kind::Percentage),
+    v("Cursor", "API remaining", "cursor.weekly.remaining", Kind::Percentage),
+    v("Cursor", "API shown", "cursor.weekly.display", Kind::DisplayPercentage),
+    v("Cursor", "API reset", "cursor.weekly.reset.seconds", Kind::Duration),
+    v("Labels", "Session window label", "i18n.session_window", Kind::Text),
+    v("Labels", "Weekly window label", "i18n.weekly_window", Kind::Text),
+    v("Labels", "Now label", "i18n.now", Kind::Text),
 ];
 
 pub(super) fn text_template_value(expression: &str) -> Option<TextTemplateValue> {
@@ -559,7 +126,6 @@ pub(super) fn text_template_value(expression: &str) -> Option<TextTemplateValue>
 }
 
 pub(super) fn text_template_formats(kind: TextTemplateValueKind) -> &'static [TextTemplateFormat] {
-    use TextTemplateFormat as Format;
     match kind {
         TextTemplateValueKind::Number => &[
             Format::Automatic,
@@ -624,85 +190,62 @@ pub(super) fn default_text_template_format(kind: TextTemplateValueKind) -> TextT
     text_template_formats(kind)[0]
 }
 
+/// Each format's English label and the token suffix it inserts.
+#[rustfmt::skip]
+const TEXT_TEMPLATE_FORMAT_INFO: &[(TextTemplateFormat, &str, Option<&str>)] = &[
+    (Format::Automatic, "Automatic number", Some("0.##")),
+    (Format::WholeNumber, "Whole number", Some("0")),
+    (Format::OneDecimal, "One decimal", Some("0.0")),
+    (Format::TwoDecimals, "Two decimals", Some("0.00")),
+    (Format::Percentage, "Percentage", Some("percent")),
+    (Format::ShortDuration, "Short duration", Some("duration_short")),
+    (Format::DetailedDuration, "Detailed duration", Some("duration")),
+    (Format::UsageLine, "Usage and reset", Some("usage_line")),
+    (Format::UsageBadge, "Usage only", Some("usage_badge")),
+    (Format::WeekdayTwo, "Weekday (2 letters)", Some("weekday_2")),
+    (Format::WeekdayShort, "Weekday (short)", Some("weekday_short")),
+    (Format::WeekdayLong, "Weekday (full)", Some("weekday_long")),
+    (Format::Day, "Day", Some("day")),
+    (Format::DayTwo, "Day (2 digits)", Some("day_2")),
+    (Format::Month, "Month", Some("month")),
+    (Format::MonthTwo, "Month (2 digits)", Some("month_2")),
+    (Format::MonthShort, "Month (short)", Some("month_short")),
+    (Format::MonthLong, "Month (full)", Some("month_long")),
+    (Format::YearTwo, "Year (2 digits)", Some("year_2")),
+    (Format::Year, "Year", Some("year")),
+    (Format::DateShort, "Short date", Some("date_short")),
+    (Format::DateLong, "Long date", Some("date_long")),
+    (Format::TimeShort, "Time", Some("time_short")),
+    (Format::TimeSeconds, "Time with seconds", Some("time_seconds")),
+    (Format::Time24, "24-hour time", Some("time_24")),
+    (Format::Time24Seconds, "24-hour time with seconds", Some("time_24_seconds")),
+    (Format::Time12, "12-hour time", Some("time_12")),
+    (Format::Time12Seconds, "12-hour time with seconds", Some("time_12_seconds")),
+    (Format::DateTimeShort, "Short date and time", Some("datetime_short")),
+    (Format::DateTimeLong, "Long date and time", Some("datetime_long")),
+    (Format::IsoDate, "ISO date", Some("iso_date")),
+    (Format::IsoTime, "ISO time", Some("iso_time")),
+    (Format::IsoDateTime, "ISO date and time", Some("iso_datetime")),
+    (Format::PlainText, "Plain text", None),
+];
+
+fn text_template_format_info(format: TextTemplateFormat) -> (&'static str, Option<&'static str>) {
+    TEXT_TEMPLATE_FORMAT_INFO
+        .iter()
+        .find(|(candidate, _, _)| *candidate == format)
+        .map(|(_, label, code)| (*label, *code))
+        .expect("every text template format is listed")
+}
+
 pub(super) fn text_template_format_label(
     language: LanguageId,
     format: TextTemplateFormat,
 ) -> &'static str {
-    match format {
-        TextTemplateFormat::Automatic => language.text("Automatic number"),
-        TextTemplateFormat::WholeNumber => language.text("Whole number"),
-        TextTemplateFormat::OneDecimal => language.text("One decimal"),
-        TextTemplateFormat::TwoDecimals => language.text("Two decimals"),
-        TextTemplateFormat::Percentage => language.text("Percentage"),
-        TextTemplateFormat::ShortDuration => language.text("Short duration"),
-        TextTemplateFormat::DetailedDuration => language.text("Detailed duration"),
-        TextTemplateFormat::UsageLine => language.text("Usage and reset"),
-        TextTemplateFormat::UsageBadge => language.text("Usage only"),
-        TextTemplateFormat::WeekdayTwo => language.text("Weekday (2 letters)"),
-        TextTemplateFormat::WeekdayShort => language.text("Weekday (short)"),
-        TextTemplateFormat::WeekdayLong => language.text("Weekday (full)"),
-        TextTemplateFormat::Day => language.text("Day"),
-        TextTemplateFormat::DayTwo => language.text("Day (2 digits)"),
-        TextTemplateFormat::Month => language.text("Month"),
-        TextTemplateFormat::MonthTwo => language.text("Month (2 digits)"),
-        TextTemplateFormat::MonthShort => language.text("Month (short)"),
-        TextTemplateFormat::MonthLong => language.text("Month (full)"),
-        TextTemplateFormat::YearTwo => language.text("Year (2 digits)"),
-        TextTemplateFormat::Year => language.text("Year"),
-        TextTemplateFormat::DateShort => language.text("Short date"),
-        TextTemplateFormat::DateLong => language.text("Long date"),
-        TextTemplateFormat::TimeShort => language.text("Time"),
-        TextTemplateFormat::TimeSeconds => language.text("Time with seconds"),
-        TextTemplateFormat::Time24 => language.text("24-hour time"),
-        TextTemplateFormat::Time24Seconds => language.text("24-hour time with seconds"),
-        TextTemplateFormat::Time12 => language.text("12-hour time"),
-        TextTemplateFormat::Time12Seconds => language.text("12-hour time with seconds"),
-        TextTemplateFormat::DateTimeShort => language.text("Short date and time"),
-        TextTemplateFormat::DateTimeLong => language.text("Long date and time"),
-        TextTemplateFormat::IsoDate => language.text("ISO date"),
-        TextTemplateFormat::IsoTime => language.text("ISO time"),
-        TextTemplateFormat::IsoDateTime => language.text("ISO date and time"),
-        TextTemplateFormat::PlainText => language.text("Plain text"),
-    }
+    language.text(text_template_format_info(format).0)
 }
 
 pub(super) fn text_template_format_code(format: TextTemplateFormat) -> Option<&'static str> {
-    match format {
-        TextTemplateFormat::Automatic => Some("0.##"),
-        TextTemplateFormat::WholeNumber => Some("0"),
-        TextTemplateFormat::OneDecimal => Some("0.0"),
-        TextTemplateFormat::TwoDecimals => Some("0.00"),
-        TextTemplateFormat::Percentage => Some("percent"),
-        TextTemplateFormat::ShortDuration => Some("duration_short"),
-        TextTemplateFormat::DetailedDuration => Some("duration"),
-        TextTemplateFormat::UsageLine => Some("usage_line"),
-        TextTemplateFormat::UsageBadge => Some("usage_badge"),
-        TextTemplateFormat::WeekdayTwo => Some("weekday_2"),
-        TextTemplateFormat::WeekdayShort => Some("weekday_short"),
-        TextTemplateFormat::WeekdayLong => Some("weekday_long"),
-        TextTemplateFormat::Day => Some("day"),
-        TextTemplateFormat::DayTwo => Some("day_2"),
-        TextTemplateFormat::Month => Some("month"),
-        TextTemplateFormat::MonthTwo => Some("month_2"),
-        TextTemplateFormat::MonthShort => Some("month_short"),
-        TextTemplateFormat::MonthLong => Some("month_long"),
-        TextTemplateFormat::YearTwo => Some("year_2"),
-        TextTemplateFormat::Year => Some("year"),
-        TextTemplateFormat::DateShort => Some("date_short"),
-        TextTemplateFormat::DateLong => Some("date_long"),
-        TextTemplateFormat::TimeShort => Some("time_short"),
-        TextTemplateFormat::TimeSeconds => Some("time_seconds"),
-        TextTemplateFormat::Time24 => Some("time_24"),
-        TextTemplateFormat::Time24Seconds => Some("time_24_seconds"),
-        TextTemplateFormat::Time12 => Some("time_12"),
-        TextTemplateFormat::Time12Seconds => Some("time_12_seconds"),
-        TextTemplateFormat::DateTimeShort => Some("datetime_short"),
-        TextTemplateFormat::DateTimeLong => Some("datetime_long"),
-        TextTemplateFormat::IsoDate => Some("iso_date"),
-        TextTemplateFormat::IsoTime => Some("iso_time"),
-        TextTemplateFormat::IsoDateTime => Some("iso_datetime"),
-        TextTemplateFormat::PlainText => None,
-    }
+    text_template_format_info(format).1
 }
 
 pub(super) fn text_template_token(expression: &str, format: TextTemplateFormat) -> String {
@@ -795,7 +338,7 @@ pub(super) fn text_template_values_panel(
                             egui::RichText::new(language.text(value.group))
                                 .small()
                                 .strong()
-                                .color(muted()),
+                                .color(MUTED),
                         );
                         last_group = value.group;
                     }
@@ -818,7 +361,7 @@ pub(super) fn text_template_values_panel(
                                 default_text_template_format(value.kind),
                                 context,
                             );
-                            ui.label(egui::RichText::new(sample).color(muted()));
+                            ui.label(egui::RichText::new(sample).color(MUTED));
                         });
                     });
                 }
@@ -842,7 +385,7 @@ pub(super) fn text_template_formats_panel(
             egui::RichText::new(value.expression)
                 .small()
                 .family(egui::FontFamily::Monospace)
-                .color(muted()),
+                .color(MUTED),
         );
         ui.add_space(8.0);
         for format in text_template_formats(value.kind) {
@@ -861,7 +404,7 @@ pub(super) fn text_template_formats_panel(
                     *selected_format = *format;
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new(sample).color(muted()));
+                    ui.label(egui::RichText::new(sample).color(MUTED));
                 });
             });
         }
@@ -869,12 +412,7 @@ pub(super) fn text_template_formats_panel(
         ui.separator();
         ui.add_space(8.0);
         let token = text_template_token(value.expression, *selected_format);
-        ui.label(
-            egui::RichText::new(&token)
-                .small()
-                .color(muted())
-                .monospace(),
-        );
+        ui.label(egui::RichText::new(&token).small().color(MUTED).monospace());
         ui.add_space(6.0);
         if ui
             .add_sized(
@@ -902,7 +440,7 @@ pub(super) fn text_template_guide_panel(
         ui.label(language.text("Values are inserted at the end of the current text and can be moved or edited afterwards."));
         ui.add_space(8.0);
         ui.label(language.text("To show a literal opening brace, type:"));
-        ui.label(egui::RichText::new("{{").monospace().color(muted()));
+        ui.label(egui::RichText::new("{{").monospace().color(MUTED));
         ui.add_space(8.0);
         ui.label(language.text("Advanced expressions are supported inside a value token."));
     });
@@ -940,7 +478,7 @@ pub(super) fn action_reference_panels(
                     ui.label(
                         egui::RichText::new(language.text("URL"))
                             .small()
-                            .color(muted()),
+                            .color(MUTED),
                     );
                     ui.add(
                         singleline_text_edit(url)
@@ -963,7 +501,7 @@ pub(super) fn action_reference_panels(
                     ui.label(
                         egui::RichText::new(language.text("Context menu"))
                             .small()
-                            .color(muted()),
+                            .color(MUTED),
                     );
                     Dropdown::from_id_salt("action-helper-context-menu")
                         .width(ui.available_width())
@@ -991,53 +529,10 @@ pub(super) fn action_reference_panels(
                         append_action(draft, &format!("show_context_menu(\"{reference}\")"));
                     }
                     ui.separator();
-                    if ui.button(language.text("Set property")).clicked() {
-                        append_action(
-                            draft,
-                            &format!("set({target}, {}, {})", property.name(), value.trim()),
-                        );
-                    }
-                    if ui
-                        .add_enabled(
-                            *property == MouseActionProperty::Render,
-                            egui::Button::new(language.text("Toggle property")),
-                        )
-                        .on_disabled_hover_text(
-                            language.text("Toggle currently supports Render only"),
-                        )
-                        .clicked()
+                    if let Some(action) =
+                        property_action_buttons(ui, target, *property, value, true, language)
                     {
-                        append_action(draft, &format!("toggle({target}, {})", property.name()));
-                    }
-                    if ui.button(language.text("Reset property")).clicked() {
-                        append_action(draft, &format!("reset({target}, {})", property.name()));
-                    }
-                    let numeric_property = *property != MouseActionProperty::Render;
-                    if ui
-                        .add_enabled(
-                            numeric_property,
-                            egui::Button::new(language.text("Increase value")),
-                        )
-                        .on_disabled_hover_text(language.text("Choose a numeric property"))
-                        .clicked()
-                    {
-                        append_action(
-                            draft,
-                            &format!("increase({target}, {}, {})", property.name(), value.trim()),
-                        );
-                    }
-                    if ui
-                        .add_enabled(
-                            numeric_property,
-                            egui::Button::new(language.text("Decrease value")),
-                        )
-                        .on_disabled_hover_text(language.text("Choose a numeric property"))
-                        .clicked()
-                    {
-                        append_action(
-                            draft,
-                            &format!("decrease({target}, {}, {})", property.name(), value.trim()),
-                        );
+                        append_action(draft, &action);
                     }
                     ui.add_space(10.0);
                     ui.label(
@@ -1045,7 +540,7 @@ pub(super) fn action_reference_panels(
                             language.text("Actions run from top to bottom in one update."),
                         )
                         .small()
-                        .color(muted()),
+                        .color(MUTED),
                     );
                 });
         });
@@ -1072,25 +567,12 @@ pub(super) fn action_reference_panels(
                 });
         });
         expression_reference_card(ui, panel_width, height, language.text("Properties"), |ui| {
-            for candidate in MouseActionProperty::ALL {
-                let label = match candidate {
-                    MouseActionProperty::Render => language.text("Render"),
-                    MouseActionProperty::Visibility => language.text("Visibility"),
-                    MouseActionProperty::X => language.text("X"),
-                    MouseActionProperty::Y => language.text("Y"),
-                    MouseActionProperty::Width => language.text("Width"),
-                    MouseActionProperty::Height => language.text("Height"),
-                    MouseActionProperty::Rotation => language.text("Rotation"),
-                };
-                if ui.selectable_label(*property == candidate, label).clicked() {
-                    *property = candidate;
-                }
-            }
+            property_selector(ui, property, language);
             ui.separator();
             ui.label(
                 egui::RichText::new(language.text("Value expression"))
                     .small()
-                    .color(muted()),
+                    .color(MUTED),
             );
             ui.add(
                 singleline_text_edit(value)
@@ -1105,10 +587,93 @@ pub(super) fn action_reference_panels(
                     ),
                 )
                 .small()
-                .color(muted()),
+                .color(MUTED),
             );
         });
     });
+}
+
+/// The Set/Toggle/Reset/Increase/Decrease buttons shared by both action
+/// helpers. Returns the clicked action. `disabled_hints` adds the tooltips
+/// the layer action helper shows on disabled buttons.
+pub(super) fn property_action_buttons(
+    ui: &mut egui::Ui,
+    target: &str,
+    property: MouseActionProperty,
+    value: &str,
+    disabled_hints: bool,
+    language: LanguageId,
+) -> Option<String> {
+    let hint = |response: egui::Response, text: &'static str| {
+        if disabled_hints {
+            response.on_disabled_hover_text(language.text(text))
+        } else {
+            response
+        }
+    };
+    let mut action = None;
+    if ui.button(language.text("Set property")).clicked() {
+        action = Some(format!(
+            "set({target}, {}, {})",
+            property.name(),
+            value.trim()
+        ));
+    }
+    let toggle = ui.add_enabled(
+        property == MouseActionProperty::Render,
+        egui::Button::new(language.text("Toggle property")),
+    );
+    if hint(toggle, "Toggle currently supports Render only").clicked() {
+        action = Some(format!("toggle({target}, {})", property.name()));
+    }
+    if ui.button(language.text("Reset property")).clicked() {
+        action = Some(format!("reset({target}, {})", property.name()));
+    }
+    let numeric_property = property != MouseActionProperty::Render;
+    let increase = ui.add_enabled(
+        numeric_property,
+        egui::Button::new(language.text("Increase value")),
+    );
+    if hint(increase, "Choose a numeric property").clicked() {
+        action = Some(format!(
+            "increase({target}, {}, {})",
+            property.name(),
+            value.trim()
+        ));
+    }
+    let decrease = ui.add_enabled(
+        numeric_property,
+        egui::Button::new(language.text("Decrease value")),
+    );
+    if hint(decrease, "Choose a numeric property").clicked() {
+        action = Some(format!(
+            "decrease({target}, {}, {})",
+            property.name(),
+            value.trim()
+        ));
+    }
+    action
+}
+
+pub(super) fn property_selector(
+    ui: &mut egui::Ui,
+    property: &mut MouseActionProperty,
+    language: LanguageId,
+) {
+    for candidate in MouseActionProperty::ALL {
+        let label = match candidate {
+            MouseActionProperty::Render => language.text("Render"),
+            MouseActionProperty::Visibility => language.text("Visibility"),
+            MouseActionProperty::X => language.text("X"),
+            MouseActionProperty::Y => language.text("Y"),
+            MouseActionProperty::Width => language.text("Width"),
+            MouseActionProperty::Height => language.text("Height"),
+            MouseActionProperty::Rotation => language.text("Rotation"),
+        };
+        if ui.selectable_label(*property == candidate, label).clicked() {
+            *property = candidate;
+        }
+    }
 }
 
 pub(super) fn append_action(draft: &mut String, action: &str) {
@@ -1144,99 +709,62 @@ pub(super) fn expression_variables_panel(
             })
             .max_height((height - 72.0).max(80.0))
             .show(ui, |ui| {
-                let basic = ["true", "false", "pi", "e"];
-                expression_variable_group(
-                    ui,
-                    language.text("Constants"),
-                    &basic,
-                    &needle,
-                    context,
-                    draft,
-                    language,
-                );
-                let layout = [
-                    "canvas.width",
-                    "canvas.height",
-                    "parent.width",
-                    "parent.height",
-                    "host.width",
-                    "host.height",
-                ];
-                expression_variable_group(
-                    ui,
-                    language.text("Layout"),
-                    &layout,
-                    &needle,
-                    context,
-                    draft,
-                    language,
-                );
-                let date_time = [
-                    "time.now.unix",
-                    "time.now.milliseconds",
-                    "time.local.year",
-                    "time.local.month",
-                    "time.local.day",
-                    "time.local.weekday",
-                    "time.local.hour",
-                    "time.local.minute",
-                    "time.local.second",
-                    "time.utc.year",
-                    "time.utc.month",
-                    "time.utc.day",
-                    "time.utc.weekday",
-                    "time.utc.hour",
-                    "time.utc.minute",
-                    "time.utc.second",
-                ];
-                expression_variable_group(
-                    ui,
-                    language.text("Date and time"),
-                    &date_time,
-                    &needle,
-                    context,
-                    draft,
-                    language,
-                );
-                let mut providers = vec!["providers.count".to_string()];
-                providers.extend(
-                    PROVIDER_DESCRIPTORS
-                        .iter()
-                        .map(|descriptor| format!("providers.{}.enabled", descriptor.key)),
-                );
-                let providers: Vec<&str> = providers.iter().map(String::as_str).collect();
-                expression_variable_group(
-                    ui,
-                    language.text("Providers"),
-                    &providers,
-                    &needle,
-                    context,
-                    draft,
-                    language,
-                );
-                expression_variable_group(
-                    ui,
-                    language.text("Display"),
-                    &["display.countdown"],
-                    &needle,
-                    context,
-                    draft,
-                    language,
-                );
-                let application = [
-                    "app.version.major",
-                    "app.version.minor",
-                    "app.version.patch",
-                ];
-                expression_variable_group(
-                    ui,
-                    language.text("Application"),
-                    &application,
-                    &needle,
-                    context,
-                    draft,
-                    language,
-                );
+                let owned = |names: &[&str]| -> Vec<String> {
+                    names.iter().map(|name| name.to_string()).collect()
+                };
+                let mut groups: Vec<(&'static str, Vec<String>)> =
+                    vec![
+                        ("Constants", owned(&["true", "false", "pi", "e"])),
+                        (
+                            "Layout",
+                            owned(&[
+                                "canvas.width",
+                                "canvas.height",
+                                "parent.width",
+                                "parent.height",
+                                "host.width",
+                                "host.height",
+                            ]),
+                        ),
+                        (
+                            "Date and time",
+                            owned(&[
+                                "time.now.unix",
+                                "time.now.milliseconds",
+                                "time.local.year",
+                                "time.local.month",
+                                "time.local.day",
+                                "time.local.weekday",
+                                "time.local.hour",
+                                "time.local.minute",
+                                "time.local.second",
+                                "time.utc.year",
+                                "time.utc.month",
+                                "time.utc.day",
+                                "time.utc.weekday",
+                                "time.utc.hour",
+                                "time.utc.minute",
+                                "time.utc.second",
+                            ]),
+                        ),
+                        (
+                            "Providers",
+                            std::iter::once("providers.count".to_string())
+                                .chain(PROVIDER_DESCRIPTORS.iter().map(|descriptor| {
+                                    format!("providers.{}.enabled", descriptor.key)
+                                }))
+                                .collect(),
+                        ),
+                        ("Display", owned(&["display.countdown"])),
+                        (
+                            "Application",
+                            owned(&[
+                                "app.version.major",
+                                "app.version.minor",
+                                "app.version.patch",
+                            ]),
+                        ),
+                    ];
                 for (title, provider) in std::iter::once(("Active provider", "active")).chain(
                     PROVIDER_DESCRIPTORS
                         .iter()
@@ -1272,11 +800,13 @@ pub(super) fn expression_variables_panel(
                             names.push(format!("{provider}.context.{metric}"));
                         }
                     }
-                    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                    groups.push((title, names));
+                }
+                for (title, names) in &groups {
                     expression_variable_group(
                         ui,
                         language.text(title),
-                        &names,
+                        names,
                         &needle,
                         context,
                         draft,
@@ -1290,7 +820,7 @@ pub(super) fn expression_variables_panel(
 pub(super) fn expression_variable_group(
     ui: &mut egui::Ui,
     title: &str,
-    names: &[&str],
+    names: &[String],
     needle: &str,
     context: &DataContext,
     draft: &mut String,
@@ -1298,13 +828,13 @@ pub(super) fn expression_variable_group(
 ) {
     let matches: Vec<&str> = names
         .iter()
-        .copied()
+        .map(String::as_str)
         .filter(|name| needle.is_empty() || name.to_ascii_lowercase().contains(needle))
         .collect();
     if matches.is_empty() {
         return;
     }
-    ui.label(egui::RichText::new(title).small().strong().color(muted()));
+    ui.label(egui::RichText::new(title).small().strong().color(MUTED));
     for name in matches {
         ui.horizontal(|ui| {
             if ui
@@ -1319,7 +849,7 @@ pub(super) fn expression_variable_group(
                     .get(name)
                     .map(format_number_for_ui)
                     .unwrap_or_else(|| "—".into());
-                ui.label(egui::RichText::new(value).color(muted()));
+                ui.label(egui::RichText::new(value).color(MUTED));
             });
         });
     }
@@ -1450,7 +980,7 @@ pub(super) fn expression_operators_panel(
                         ui.label(
                             egui::RichText::new(language.text(detail))
                                 .small()
-                                .color(muted()),
+                                .color(MUTED),
                         );
                     });
                 }

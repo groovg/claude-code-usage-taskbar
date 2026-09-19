@@ -62,15 +62,6 @@ pub(crate) fn name_editor(
     ui: &mut egui::Ui,
     name: &mut String,
     id: egui::Id,
-    language: LanguageId,
-) {
-    name_editor_with_prefix(ui, name, id, "", language);
-}
-
-pub(crate) fn name_editor_with_prefix(
-    ui: &mut egui::Ui,
-    name: &mut String,
-    id: egui::Id,
     prefix: &str,
     language: LanguageId,
 ) {

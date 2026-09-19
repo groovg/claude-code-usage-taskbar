@@ -98,44 +98,18 @@ impl StudioApp {
         let Some(confirmation) = self.asset_delete_confirmation.take() else {
             return;
         };
-        let language = self.language();
-        let mut action = 0;
-        crate::ui::components::modal::Modal::new(
-            language.text("Delete asset?"),
+        let decision = confirm_delete(
+            context,
+            self.language(),
+            "Delete asset?",
             "delete-asset-confirmation",
-        )
-        .width(310.0)
-        .fixed_height(110.0)
-        .show(context, |ui| {
-            ui.label(
-                language
-                    .text(
-                        "Are you sure you want to delete {name} from the asset library and all themes using it?",
-                    )
-                    .replace("{name}", &confirmation.asset.name),
-            );
-            ui.add_space(10.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new(language.text("Delete"))
-                                .color(egui::Color32::WHITE),
-                        )
-                        .fill(egui::Color32::from_rgb(178, 48, 48)),
-                    )
-                    .clicked()
-                {
-                    action = 2;
-                }
-                if ui.button(language.text("Cancel")).clicked() {
-                    action = 1;
-                }
-            });
-        });
-        match action {
-            1 => {}
-            2 => {
+            "Are you sure you want to delete {name} from the asset library and all themes using it?",
+            &confirmation.asset.name,
+            "Delete",
+        );
+        match decision {
+            Some(false) => {}
+            Some(true) => {
                 let path = &confirmation.asset.relative_path;
                 if let Err(error) = theme_engine::delete_asset(path) {
                     self.asset_error = Some(error);
@@ -152,7 +126,7 @@ impl StudioApp {
                     }
                 }
             }
-            _ => self.asset_delete_confirmation = Some(confirmation),
+            None => self.asset_delete_confirmation = Some(confirmation),
         }
     }
 }

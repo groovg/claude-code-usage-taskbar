@@ -1,6 +1,28 @@
 use super::*;
 
 impl StudioApp {
+    /// The layer a selection points at: a root surface or one of its children.
+    pub(super) fn scene_object(&self, selection: Selection) -> Option<&SceneObject> {
+        match selection {
+            Selection::Surface(index) => self.theme.surfaces.get(index),
+            Selection::Object(surface, object) => {
+                self.theme.surfaces.get(surface)?.children.get(object)
+            }
+        }
+    }
+
+    pub(super) fn scene_object_mut(&mut self, selection: Selection) -> Option<&mut SceneObject> {
+        match selection {
+            Selection::Surface(index) => self.theme.surfaces.get_mut(index),
+            Selection::Object(surface, object) => self
+                .theme
+                .surfaces
+                .get_mut(surface)?
+                .children
+                .get_mut(object),
+        }
+    }
+
     pub(super) fn studio_page(&mut self, ui: &mut egui::Ui) {
         let language = self.language();
         let themes = available_themes(self.theme_path.as_deref(), &self.theme);
@@ -13,7 +35,7 @@ impl StudioApp {
                 .is_some_and(theme_engine::is_managed_theme_path);
         let mut save_after_enabling_live_apply = false;
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(language.text("Theme")).color(muted()));
+            ui.label(egui::RichText::new(language.text("Theme")).color(MUTED));
             Dropdown::from_id_salt("studio-theme")
                 .width(240.0)
                 .selected_text(if read_only {
@@ -270,6 +292,7 @@ impl StudioApp {
             self.owner,
             language.text("Add an image to the asset library"),
             &filter,
+            None,
         )?;
         self.import_asset_path(&source)
     }
@@ -331,27 +354,8 @@ impl StudioApp {
     }
 
     pub(super) fn apply_asset_to_selection(&mut self, target: Selection, path: String) {
-        let changed = match target {
-            Selection::Surface(index) => {
-                self.theme.surfaces.get_mut(index).is_some_and(|surface| {
-                    match &mut surface.background {
-                        LayerBackground::Image { path: current, .. } => {
-                            if *current == path {
-                                false
-                            } else {
-                                *current = path;
-                                true
-                            }
-                        }
-                        _ => false,
-                    }
-                })
-            }
-            Selection::Object(surface_index, object_index) => self
-                .theme
-                .surfaces
-                .get_mut(surface_index)
-                .and_then(|surface| surface.children.get_mut(object_index))
+        let changed =
+            self.scene_object_mut(target)
                 .is_some_and(|object| match &mut object.background {
                     LayerBackground::Image { path: current, .. } => {
                         if *current == path {
@@ -362,8 +366,7 @@ impl StudioApp {
                         }
                     }
                     _ => false,
-                }),
-        };
+                });
         if changed {
             self.selection = target;
             self.changed();
@@ -409,7 +412,7 @@ impl StudioApp {
                                 language
                                     .text("Choose a managed image or add one from your computer."),
                             )
-                            .color(muted()),
+                            .color(MUTED),
                         );
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
@@ -521,17 +524,17 @@ impl StudioApp {
                             ui,
                             egui::vec2(values_width, panel_height),
                             &context,
-                            &mut editor.value_filter,
-                            &mut editor.selected_value,
-                            &mut editor.selected_format,
+                            &mut editor.panels.value_filter,
+                            &mut editor.panels.selected_value,
+                            &mut editor.panels.selected_format,
                             language,
                         );
                         text_template_formats_panel(
                             ui,
                             egui::vec2(formats_width, panel_height),
                             &context,
-                            editor.selected_value,
-                            &mut editor.selected_format,
+                            editor.panels.selected_value,
+                            &mut editor.panels.selected_format,
                             &mut editor.draft,
                             language,
                         );
@@ -542,26 +545,12 @@ impl StudioApp {
         );
 
         match action {
-            TextHelperAction::Close => {}
-            TextHelperAction::Apply => match helper.target {
+            HelperAction::Close => {}
+            HelperAction::Apply => match helper.target {
                 TextTemplateHelperTarget::Theme(selection) => {
-                    let applied = match selection {
-                        Selection::Surface(surface_index) => self
-                            .theme
-                            .surfaces
-                            .get_mut(surface_index)
-                            .is_some_and(|surface| {
-                                set_text_template(&mut surface.content, helper.editor.draft.clone())
-                            }),
-                        Selection::Object(surface_index, object_index) => self
-                            .theme
-                            .surfaces
-                            .get_mut(surface_index)
-                            .and_then(|surface| surface.children.get_mut(object_index))
-                            .is_some_and(|object| {
-                                set_text_template(&mut object.content, helper.editor.draft.clone())
-                            }),
-                    };
+                    let applied = self.scene_object_mut(selection).is_some_and(|object| {
+                        set_text_template(&mut object.content, helper.editor.draft.clone())
+                    });
                     if applied {
                         self.selection = selection;
                         self.changed();
@@ -575,7 +564,7 @@ impl StudioApp {
                     }
                 }
             },
-            TextHelperAction::Continue => self.text_template_helper = Some(helper),
+            HelperAction::Continue => self.text_template_helper = Some(helper),
         }
     }
 
@@ -613,7 +602,7 @@ impl StudioApp {
                         panel_width,
                         panel_height,
                         &context,
-                        &mut editor.variable_filter,
+                        &mut editor.panels.variable_filter,
                         &mut editor.draft,
                         language,
                     );
@@ -621,7 +610,7 @@ impl StudioApp {
                         ui,
                         panel_width,
                         panel_height,
-                        &mut editor.function_filter,
+                        &mut editor.panels.function_filter,
                         &mut editor.draft,
                         language,
                     );
@@ -637,8 +626,8 @@ impl StudioApp {
         );
 
         match action {
-            ExpressionHelperAction::Close => {}
-            ExpressionHelperAction::Apply => {
+            HelperAction::Close => {}
+            HelperAction::Apply => {
                 let expression = Expression(helper.editor.draft);
                 if let ExpressionHelperTarget::ContextMenu(path) = helper.target {
                     if !self.context_menu.is_builtin() {
@@ -688,21 +677,18 @@ impl StudioApp {
                             field => set_object_expression(surface, field, expression),
                         })
                         .unwrap_or(false),
-                    Selection::Object(surface_index, object_index) => self
-                        .theme
-                        .surfaces
-                        .get_mut(surface_index)
-                        .and_then(|surface| surface.children.get_mut(object_index))
-                        .is_some_and(|object| {
+                    Selection::Object(..) => {
+                        self.scene_object_mut(selection).is_some_and(|object| {
                             set_object_expression(object, helper.field, expression)
-                        }),
+                        })
+                    }
                 };
                 if applied {
                     self.selection = selection;
                     self.changed();
                 }
             }
-            ExpressionHelperAction::Continue => self.expression_helper = Some(helper),
+            HelperAction::Continue => self.expression_helper = Some(helper),
         }
     }
 
@@ -717,14 +703,9 @@ impl StudioApp {
         let Some(surface) = self.theme.surfaces.get(surface_index) else {
             return;
         };
-        let self_id = match helper.selection {
-            Selection::Surface(_) => surface.id.clone(),
-            Selection::Object(_, object) => surface
-                .children
-                .get(object)
-                .map(|object| object.id.clone())
-                .unwrap_or_else(|| surface.id.clone()),
-        };
+        let self_id = self
+            .scene_object(helper.selection)
+            .map_or_else(|| surface.id.clone(), |object| object.id.clone());
         let targets = self
             .theme
             .surfaces
@@ -783,28 +764,22 @@ impl StudioApp {
         );
 
         match action {
-            ExpressionHelperAction::Close => {}
-            ExpressionHelperAction::Apply => {
+            HelperAction::Close => {}
+            HelperAction::Apply => {
                 let draft = helper.editor.draft;
-                let applied = match helper.selection {
-                    Selection::Surface(index) => self.theme.surfaces.get_mut(index),
-                    Selection::Object(surface, object) => self
-                        .theme
-                        .surfaces
-                        .get_mut(surface)
-                        .and_then(|surface| surface.children.get_mut(object)),
-                }
-                .is_some_and(|object| {
-                    let events = object.mouse_events.get_or_insert_with(MouseEvents::default);
-                    *events.handler_mut(helper.field.kind()) = draft;
-                    true
-                });
+                let applied = self
+                    .scene_object_mut(helper.selection)
+                    .is_some_and(|object| {
+                        let events = object.mouse_events.get_or_insert_with(MouseEvents::default);
+                        *events.handler_mut(helper.field.kind()) = draft;
+                        true
+                    });
                 if applied {
                     self.selection = helper.selection;
                     self.changed();
                 }
             }
-            ExpressionHelperAction::Continue => {
+            HelperAction::Continue => {
                 helper.target = target;
                 helper.property = property;
                 helper.value = value;
@@ -856,22 +831,20 @@ impl StudioApp {
         );
 
         match action {
-            ExpressionHelperAction::Close => {}
-            ExpressionHelperAction::Apply => {
-                match parse_context_menu_action_script(&helper.editor.draft) {
-                    Ok(action) => {
-                        if let Some(item) =
-                            context_menu_item_mut(&mut self.context_menu.items, &helper.path)
-                        {
-                            item.kind = ContextMenuItemKind::Action { action };
-                            self.context_menu_selection = Some(helper.path);
-                            self.context_menu_dirty = true;
-                        }
+            HelperAction::Close => {}
+            HelperAction::Apply => match parse_context_menu_action_script(&helper.editor.draft) {
+                Ok(action) => {
+                    if let Some(item) =
+                        context_menu_item_mut(&mut self.context_menu.items, &helper.path)
+                    {
+                        item.kind = ContextMenuItemKind::Action { action };
+                        self.context_menu_selection = Some(helper.path);
+                        self.context_menu_dirty = true;
                     }
-                    Err(error) => self.theme_error = Some(error),
                 }
-            }
-            ExpressionHelperAction::Continue => self.context_menu_action_helper = Some(helper),
+                Err(error) => self.theme_error = Some(error),
+            },
+            HelperAction::Continue => self.context_menu_action_helper = Some(helper),
         }
     }
 
@@ -903,11 +876,8 @@ impl StudioApp {
         };
         let mut context =
             DataContext::from_usage_with_runtime(self.usage.as_ref(), &canvas, runtime);
-        let object = match selection {
-            Selection::Surface(_) => Some(surface),
-            Selection::Object(_, object_index) => surface.children.get(object_index),
-        };
-        if let Some(gap) = object
+        if let Some(gap) = self
+            .scene_object(selection)
             .and_then(|object| theme_engine::evaluate(&object.gap.0, &context).ok())
             .filter(|value| value.is_finite())
         {
@@ -1137,10 +1107,7 @@ impl StudioApp {
     ) -> Option<(Selection, SceneDropTarget)> {
         let language = self.language();
         let mut object = self
-            .theme
-            .surfaces
-            .get(surface)
-            .and_then(|s| s.children.get(index))
+            .scene_object(Selection::Object(surface, index))
             .cloned()?;
         let preview_size = theme_engine::resolve_object_bounds_with_runtime(
             &self.theme,
@@ -1643,20 +1610,10 @@ impl StudioApp {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 if read_only {
-                    let name = match self.selection {
-                        Selection::Surface(index) => self
-                            .theme
-                            .surfaces
-                            .get(index)
-                            .map(|surface| surface.name.as_str()),
-                        Selection::Object(surface, object) => self
-                            .theme
-                            .surfaces
-                            .get(surface)
-                            .and_then(|surface| surface.children.get(object))
-                            .map(|object| object.name.as_str()),
-                    };
-                    if let Some(name) = name {
+                    if let Some(name) = self
+                        .scene_object(self.selection)
+                        .map(|object| object.name.as_str())
+                    {
                         inspector_heading(ui, name);
                         ui.add_space(6.0);
                     }
@@ -1706,16 +1663,16 @@ impl StudioApp {
                 ui,
                 &mut surface.name,
                 object_controls_id.with("name"),
+                "",
                 language,
             );
             ui.add_space(6.0);
         }
 
-        crate::ui::components::collapsible::inspector_section(
-            ui,
-            object_controls_id.with("layer-section"),
-            language.text("Layer"),
-            |ui| {
+        egui::CollapsingHeader::new(language.text("Layer"))
+            .id_salt(object_controls_id.with("layer-section"))
+            .default_open(true)
+            .show(ui, |ui| {
                 if let Some(request) = layer_properties_inspector(
                     ui,
                     object_controls_id.with("layer"),
@@ -1730,14 +1687,12 @@ impl StudioApp {
                         LayerInspectorRequest::TextTemplate => requested_text_template = true,
                     }
                 }
-            },
-        );
+            });
 
-        crate::ui::components::collapsible::inspector_section(
-            ui,
-            object_controls_id.with("appearance-section"),
-            language.text("Appearance"),
-            |ui| {
+        egui::CollapsingHeader::new(language.text("Appearance"))
+            .id_salt(object_controls_id.with("appearance-section"))
+            .default_open(true)
+            .show(ui, |ui| {
                 if let Some(field) = render_controls(
                     ui,
                     render_controls_id,
@@ -1764,14 +1719,12 @@ impl StudioApp {
                     &mut surface,
                     language,
                 );
-            },
-        );
+            });
 
-        crate::ui::components::collapsible::inspector_section(
-            ui,
-            object_controls_id.with("positioning-section"),
-            language.text("Positioning"),
-            |ui| {
+        egui::CollapsingHeader::new(language.text("Positioning"))
+            .id_salt(object_controls_id.with("positioning-section"))
+            .default_open(true)
+            .show(ui, |ui| {
                 labeled(ui, language.text("Host"), |ui| {
                     Dropdown::from_id_salt(("surface-nest", index))
                         .width(inspector_control_width(ui))
@@ -1798,7 +1751,7 @@ impl StudioApp {
                             language.text("Explorer controls this icon's position, overflow, drag order, and final display size. The root's width and height control its source artwork."),
                         )
                         .small()
-                        .color(muted()),
+                        .color(MUTED),
                     );
                 }
                 labeled(ui, language.text("Reference"), |ui| {
@@ -1875,23 +1828,27 @@ impl StudioApp {
                         requested_expression = Some(field);
                     }
                 }
-                if placement_offset_expression_control(
+                if optional_expression_control(
                     ui,
                     placement_controls_id.with("x"),
                     language.text("X offset"),
                     &mut surface.placement.offset_x,
+                    None,
                     &mut surface.placement.offset_x_expression,
                     &expression_context,
+                    format_number_for_ui,
                 ) {
                     requested_expression = Some(ExpressionField::PlacementOffsetX);
                 }
-                if placement_offset_expression_control(
+                if optional_expression_control(
                     ui,
                     placement_controls_id.with("y"),
                     language.text("Y offset"),
                     &mut surface.placement.offset_y,
+                    None,
                     &mut surface.placement.offset_y_expression,
                     &expression_context,
+                    format_number_for_ui,
                 ) {
                     requested_expression = Some(ExpressionField::PlacementOffsetY);
                 }
@@ -1998,16 +1955,16 @@ impl StudioApp {
                 ui,
                 &mut object.name,
                 expression_controls_id.with("name"),
+                "",
                 language,
             );
             ui.add_space(6.0);
         }
 
-        crate::ui::components::collapsible::inspector_section(
-            ui,
-            expression_controls_id.with("layer-section"),
-            language.text("Layer"),
-            |ui| {
+        egui::CollapsingHeader::new(language.text("Layer"))
+            .id_salt(expression_controls_id.with("layer-section"))
+            .default_open(true)
+            .show(ui, |ui| {
                 if let Some(request) = layer_properties_inspector(
                     ui,
                     expression_controls_id.with("layer"),
@@ -2022,14 +1979,12 @@ impl StudioApp {
                         LayerInspectorRequest::TextTemplate => requested_text_template = true,
                     }
                 }
-            },
-        );
+            });
 
-        crate::ui::components::collapsible::inspector_section(
-            ui,
-            expression_controls_id.with("appearance-section"),
-            language.text("Appearance"),
-            |ui| {
+        egui::CollapsingHeader::new(language.text("Appearance"))
+            .id_salt(expression_controls_id.with("appearance-section"))
+            .default_open(true)
+            .show(ui, |ui| {
                 if let Some(field) = render_controls(
                     ui,
                     render_controls_id,
@@ -2056,21 +2011,19 @@ impl StudioApp {
                     &mut object,
                     language,
                 );
-            },
-        );
+            });
 
-        crate::ui::components::collapsible::inspector_section(
-            ui,
-            expression_controls_id.with("positioning-section"),
-            language.text("Positioning"),
-            |ui| {
+        egui::CollapsingHeader::new(language.text("Positioning"))
+            .id_salt(expression_controls_id.with("positioning-section"))
+            .default_open(true)
+            .show(ui, |ui| {
                 if managed_by_parent {
                     ui.label(
                         egui::RichText::new(
                             language.text("Position is managed by the parent container. X and Y are fine offsets."),
                         )
                         .small()
-                        .color(muted()),
+                        .color(MUTED),
                     );
                 }
                 labeled(ui, language.text("Anchor"), |ui| {
@@ -2239,12 +2192,9 @@ impl StudioApp {
                 true
             }
             Selection::Surface(_) => false,
-            Selection::Object(surface_index, object_index) => {
+            Selection::Object(surface_index, _) => {
                 let Some(root_id) = self
-                    .theme
-                    .surfaces
-                    .get(surface_index)
-                    .and_then(|surface| surface.children.get(object_index))
+                    .scene_object(self.selection)
                     .map(|object| object.id.clone())
                 else {
                     return false;
@@ -2279,13 +2229,8 @@ impl StudioApp {
                     self.selection = Selection::Surface(insert_at);
                     source_index != insert_at
                 }
-                Selection::Object(surface_index, object_index) => {
-                    let Some(root_id) = self
-                        .theme
-                        .surfaces
-                        .get(surface_index)
-                        .and_then(|surface| surface.children.get(object_index))
-                        .map(|object| object.id.clone())
+                Selection::Object(surface_index, _) => {
+                    let Some(root_id) = self.scene_object(source).map(|object| object.id.clone())
                     else {
                         return false;
                     };
@@ -2393,13 +2338,8 @@ impl StudioApp {
                 moving.extend(descendants);
                 moving
             }
-            Selection::Object(source_surface, source_object) => {
-                let Some(source_id) = self
-                    .theme
-                    .surfaces
-                    .get(source_surface)
-                    .and_then(|surface| surface.children.get(source_object))
-                    .map(|object| object.id.clone())
+            Selection::Object(source_surface, _) => {
+                let Some(source_id) = self.scene_object(source).map(|object| object.id.clone())
                 else {
                     return false;
                 };
@@ -2493,12 +2433,9 @@ impl StudioApp {
             Selection::Surface(selected) if selected < self.theme.surfaces.len() => {
                 self.insert_root_layer(selected + 1);
             }
-            Selection::Object(surface_index, object_index) => {
+            Selection::Object(surface_index, _) => {
                 let sibling = self
-                    .theme
-                    .surfaces
-                    .get(surface_index)
-                    .and_then(|surface| surface.children.get(object_index))
+                    .scene_object(self.selection)
                     .map(|selected| (selected.id.clone(), selected.parent.clone()));
                 let Some((selected_id, parent)) = sibling else {
                     self.insert_root_layer(0);

@@ -1,7 +1,7 @@
 use eframe::egui;
 use lucide_icons::Icon as LucideIcon;
 
-use crate::ui::theme::{accent, accent_hover_border};
+use crate::ui::theme::{ACCENT, ACCENT_HOVER_BORDER};
 use crate::ui::tokens::{CONTROL_CORNER_RADIUS, CONTROL_HEIGHT};
 
 pub(crate) fn icon_text(icon: LucideIcon, size: f32) -> egui::RichText {
@@ -41,12 +41,12 @@ pub(crate) fn icon_button(ui: &mut egui::Ui, icon: LucideIcon, selected: bool) -
     );
     let visuals = ui.style().interact(&response);
     let fill = if selected {
-        accent()
+        ACCENT
     } else {
         visuals.weak_bg_fill
     };
     let stroke = if selected && response.hovered() {
-        egui::Stroke::new(1.0, accent_hover_border())
+        egui::Stroke::new(1.0, ACCENT_HOVER_BORDER)
     } else {
         visuals.bg_stroke
     };

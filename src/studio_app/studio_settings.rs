@@ -264,7 +264,7 @@ fn account_settings(
                         .hint_text(language.text("Optional; overrides the config directory")));
                     changed |= file.lost_focus();
                     if ui.button(language.text("Browse...")).clicked() {
-                        if let Some(path) = choose_file(owner, language.text("Select credentials file"), "JSON files\0*.json\0All files\0*.*\0\0") {
+                        if let Some(path) = choose_file(owner, language.text("Select credentials file"), "JSON files\0*.json\0All files\0*.*\0\0", None) {
                             profile.credentials_path = path.to_string_lossy().into_owned();
                             changed = true;
                         }

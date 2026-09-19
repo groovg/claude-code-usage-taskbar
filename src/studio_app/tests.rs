@@ -28,7 +28,7 @@ fn dashboard_keeps_dark_visuals_when_system_theme_changes() {
                 },
                 |ui| {
                     assert!(ui.visuals().dark_mode);
-                    assert_eq!(ui.visuals().panel_fill, menu_surface());
+                    assert_eq!(ui.visuals().panel_fill, MENU_SURFACE);
                     assert_eq!(
                         ui.visuals().text_color(),
                         egui::Visuals::dark().text_color()
@@ -451,7 +451,7 @@ fn preview_render_scale_bounds_monitor_sized_themes_to_the_viewport() {
 }
 
 #[test]
-fn preview_render_mailbox_keeps_only_the_latest_request() {
+fn preview_render_requests_keep_only_the_latest_request() {
     let request = |generation| PreviewRenderRequest {
         generation,
         key: PreviewRenderKey {
@@ -464,10 +464,17 @@ fn preview_render_mailbox_keeps_only_the_latest_request() {
         runtime: ThemeRuntime::default(),
         scale: 1.0,
     };
-    let mut mailbox = PreviewRenderMailbox::default();
-    mailbox.replace(request(1));
-    mailbox.replace(request(2));
-    assert_eq!(mailbox.pending.unwrap().generation, 2);
+    let (sender, requests) = mpsc::channel();
+    sender.send(Some(request(1))).unwrap();
+    sender.send(Some(request(2))).unwrap();
+    assert_eq!(next_preview_request(&requests).unwrap().generation, 2);
+
+    // A shutdown queued behind a request wins, as does a dropped sender.
+    sender.send(Some(request(3))).unwrap();
+    sender.send(None).unwrap();
+    assert!(next_preview_request(&requests).is_none());
+    drop(sender);
+    assert!(next_preview_request(&requests).is_none());
 }
 
 #[test]
@@ -652,6 +659,41 @@ fn text_helper_catalog_only_builds_valid_template_tokens() {
         TextTemplateFormat::UsageBadge,
     ] {
         assert!(text_template_formats(display.kind).contains(&format));
+    }
+}
+
+#[test]
+fn text_template_value_catalogue_keeps_its_entries_in_order() {
+    assert_eq!(TEXT_TEMPLATE_VALUES.len(), 90);
+    for (index, group, label, expression, kind) in [
+        (
+            0,
+            "Date and time",
+            "Current date and time",
+            "time.now.unix",
+            TextTemplateValueKind::Timestamp,
+        ),
+        (
+            45,
+            "Codex",
+            "Five-hour used (exact)",
+            "codex.five_hour.percentage",
+            TextTemplateValueKind::Percentage,
+        ),
+        (
+            89,
+            "Labels",
+            "Now label",
+            "i18n.now",
+            TextTemplateValueKind::Text,
+        ),
+    ] {
+        let value = TEXT_TEMPLATE_VALUES[index];
+        assert_eq!(
+            (value.group, value.label, value.expression),
+            (group, label, expression)
+        );
+        assert!(value.kind == kind);
     }
 }
 

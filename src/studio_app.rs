@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{mpsc, Arc, Condvar, Mutex};
+use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -54,17 +54,16 @@ use crate::theme_engine::{
     SurfaceNest, TextAlign, ThemeDocument, ThemeRuntime, VerticalAnchor,
 };
 use crate::theme_package;
-use crate::ui::components::action_helper::show_action_helper;
 use crate::ui::components::anchor_point::{AnchorPoint, AnchorPointPicker};
 use crate::ui::components::card::reference_card as expression_reference_card;
 use crate::ui::components::dropdown::{
     dropdown_selectable_label, dropdown_selectable_value, Dropdown,
 };
-use crate::ui::components::expression_helper::{
-    show_expression_helper, ExpressionHelperAction,
-    ExpressionHelperState as ExpressionHelperEditorState,
+use crate::ui::components::helper::{
+    show_action_helper, show_expression_helper, show_text_helper, ExpressionHelperPanels,
+    HelperAction, HelperState, TextHelperPanels, TextTemplateFormat, TextTemplateValueKind,
 };
-use crate::ui::components::helper_field::helper_preview_field;
+use crate::ui::components::helper_field::{helper_preview_field, HelperFieldAction};
 use crate::ui::components::icon::{
     icon_only_button as lucide_icon_button, labeled_icon_button as lucide_labeled_button,
     leading_icon_button,
@@ -73,23 +72,19 @@ use crate::ui::components::layout::{
     available_control_width as inspector_control_width, inspector_row as labeled, setting_row,
     setting_separator, settings_scroll_area, settings_section as section, studio_region,
 };
+use crate::ui::components::modal::{confirm_delete, theme_name_prompt};
 use crate::ui::components::number_field::NumberField;
 use crate::ui::components::searchable_dropdown::searchable_dropdown;
 use crate::ui::components::slider::percentage_slider;
 use crate::ui::components::splitter::vertical_splitter as workspace_splitter;
 use crate::ui::components::text_field::{
-    name_editor as inspector_name_editor,
-    name_editor_with_prefix as inspector_prefixed_name_editor, singleline as singleline_text_edit,
-};
-use crate::ui::components::text_helper::{
-    show_text_helper, TextHelperAction, TextHelperState as TextHelperEditorState,
-    TextTemplateFormat, TextTemplateValueKind,
+    name_editor as inspector_name_editor, singleline as singleline_text_edit,
 };
 use crate::ui::components::toggle::Toggle;
 use crate::ui::components::tree_row::{
     paint_background as paint_scene_row_background, selected_style as scene_row_style,
 };
-use crate::ui::theme::{accent, configure_style, menu_surface, muted};
+use crate::ui::theme::{configure_style, ACCENT, MENU_SURFACE, MUTED};
 use crate::ui::tokens::{
     CANVAS_ZOOM_LEVELS, CONTROL_HEIGHT, DEFAULT_DASHBOARD_HEIGHT, DEFAULT_DASHBOARD_WIDTH,
     DEFAULT_INSPECTOR_WIDTH, DEFAULT_MENU_WIDTH, DEFAULT_SCENE_WIDTH,
@@ -149,10 +144,7 @@ pub fn handle_cli_mode(args: &[String]) -> bool {
         options,
         Box::new(move |context| Ok(Box::new(StudioApp::new(context, owner, initial_page)))),
     ) {
-        let settings = app_settings::load_settings();
-        let language = localization::resolve_language(
-            settings.language.as_deref().and_then(LanguageId::from_code),
-        );
+        let language = settings_language(&app_settings::load_settings());
         crate::dashboard::report_launch_failure(
             owner_hwnd,
             &format!(
@@ -162,6 +154,11 @@ pub fn handle_cli_mode(args: &[String]) -> bool {
         );
     }
     true
+}
+
+/// The UI language chosen in settings, or the system language.
+pub(crate) fn settings_language(settings: &SettingsFile) -> LanguageId {
+    localization::resolve_language(settings.language.as_deref().and_then(LanguageId::from_code))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -332,7 +329,7 @@ impl MouseEventField {
 struct ExpressionHelperState {
     target: ExpressionHelperTarget,
     field: ExpressionField,
-    editor: ExpressionHelperEditorState,
+    editor: HelperState<ExpressionHelperPanels>,
 }
 
 enum ExpressionHelperTarget {
@@ -345,7 +342,7 @@ impl ExpressionHelperState {
         Self {
             target: ExpressionHelperTarget::Theme(selection),
             field,
-            editor: ExpressionHelperEditorState::new(draft),
+            editor: HelperState::new(draft),
         }
     }
 
@@ -353,7 +350,7 @@ impl ExpressionHelperState {
         Self {
             target: ExpressionHelperTarget::ContextMenu(path),
             field: ExpressionField::Render,
-            editor: ExpressionHelperEditorState::new(draft),
+            editor: HelperState::new(draft),
         }
     }
 }
@@ -361,7 +358,7 @@ impl ExpressionHelperState {
 struct ActionHelperState {
     selection: Selection,
     field: MouseEventField,
-    editor: ExpressionHelperEditorState,
+    editor: HelperState<()>,
     target: String,
     property: MouseActionProperty,
     value: String,
@@ -374,7 +371,7 @@ impl ActionHelperState {
         Self {
             selection,
             field,
-            editor: ExpressionHelperEditorState::new(draft),
+            editor: HelperState::new(draft),
             target: "self".into(),
             property: MouseActionProperty::Render,
             value: "false".into(),
@@ -386,7 +383,7 @@ impl ActionHelperState {
 
 struct TextTemplateHelperState {
     target: TextTemplateHelperTarget,
-    editor: TextHelperEditorState,
+    editor: HelperState<TextHelperPanels>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -399,21 +396,21 @@ impl TextTemplateHelperState {
     fn for_theme(selection: Selection, draft: String) -> Self {
         Self {
             target: TextTemplateHelperTarget::Theme(selection),
-            editor: TextHelperEditorState::new(draft),
+            editor: HelperState::new(draft),
         }
     }
 
     fn for_context_menu(path: Vec<usize>, draft: String) -> Self {
         Self {
             target: TextTemplateHelperTarget::ContextMenu(path),
-            editor: TextHelperEditorState::new(draft),
+            editor: HelperState::new(draft),
         }
     }
 }
 
 struct ContextMenuActionHelperState {
     path: Vec<usize>,
-    editor: ExpressionHelperEditorState,
+    editor: HelperState<()>,
     target: String,
     property: MouseActionProperty,
     value: String,
@@ -423,7 +420,7 @@ impl ContextMenuActionHelperState {
     fn new(path: Vec<usize>, action: &ContextMenuAction) -> Self {
         Self {
             path,
-            editor: ExpressionHelperEditorState::new(context_menu_action_script(action)),
+            editor: HelperState::new(context_menu_action_script(action)),
             target: "self".into(),
             property: MouseActionProperty::Render,
             value: "false".into(),
@@ -479,119 +476,99 @@ struct PreviewRenderResult {
     rgba: Vec<u8>,
 }
 
-#[derive(Default)]
-struct PreviewRenderMailbox {
-    pending: Option<PreviewRenderRequest>,
-    shutdown: bool,
-}
-
-impl PreviewRenderMailbox {
-    fn replace(&mut self, request: PreviewRenderRequest) {
-        self.pending = Some(request);
-    }
-}
-
 struct PreviewRenderer {
-    mailbox: Arc<(Mutex<PreviewRenderMailbox>, Condvar)>,
+    /// `None` shuts the worker down.
+    requests: mpsc::Sender<Option<PreviewRenderRequest>>,
     results: mpsc::Receiver<PreviewRenderResult>,
     worker: Option<JoinHandle<()>>,
 }
 
+/// Blocks for the next request, skipping to the newest one queued: the latest
+/// request wins. `None` means the renderer is shutting down.
+fn next_preview_request(
+    requests: &mpsc::Receiver<Option<PreviewRenderRequest>>,
+) -> Option<PreviewRenderRequest> {
+    let first = requests.recv().ok()?;
+    requests.try_iter().last().unwrap_or(first)
+}
+
 impl PreviewRenderer {
     fn new(context: egui::Context) -> Self {
-        let mailbox = Arc::new((Mutex::new(PreviewRenderMailbox::default()), Condvar::new()));
-        let worker_mailbox = mailbox.clone();
+        let (requests, worker_requests) = mpsc::channel();
         let (result_sender, results) = mpsc::channel();
         let worker = std::thread::Builder::new()
             .name("theme-preview-render".into())
-            .spawn(move || loop {
-                let request = {
-                    let (lock, ready) = &*worker_mailbox;
-                    let mut state = lock.lock().unwrap_or_else(|error| error.into_inner());
-                    while state.pending.is_none() && !state.shutdown {
-                        state = ready.wait(state).unwrap_or_else(|error| error.into_inner());
+            .spawn(move || {
+                let mut next = next_preview_request(&worker_requests);
+                while let Some(request) = next {
+                    let mut rendered = if (request.scale - 1.0).abs() < f64::EPSILON {
+                        theme_engine::render_theme_surface_with_runtime(
+                            &request.theme,
+                            request.key.surface_index,
+                            request.usage.as_ref(),
+                            request.runtime,
+                        )
+                    } else {
+                        theme_engine::render_theme_surface_with_runtime_at_scale(
+                            &request.theme,
+                            request.key.surface_index,
+                            request.usage.as_ref(),
+                            request.runtime,
+                            request.scale,
+                        )
+                    };
+                    let _render_warnings = &rendered.warnings;
+                    if !theme_engine::surface_should_render(
+                        &request.theme,
+                        request.key.surface_index,
+                        request.usage.as_ref(),
+                        request.runtime,
+                    ) {
+                        rendered.pixels.fill(0);
                     }
-                    if state.shutdown {
+
+                    // A request queued during this render supersedes its result;
+                    // a queued shutdown ends the worker without sending it.
+                    if let Some(newer) = worker_requests.try_iter().last() {
+                        next = newer;
+                        continue;
+                    }
+
+                    let mut rgba = Vec::with_capacity(rendered.pixels.len() * 4);
+                    for pixel in rendered.pixels {
+                        rgba.extend_from_slice(&[
+                            ((pixel >> 16) & 0xff) as u8,
+                            ((pixel >> 8) & 0xff) as u8,
+                            (pixel & 0xff) as u8,
+                            ((pixel >> 24) & 0xff) as u8,
+                        ]);
+                    }
+                    if result_sender
+                        .send(PreviewRenderResult {
+                            generation: request.generation,
+                            key: request.key,
+                            width: rendered.width,
+                            height: rendered.height,
+                            rgba,
+                        })
+                        .is_err()
+                    {
                         return;
                     }
-                    state.pending.take().expect("pending preview request")
-                };
-
-                let mut rendered = if (request.scale - 1.0).abs() < f64::EPSILON {
-                    theme_engine::render_theme_surface_with_runtime(
-                        &request.theme,
-                        request.key.surface_index,
-                        request.usage.as_ref(),
-                        request.runtime,
-                    )
-                } else {
-                    theme_engine::render_theme_surface_with_runtime_at_scale(
-                        &request.theme,
-                        request.key.surface_index,
-                        request.usage.as_ref(),
-                        request.runtime,
-                        request.scale,
-                    )
-                };
-                let _render_warnings = &rendered.warnings;
-                if !theme_engine::surface_should_render(
-                    &request.theme,
-                    request.key.surface_index,
-                    request.usage.as_ref(),
-                    request.runtime,
-                ) {
-                    rendered.pixels.fill(0);
+                    context.request_repaint();
+                    next = next_preview_request(&worker_requests);
                 }
-
-                let superseded = {
-                    let (lock, _) = &*worker_mailbox;
-                    let state = lock.lock().unwrap_or_else(|error| error.into_inner());
-                    state.shutdown
-                        || state
-                            .pending
-                            .as_ref()
-                            .is_some_and(|pending| pending.generation != request.generation)
-                };
-                if superseded {
-                    continue;
-                }
-
-                let mut rgba = Vec::with_capacity(rendered.pixels.len() * 4);
-                for pixel in rendered.pixels {
-                    rgba.extend_from_slice(&[
-                        ((pixel >> 16) & 0xff) as u8,
-                        ((pixel >> 8) & 0xff) as u8,
-                        (pixel & 0xff) as u8,
-                        ((pixel >> 24) & 0xff) as u8,
-                    ]);
-                }
-                if result_sender
-                    .send(PreviewRenderResult {
-                        generation: request.generation,
-                        key: request.key,
-                        width: rendered.width,
-                        height: rendered.height,
-                        rgba,
-                    })
-                    .is_err()
-                {
-                    return;
-                }
-                context.request_repaint();
             })
             .expect("unable to start theme preview renderer");
         Self {
-            mailbox,
+            requests,
             results,
             worker: Some(worker),
         }
     }
 
     fn request(&self, request: PreviewRenderRequest) {
-        let (lock, ready) = &*self.mailbox;
-        let mut state = lock.lock().unwrap_or_else(|error| error.into_inner());
-        state.replace(request);
-        ready.notify_one();
+        let _ = self.requests.send(Some(request));
     }
 
     fn take_latest(&self) -> Option<PreviewRenderResult> {
@@ -601,12 +578,8 @@ impl PreviewRenderer {
 
 impl Drop for PreviewRenderer {
     fn drop(&mut self) {
-        let (lock, ready) = &*self.mailbox;
-        let mut state = lock.lock().unwrap_or_else(|error| error.into_inner());
-        state.shutdown = true;
-        state.pending = None;
-        ready.notify_one();
-        drop(state);
+        // The shutdown is the newest message, so queued requests are skipped.
+        let _ = self.requests.send(None);
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -845,7 +818,7 @@ impl eframe::App for StudioApp {
             }
         }
         egui::Frame::new()
-            .fill(menu_surface())
+            .fill(MENU_SURFACE)
             .inner_margin(egui::Margin {
                 left: 10,
                 right: 10,
@@ -1018,7 +991,7 @@ fn context_menu_drop_from_response(
             ui.painter().rect_stroke(
                 response.rect.shrink(1.0),
                 4.0,
-                egui::Stroke::new(2.0, accent()),
+                egui::Stroke::new(2.0, ACCENT),
                 egui::StrokeKind::Inside,
             );
         }
@@ -1033,7 +1006,7 @@ fn context_menu_drop_from_response(
                     egui::pos2(response.rect.left(), y),
                     egui::pos2(response.rect.right(), y),
                 ],
-                egui::Stroke::new(2.0, accent()),
+                egui::Stroke::new(2.0, ACCENT),
             );
         }
     }

@@ -11,12 +11,7 @@ fn clock_refresh_delay(interval: Duration) -> Duration {
 
 impl StudioApp {
     pub(super) fn language(&self) -> LanguageId {
-        localization::resolve_language(
-            self.settings
-                .language
-                .as_deref()
-                .and_then(LanguageId::from_code),
-        )
+        settings_language(&self.settings)
     }
 
     pub(super) fn theme_is_read_only(&self) -> bool {
@@ -52,9 +47,7 @@ impl StudioApp {
         initial_page: Page,
     ) -> Self {
         let settings = app_settings::load_settings();
-        let language = localization::resolve_language(
-            settings.language.as_deref().and_then(LanguageId::from_code),
-        );
+        let language = settings_language(&settings);
         egui_extras::install_image_loaders(&context.egui_ctx);
         configure_style(&context.egui_ctx, language);
         style_native_titlebar(context);
@@ -346,6 +339,7 @@ impl StudioApp {
             self.owner,
             language.text("Import a theme or package"),
             &filter,
+            None,
         ) {
             self.import_theme_path(&path);
         }
@@ -359,12 +353,11 @@ impl StudioApp {
             language.text("Theme Studio packages"),
             language.text("All files")
         );
-        let Some(path) = choose_save_file(
+        let Some(path) = choose_file(
             self.owner,
             language.text("Export theme package"),
             &filter,
-            &default_name,
-            "zip",
+            Some((&default_name, "zip")),
         ) else {
             return;
         };
@@ -609,40 +602,18 @@ impl StudioApp {
         let Some(mut name) = self.new_theme_name.take() else {
             return;
         };
-        let language = self.language();
-        let mut action = 0;
-        crate::ui::components::modal::Modal::new(language.text("New theme"), "new-theme-dialog")
-            .show(context, |ui| {
-                ui.label(language.text("Name the new theme"));
-                let response = ui.add(
-                    singleline_text_edit(&mut name)
-                        .desired_width(ui.available_width())
-                        .hint_text(language.text("Theme name")),
-                );
-                response.request_focus();
-                let enter =
-                    response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                ui.add_space(8.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add_enabled(
-                            !name.trim().is_empty(),
-                            egui::Button::new(language.text("Create")),
-                        )
-                        .clicked()
-                        || enter
-                    {
-                        action = 1;
-                    }
-                    if ui.button(language.text("Cancel")).clicked() {
-                        action = 2;
-                    }
-                });
-            });
-        match action {
-            1 => self.new_theme(name),
-            2 => {}
-            _ => self.new_theme_name = Some(name),
+        match theme_name_prompt(
+            context,
+            self.language(),
+            "New theme",
+            "new-theme-dialog",
+            "Name the new theme",
+            "Create",
+            &mut name,
+        ) {
+            Some(true) => self.new_theme(name),
+            Some(false) => {}
+            None => self.new_theme_name = Some(name),
         }
     }
 
@@ -650,43 +621,18 @@ impl StudioApp {
         let Some(mut name) = self.duplicate_theme_name.take() else {
             return;
         };
-        let language = self.language();
-        let mut action = 0;
-        crate::ui::components::modal::Modal::new(
-            language.text("Duplicate theme"),
+        match theme_name_prompt(
+            context,
+            self.language(),
+            "Duplicate theme",
             "duplicate-theme-dialog",
-        )
-        .show(context, |ui| {
-            ui.label(language.text("Name the editable copy"));
-            let response = ui.add(
-                singleline_text_edit(&mut name)
-                    .desired_width(ui.available_width())
-                    .hint_text(language.text("Theme name")),
-            );
-            response.request_focus();
-            let enter =
-                response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-            ui.add_space(8.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add_enabled(
-                        !name.trim().is_empty(),
-                        egui::Button::new(language.text("Create copy")),
-                    )
-                    .clicked()
-                    || enter
-                {
-                    action = 1;
-                }
-                if ui.button(language.text("Cancel")).clicked() {
-                    action = 2;
-                }
-            });
-        });
-        match action {
-            1 => self.duplicate_theme(name),
-            2 => {}
-            _ => self.duplicate_theme_name = Some(name),
+            "Name the editable copy",
+            "Create copy",
+            &mut name,
+        ) {
+            Some(true) => self.duplicate_theme(name),
+            Some(false) => {}
+            None => self.duplicate_theme_name = Some(name),
         }
     }
 
@@ -738,43 +684,18 @@ impl StudioApp {
         let Some(deletion) = self.delete_theme_confirmation.take() else {
             return;
         };
-        let language = self.language();
-        let mut action = 0;
-        crate::ui::components::modal::Modal::new(
-            language.text("Delete theme?"),
+        match confirm_delete(
+            context,
+            self.language(),
+            "Delete theme?",
             "delete-theme-dialog",
-        )
-        .width(310.0)
-        .fixed_height(110.0)
-        .show(context, |ui| {
-            ui.label(
-                language
-                    .text("Are you sure you want to delete {name}?")
-                    .replace("{name}", &deletion.name),
-            );
-            ui.add_space(10.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new(language.text("Delete theme"))
-                                .color(egui::Color32::WHITE),
-                        )
-                        .fill(egui::Color32::from_rgb(178, 48, 48)),
-                    )
-                    .clicked()
-                {
-                    action = 1;
-                }
-                if ui.button(language.text("Cancel")).clicked() {
-                    action = 2;
-                }
-            });
-        });
-        match action {
-            1 => self.delete_theme(deletion),
-            2 => {}
-            _ => self.delete_theme_confirmation = Some(deletion),
+            "Are you sure you want to delete {name}?",
+            &deletion.name,
+            "Delete theme",
+        ) {
+            Some(true) => self.delete_theme(deletion),
+            Some(false) => {}
+            None => self.delete_theme_confirmation = Some(deletion),
         }
     }
 
@@ -843,7 +764,7 @@ impl StudioApp {
                 |ui| {
                     ui.set_width(DEFAULT_MENU_WIDTH);
                     ui.set_min_height(full_height);
-                    ui.painter().rect_filled(ui.max_rect(), 0.0, menu_surface());
+                    ui.painter().rect_filled(ui.max_rect(), 0.0, MENU_SURFACE);
                     egui::Frame::new()
                         .inner_margin(egui::Margin {
                             left: 8,
@@ -853,25 +774,23 @@ impl StudioApp {
                         })
                         .show(ui, |ui| {
                             ui.set_width(DEFAULT_MENU_WIDTH - 16.0);
-                            nav(
-                                ui,
-                                &mut self.page,
-                                Page::Settings,
-                                language.text("Settings"),
-                            );
-                            nav(
-                                ui,
-                                &mut self.page,
-                                Page::Studio,
-                                language.text("Theme Studio"),
-                            );
-                            nav(
-                                ui,
-                                &mut self.page,
-                                Page::ContextMenus,
-                                language.text("Context Menus"),
-                            );
-                            nav(ui, &mut self.page, Page::Assets, language.text("Assets"));
+                            for (page, title) in [
+                                (Page::Settings, "Settings"),
+                                (Page::Studio, "Theme Studio"),
+                                (Page::ContextMenus, "Context Menus"),
+                                (Page::Assets, "Assets"),
+                            ] {
+                                let selected = self.page == page;
+                                if crate::ui::components::navigation::navigation_item(
+                                    ui,
+                                    selected,
+                                    language.text(title),
+                                )
+                                .clicked()
+                                {
+                                    self.page = page;
+                                }
+                            }
                             ui.allocate_ui_with_layout(
                                 ui.available_size(),
                                 egui::Layout::bottom_up(egui::Align::Min),
@@ -926,7 +845,7 @@ impl StudioApp {
     pub(super) fn page_header(ui: &mut egui::Ui, title: &str, detail: &str) {
         ui.add_space(12.0);
         ui.label(egui::RichText::new(title).size(25.0).strong());
-        ui.label(egui::RichText::new(detail).color(muted()));
+        ui.label(egui::RichText::new(detail).color(MUTED));
         ui.add_space(12.0);
         ui.separator();
         ui.add_space(8.0);

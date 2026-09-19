@@ -1,108 +1,16 @@
 use super::*;
 
-pub(super) fn nav(ui: &mut egui::Ui, current: &mut Page, page: Page, title: &str) {
-    let selected = *current == page;
-    if crate::ui::components::navigation::navigation_item(ui, selected, title).clicked() {
-        *current = page;
-    }
-}
-
-#[allow(dead_code)]
-pub(super) fn context_menu_label_editor(
-    ui: &mut egui::Ui,
-    label: &mut String,
-    context: &DataContext,
-    read_only: bool,
-    language: LanguageId,
-) -> bool {
-    let mut changed = false;
-    ui.horizontal(|ui| {
-        changed |= ui
-            .add_enabled(
-                !read_only,
-                singleline_text_edit(label).desired_width((ui.available_width() - 98.0).max(120.0)),
-            )
-            .changed();
-        ui.add_enabled_ui(!read_only, |ui| {
-            ui.menu_button(language.text("ƒx Values"), |ui| {
-                ui.set_min_width(380.0);
-                ui.label(
-                    egui::RichText::new(language.text("Insert a live value into this label"))
-                        .small()
-                        .color(muted()),
-                );
-                ui.separator();
-                egui::ScrollArea::vertical()
-                    .id_salt("context-menu-label-values")
-                    .max_height(420.0)
-                    .show(ui, |ui| {
-                        let mut last_group = "";
-                        for value in TEXT_TEMPLATE_VALUES.iter().copied() {
-                            if value.group != last_group {
-                                if !last_group.is_empty() {
-                                    ui.add_space(6.0);
-                                }
-                                ui.label(
-                                    egui::RichText::new(language.text(value.group))
-                                        .small()
-                                        .strong()
-                                        .color(muted()),
-                                );
-                                last_group = value.group;
-                            }
-                            let format = default_text_template_format(value.kind);
-                            let token = text_template_token(value.expression, format);
-                            let sample = text_template_value_sample(value, format, context);
-                            if ui
-                                .button(format!("{}  —  {}", language.text(value.label), sample))
-                                .on_hover_text(&token)
-                                .clicked()
-                            {
-                                append_expression_token(label, &token);
-                                changed = true;
-                                ui.close();
-                            }
-                        }
-                    });
-            });
-        });
-    });
-    let preview = theme_engine::format_template(label, context);
-    ui.label(
-        egui::RichText::new(format!("{}: {preview}", language.text("Preview")))
-            .small()
-            .color(muted()),
-    );
-    changed
-}
-
-pub(super) fn flatten_context_menu_items(
+/// Adds the ids of `items` and all nested submenu items to `ids`.
+fn collect_context_menu_ids(
     items: &[ContextMenuItem],
-) -> Vec<(Vec<usize>, usize, String, &'static str)> {
-    fn visit(
-        items: &[ContextMenuItem],
-        parent: &[usize],
-        depth: usize,
-        rows: &mut Vec<(Vec<usize>, usize, String, &'static str)>,
-    ) {
-        for (index, item) in items.iter().enumerate() {
-            let mut path = parent.to_vec();
-            path.push(index);
-            let kind = match &item.kind {
-                ContextMenuItemKind::Action { .. } => "action",
-                ContextMenuItemKind::Text => "text",
-                ContextMenuItemKind::Separator => "separator",
-                ContextMenuItemKind::Submenu { .. } => "submenu",
-            };
-            rows.push((path.clone(), depth, item.label.clone(), kind));
-            if let ContextMenuItemKind::Submenu { items } = &item.kind {
-                visit(items, &path, depth + 1, rows);
-            }
+    ids: &mut std::collections::HashSet<String>,
+) {
+    for item in items {
+        ids.insert(item.id.clone());
+        if let ContextMenuItemKind::Submenu { items } = &item.kind {
+            collect_context_menu_ids(items, ids);
         }
     }
-    let mut rows = Vec::new();
-    visit(items, &[], 0, &mut rows);
-    rows
 }
 
 pub(super) fn context_menu_item<'a>(
@@ -265,10 +173,8 @@ pub(super) fn duplicate_context_menu_item(
     source: &[usize],
 ) -> Option<Vec<usize>> {
     let mut duplicate = context_menu_item(items, source)?.clone();
-    let mut existing = flatten_context_menu_items(items)
-        .into_iter()
-        .filter_map(|(path, _, _, _)| context_menu_item(items, &path).map(|item| item.id.clone()))
-        .collect::<std::collections::HashSet<_>>();
+    let mut existing = std::collections::HashSet::new();
+    collect_context_menu_ids(items, &mut existing);
     fn remap(item: &mut ContextMenuItem, existing: &mut std::collections::HashSet<String>) {
         let base = format!("{}-copy", item.id);
         let id = (1..)
@@ -300,10 +206,8 @@ pub(super) fn duplicate_context_menu_item(
 }
 
 pub(super) fn next_context_menu_item_id(items: &[ContextMenuItem], prefix: &str) -> String {
-    let existing = flatten_context_menu_items(items)
-        .into_iter()
-        .filter_map(|(path, _, _, _)| context_menu_item(items, &path).map(|item| item.id.clone()))
-        .collect::<std::collections::HashSet<_>>();
+    let mut existing = std::collections::HashSet::new();
+    collect_context_menu_ids(items, &mut existing);
     (1..)
         .map(|suffix| format!("{prefix}-{suffix}"))
         .find(|candidate| !existing.contains(candidate))
@@ -450,50 +354,12 @@ pub(super) fn context_menu_action_reference_panels(
                     }
                     ui.separator();
                     ui.label(egui::RichText::new(language.text("Layer actions")).small().strong());
-                    let mut set_layer_action = |source: String| {
+                    if let Some(actions) =
+                        property_action_buttons(ui, target, *property, value, false, language)
+                    {
                         *draft = context_menu_action_script(&ContextMenuAction::LayerActions {
-                            actions: source,
+                            actions,
                         });
-                    };
-                    if ui.button(language.text("Set property")).clicked() {
-                        set_layer_action(format!(
-                            "set({target}, {}, {})",
-                            property.name(),
-                            value.trim()
-                        ));
-                    }
-                    if ui
-                        .add_enabled(
-                            *property == MouseActionProperty::Render,
-                            egui::Button::new(language.text("Toggle property")),
-                        )
-                        .clicked()
-                    {
-                        set_layer_action(format!("toggle({target}, {})", property.name()));
-                    }
-                    if ui.button(language.text("Reset property")).clicked() {
-                        set_layer_action(format!("reset({target}, {})", property.name()));
-                    }
-                    let numeric = *property != MouseActionProperty::Render;
-                    if ui
-                        .add_enabled(numeric, egui::Button::new(language.text("Increase value")))
-                        .clicked()
-                    {
-                        set_layer_action(format!(
-                            "increase({target}, {}, {})",
-                            property.name(),
-                            value.trim()
-                        ));
-                    }
-                    if ui
-                        .add_enabled(numeric, egui::Button::new(language.text("Decrease value")))
-                        .clicked()
-                    {
-                        set_layer_action(format!(
-                            "decrease({target}, {}, {})",
-                            property.name(),
-                            value.trim()
-                        ));
                     }
                 });
         });
@@ -524,7 +390,7 @@ pub(super) fn context_menu_action_reference_panels(
                     ui.label(
                         egui::RichText::new(language.text("Edit quoted values in the action field for URLs, languages, and layer-action scripts."))
                             .small()
-                            .color(muted()),
+                            .color(MUTED),
                     );
                 });
         });
@@ -553,138 +419,11 @@ pub(super) fn context_menu_action_reference_panels(
                     }
                     ui.separator();
                     ui.label(egui::RichText::new(language.text("Properties")).small().strong());
-                    for candidate in MouseActionProperty::ALL {
-                        let label = match candidate {
-                            MouseActionProperty::Render => language.text("Render"),
-                            MouseActionProperty::Visibility => language.text("Visibility"),
-                            MouseActionProperty::X => language.text("X"),
-                            MouseActionProperty::Y => language.text("Y"),
-                            MouseActionProperty::Width => language.text("Width"),
-                            MouseActionProperty::Height => language.text("Height"),
-                            MouseActionProperty::Rotation => language.text("Rotation"),
-                        };
-                        if ui.selectable_label(*property == candidate, label).clicked() {
-                            *property = candidate;
-                        }
-                    }
+                    property_selector(ui, property, language);
                     ui.add_space(6.0);
-                    ui.label(egui::RichText::new(language.text("Value expression")).small().color(muted()));
+                    ui.label(egui::RichText::new(language.text("Value expression")).small().color(MUTED));
                     ui.add(singleline_text_edit(value).desired_width(ui.available_width()));
                 });
         });
     });
-}
-
-#[allow(dead_code)]
-pub(super) fn context_menu_action_editor(
-    ui: &mut egui::Ui,
-    action: &mut ContextMenuAction,
-    read_only: bool,
-    language: LanguageId,
-) -> bool {
-    let mut changed = false;
-    match action {
-        ContextMenuAction::SetUpdateFrequency { seconds } => {
-            labeled(ui, language.text("Update frequency"), |ui| {
-                Dropdown::from_id_salt("menu-frequency")
-                    .width(inspector_control_width(ui))
-                    .selected_text(interval_name(language, seconds.saturating_mul(1_000)))
-                    .show_ui(ui, |ui| {
-                        for (value, label) in [
-                            (POLL_1_MIN_SECONDS, "Every minute"),
-                            (POLL_5_MIN_SECONDS, "Every 5 minutes"),
-                            (POLL_15_MIN_SECONDS, "Every 15 minutes"),
-                            (POLL_1_HOUR_SECONDS, "Every hour"),
-                        ] {
-                            changed |=
-                                dropdown_selectable_value(ui, seconds, value, language.text(label))
-                                    .changed();
-                        }
-                    });
-            });
-        }
-        ContextMenuAction::ToggleProvider { provider } => {
-            let selected = language.text(provider.descriptor().display_name);
-            labeled(ui, language.text("Provider"), |ui| {
-                Dropdown::from_id_salt("menu-provider")
-                    .width(inspector_control_width(ui))
-                    .selected_text(selected)
-                    .show_ui(ui, |ui| {
-                        for descriptor in PROVIDER_DESCRIPTORS {
-                            changed |= dropdown_selectable_value(
-                                ui,
-                                provider,
-                                descriptor.id,
-                                language.text(descriptor.display_name),
-                            )
-                            .changed();
-                        }
-                    });
-            });
-        }
-        ContextMenuAction::SetLanguage { language: code } => {
-            labeled(ui, language.text("Language"), |ui| {
-                Dropdown::from_id_salt("menu-language")
-                    .width(inspector_control_width(ui))
-                    .selected_text(language_name(language, code))
-                    .show_ui(ui, |ui| {
-                        for (candidate, name) in languages(language) {
-                            changed |= dropdown_selectable_value(ui, code, candidate.into(), name)
-                                .changed();
-                        }
-                    });
-            });
-        }
-        ContextMenuAction::ToggleLayerRender { target } => {
-            labeled(ui, language.text("Target layer id"), |ui| {
-                changed |= ui
-                    .add_enabled(
-                        !read_only,
-                        singleline_text_edit(target)
-                            .desired_width(inspector_control_width(ui))
-                            .hint_text("main"),
-                    )
-                    .changed();
-            });
-        }
-        ContextMenuAction::LayerActions { actions } => {
-            ui.label(language.text("Layer actions"));
-            changed |= ui
-                .add_enabled(
-                    !read_only,
-                    egui::TextEdit::multiline(actions)
-                        .code_editor()
-                        .desired_width(ui.available_width())
-                        .desired_rows(6)
-                        .hint_text("toggle(self, render)"),
-                )
-                .changed();
-            ui.label(
-                egui::RichText::new(
-                    language.text("Uses the same safe action language as layer mouse events."),
-                )
-                .small()
-                .color(muted()),
-            );
-        }
-        ContextMenuAction::OpenUrl { url } => {
-            labeled(ui, language.text("URL"), |ui| {
-                changed |= ui
-                    .add_enabled(
-                        !read_only,
-                        singleline_text_edit(url)
-                            .desired_width(inspector_control_width(ui))
-                            .hint_text("https://example.com"),
-                    )
-                    .changed();
-            });
-            ui.label(
-                egui::RichText::new(language.text("Only http and https links are allowed."))
-                    .small()
-                    .color(muted()),
-            );
-        }
-        _ => {}
-    }
-    changed
 }

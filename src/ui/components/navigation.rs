@@ -1,6 +1,6 @@
 use eframe::egui;
 
-use crate::ui::theme::{accent, menu_hover, menu_text, selected_menu_fill};
+use crate::ui::theme::{ACCENT, MENU_HOVER, MENU_TEXT, SELECTED_MENU_FILL};
 
 pub(crate) const ITEM_HEIGHT: f32 = 36.0;
 
@@ -10,9 +10,9 @@ pub(crate) fn navigation_item(ui: &mut egui::Ui, selected: bool, title: &str) ->
         egui::Sense::click(),
     );
     let fill = if selected {
-        selected_menu_fill()
+        SELECTED_MENU_FILL
     } else if response.hovered() {
-        menu_hover()
+        MENU_HOVER
     } else {
         egui::Color32::TRANSPARENT
     };
@@ -24,14 +24,14 @@ pub(crate) fn navigation_item(ui: &mut egui::Ui, selected: bool, title: &str) ->
             egui::Rect::from_min_max(rect.min, egui::pos2(rect.left() + 6.0, rect.bottom()));
         ui.painter()
             .with_clip_rect(marker_clip)
-            .rect_filled(rect, 4.0, accent());
+            .rect_filled(rect, 4.0, ACCENT);
     }
     ui.painter().text(
         egui::pos2(rect.left() + 18.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         title,
         egui::FontId::proportional(16.0),
-        menu_text(),
+        MENU_TEXT,
     );
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }

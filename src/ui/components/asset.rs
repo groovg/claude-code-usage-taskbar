@@ -2,8 +2,8 @@ use eframe::egui;
 use lucide_icons::Icon as LucideIcon;
 
 use crate::ui::theme::{
-    accent, asset_card_border, asset_card_selected, asset_card_surface, asset_preview_surface,
-    muted,
+    ACCENT, ASSET_CARD_BORDER, ASSET_CARD_SELECTED, ASSET_CARD_SURFACE, ASSET_PREVIEW_SURFACE,
+    MUTED,
 };
 
 pub(crate) fn asset_card(
@@ -17,11 +17,11 @@ pub(crate) fn asset_card(
     let (rect, response) = ui.allocate_exact_size(egui::vec2(176.0, 158.0), egui::Sense::click());
     let visuals = ui.style().interact(&response);
     let fill = if selected {
-        asset_card_selected()
+        ASSET_CARD_SELECTED
     } else if response.hovered() {
         visuals.weak_bg_fill
     } else {
-        asset_card_surface()
+        ASSET_CARD_SURFACE
     };
     ui.painter().rect(
         rect,
@@ -29,11 +29,7 @@ pub(crate) fn asset_card(
         fill,
         egui::Stroke::new(
             if selected { 2.0 } else { 1.0 },
-            if selected {
-                accent()
-            } else {
-                asset_card_border()
-            },
+            if selected { ACCENT } else { ASSET_CARD_BORDER },
         ),
         egui::StrokeKind::Inside,
     );
@@ -43,7 +39,7 @@ pub(crate) fn asset_card(
         egui::pos2(rect.right() - 8.0, rect.top() + 106.0),
     );
     ui.painter()
-        .rect_filled(image_rect, 3.0, asset_preview_surface());
+        .rect_filled(image_rect, 3.0, ASSET_PREVIEW_SURFACE);
     if let Some(texture) = texture {
         let source_size = texture.size_vec2();
         let scale = (image_rect.width() / source_size.x)
@@ -62,7 +58,7 @@ pub(crate) fn asset_card(
             egui::Align2::CENTER_CENTER,
             LucideIcon::Image.unicode().to_string(),
             egui::FontId::new(28.0, egui::FontFamily::Name("lucide".into())),
-            muted(),
+            MUTED,
         );
     }
 
@@ -88,7 +84,7 @@ pub(crate) fn asset_card(
         egui::Align2::LEFT_BOTTOM,
         details,
         egui::FontId::new(11.0, egui::FontFamily::Proportional),
-        muted(),
+        MUTED,
     );
     response.on_hover_text(hover_text)
 }

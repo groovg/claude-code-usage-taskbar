@@ -1,7 +1,7 @@
 use eframe::egui;
 
 use crate::ui::components::text_field::singleline;
-use crate::ui::theme::{checkerboard_dark, checkerboard_light};
+use crate::ui::theme::{CHECKERBOARD_DARK, CHECKERBOARD_LIGHT};
 use crate::ui::tokens::{CONTROL_CORNER_RADIUS, CONTROL_HEIGHT};
 
 const PICKER_WIDTH: f32 = 320.0;
@@ -26,7 +26,7 @@ pub(crate) fn color_button(ui: &mut egui::Ui, color: &mut [u8; 4]) -> egui::Resp
                 sw: radius,
                 ..Default::default()
             },
-            checkerboard_dark(),
+            CHECKERBOARD_DARK,
         );
         ui.painter().rect_filled(
             right,
@@ -35,7 +35,7 @@ pub(crate) fn color_button(ui: &mut egui::Ui, color: &mut [u8; 4]) -> egui::Resp
                 se: radius,
                 ..Default::default()
             },
-            checkerboard_light(),
+            CHECKERBOARD_LIGHT,
         );
         ui.painter().rect_filled(
             rect,
@@ -286,7 +286,7 @@ fn color_slider_2d(
 
 fn paint_checkers(painter: &egui::Painter, rect: egui::Rect) {
     let checker_size = rect.height() / 2.0;
-    painter.rect_filled(rect, 0.0, checkerboard_dark());
+    painter.rect_filled(rect, 0.0, CHECKERBOARD_DARK);
     let columns = (rect.width() / checker_size).ceil() as usize;
     for column in 0..columns {
         let top = column % 2 == 0;
@@ -298,7 +298,7 @@ fn paint_checkers(painter: &egui::Painter, rect: egui::Rect) {
             egui::vec2(checker_size, checker_size),
         )
         .intersect(rect);
-        painter.rect_filled(tile, 0.0, checkerboard_light());
+        painter.rect_filled(tile, 0.0, CHECKERBOARD_LIGHT);
     }
 }
 

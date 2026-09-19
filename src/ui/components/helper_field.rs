@@ -3,7 +3,7 @@ use lucide_icons::Icon as LucideIcon;
 
 use crate::ui::components::expression_button::expression_button;
 use crate::ui::components::icon::paint_centered_icon;
-use crate::ui::theme::muted;
+use crate::ui::theme::MUTED;
 use crate::ui::tokens::{CONTROL_CORNER_RADIUS, CONTROL_HEIGHT};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -52,7 +52,7 @@ pub(crate) fn helper_preview_field(
         preview
     };
     let text_color = if preview.is_empty() {
-        muted()
+        MUTED
     } else {
         visuals.text_color()
     };

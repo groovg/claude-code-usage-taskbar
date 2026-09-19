@@ -42,10 +42,26 @@ pub(super) fn blank_theme(name: &str) -> ThemeDocument {
     theme
 }
 
-pub(super) fn choose_file(owner: isize, title: &str, filter: &str) -> Option<PathBuf> {
+/// Shows the Windows open-file dialog, or the save-file dialog when `save_as`
+/// gives a default file name and extension.
+pub(super) fn choose_file(
+    owner: isize,
+    title: &str,
+    filter: &str,
+    save_as: Option<(&str, &str)>,
+) -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+
     let mut file = [0u16; 32768];
+    if let Some((default_name, _)) = save_as {
+        let default_name: Vec<u16> = default_name.encode_utf16().collect();
+        let copy_len = default_name.len().min(file.len().saturating_sub(1));
+        file[..copy_len].copy_from_slice(&default_name[..copy_len]);
+    }
     let filter: Vec<u16> = filter.encode_utf16().collect();
     let title: Vec<u16> = format!("{title}\0").encode_utf16().collect();
+    let default_extension: Option<Vec<u16>> = save_as
+        .map(|(_, default_extension)| format!("{default_extension}\0").encode_utf16().collect());
     let mut dialog = OPENFILENAMEW {
         lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
         hwndOwner: HWND(owner as *mut _),
@@ -56,52 +72,23 @@ pub(super) fn choose_file(owner: isize, title: &str, filter: &str) -> Option<Pat
         Flags: OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST,
         ..Default::default()
     };
-    if unsafe { GetOpenFileNameW(&mut dialog) }.as_bool() {
-        let len = file
-            .iter()
-            .position(|value| *value == 0)
-            .unwrap_or(file.len());
-        Some(Path::new(&String::from_utf16_lossy(&file[..len])).to_path_buf())
-    } else {
-        None
-    }
-}
-
-pub(super) fn choose_save_file(
-    owner: isize,
-    title: &str,
-    filter: &str,
-    default_name: &str,
-    default_extension: &str,
-) -> Option<PathBuf> {
-    let mut file = [0u16; 32768];
-    let default_name: Vec<u16> = default_name.encode_utf16().collect();
-    let copy_len = default_name.len().min(file.len().saturating_sub(1));
-    file[..copy_len].copy_from_slice(&default_name[..copy_len]);
-    let filter: Vec<u16> = filter.encode_utf16().collect();
-    let title: Vec<u16> = format!("{title}\0").encode_utf16().collect();
-    let default_extension: Vec<u16> = format!("{default_extension}\0").encode_utf16().collect();
-    let mut dialog = OPENFILENAMEW {
-        lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
-        hwndOwner: HWND(owner as *mut _),
-        lpstrFilter: PCWSTR(filter.as_ptr()),
-        nFilterIndex: 1,
-        lpstrFile: PWSTR(file.as_mut_ptr()),
-        nMaxFile: file.len() as u32,
-        lpstrTitle: PCWSTR(title.as_ptr()),
-        lpstrDefExt: PCWSTR(default_extension.as_ptr()),
-        Flags: OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST,
-        ..Default::default()
+    let chosen = match &default_extension {
+        None => unsafe { GetOpenFileNameW(&mut dialog) },
+        Some(default_extension) => {
+            dialog.nFilterIndex = 1;
+            dialog.lpstrDefExt = PCWSTR(default_extension.as_ptr());
+            dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+            unsafe { GetSaveFileNameW(&mut dialog) }
+        }
     };
-    if unsafe { GetSaveFileNameW(&mut dialog) }.as_bool() {
-        let len = file
-            .iter()
-            .position(|value| *value == 0)
-            .unwrap_or(file.len());
-        Some(Path::new(&String::from_utf16_lossy(&file[..len])).to_path_buf())
-    } else {
-        None
+    if !chosen.as_bool() {
+        return None;
     }
+    let len = file
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(file.len());
+    Some(PathBuf::from(std::ffi::OsString::from_wide(&file[..len])))
 }
 
 pub(super) fn safe_file_name(value: &str, fallback: &str) -> String {

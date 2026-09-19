@@ -68,7 +68,7 @@ pub(crate) fn configure_style(context: &egui::Context, language: LanguageId) {
     context.set_theme(egui::Theme::Dark);
 
     let mut visuals = egui::Visuals::dark();
-    visuals.panel_fill = menu_surface();
+    visuals.panel_fill = MENU_SURFACE;
     visuals.window_fill = egui::Color32::from_rgb(38, 38, 38);
     visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(48, 48, 48);
     visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(58, 58, 58);
@@ -199,118 +199,32 @@ fn load_language_fonts(
     }
 }
 
-pub(crate) fn accent() -> egui::Color32 {
-    egui::Color32::from_rgb(217, 119, 87)
-}
-
-pub(crate) fn accent_hover_border() -> egui::Color32 {
-    egui::Color32::from_rgb(157, 73, 45)
-}
-
-pub(crate) fn menu_surface() -> egui::Color32 {
-    egui::Color32::from_rgb(32, 32, 32)
-}
-
-pub(crate) fn muted() -> egui::Color32 {
-    egui::Color32::from_rgb(143, 146, 156)
-}
-
-pub(crate) fn selected_menu_fill() -> egui::Color32 {
-    egui::Color32::from_rgb(49, 49, 49)
-}
-
-pub(crate) fn helper_surface() -> egui::Color32 {
-    egui::Color32::from_rgb(21, 22, 26)
-}
-
-pub(crate) fn helper_card_surface() -> egui::Color32 {
-    egui::Color32::from_rgb(24, 25, 29)
-}
-
-pub(crate) fn helper_border() -> egui::Color32 {
-    egui::Color32::from_rgb(48, 50, 57)
-}
-
-pub(crate) fn success() -> egui::Color32 {
-    egui::Color32::from_rgb(78, 201, 143)
-}
-
-pub(crate) fn danger() -> egui::Color32 {
-    egui::Color32::from_rgb(232, 119, 95)
-}
-
-pub(crate) fn toggle_inactive() -> egui::Color32 {
-    egui::Color32::from_rgb(72, 72, 72)
-}
-
-pub(crate) fn toggle_inactive_hover() -> egui::Color32 {
-    egui::Color32::from_rgb(92, 92, 92)
-}
-
-pub(crate) fn toggle_knob() -> egui::Color32 {
-    egui::Color32::from_rgb(245, 245, 245)
-}
-
-pub(crate) fn toggle_label() -> egui::Color32 {
-    egui::Color32::from_rgb(218, 218, 218)
-}
-
-pub(crate) fn anchor_outline() -> egui::Color32 {
-    egui::Color32::from_rgb(128, 131, 140)
-}
-
-pub(crate) fn anchor_idle_fill() -> egui::Color32 {
-    egui::Color32::from_rgb(35, 37, 42)
-}
-
-pub(crate) fn checkerboard_dark() -> egui::Color32 {
-    egui::Color32::from_gray(72)
-}
-
-pub(crate) fn checkerboard_light() -> egui::Color32 {
-    egui::Color32::from_gray(176)
-}
-
-pub(crate) fn section_surface() -> egui::Color32 {
-    egui::Color32::from_rgb(35, 35, 35)
-}
-
-pub(crate) fn section_border() -> egui::Color32 {
-    egui::Color32::from_rgb(54, 54, 54)
-}
-
-pub(crate) fn setting_separator_color() -> egui::Color32 {
-    egui::Color32::from_rgb(53, 53, 53)
-}
-
-pub(crate) fn menu_hover() -> egui::Color32 {
-    egui::Color32::from_rgb(42, 42, 42)
-}
-
-pub(crate) fn menu_text() -> egui::Color32 {
-    egui::Color32::from_rgb(245, 245, 245)
-}
-
-pub(crate) fn asset_card_selected() -> egui::Color32 {
-    egui::Color32::from_rgb(57, 48, 46)
-}
-
-pub(crate) fn asset_card_surface() -> egui::Color32 {
-    egui::Color32::from_rgb(31, 32, 36)
-}
-
-pub(crate) fn asset_card_border() -> egui::Color32 {
-    egui::Color32::from_rgb(55, 57, 64)
-}
-
-pub(crate) fn asset_preview_surface() -> egui::Color32 {
-    egui::Color32::from_rgb(24, 25, 28)
-}
-
-pub(crate) fn splitter_hover_surface() -> egui::Color32 {
-    egui::Color32::from_rgb(38, 40, 46)
-}
-
-pub(crate) fn splitter_idle() -> egui::Color32 {
-    egui::Color32::from_rgb(65, 68, 76)
-}
+pub(crate) const ACCENT: egui::Color32 = egui::Color32::from_rgb(217, 119, 87);
+pub(crate) const ACCENT_HOVER_BORDER: egui::Color32 = egui::Color32::from_rgb(157, 73, 45);
+pub(crate) const MENU_SURFACE: egui::Color32 = egui::Color32::from_rgb(32, 32, 32);
+pub(crate) const MUTED: egui::Color32 = egui::Color32::from_rgb(143, 146, 156);
+pub(crate) const SELECTED_MENU_FILL: egui::Color32 = egui::Color32::from_rgb(49, 49, 49);
+pub(crate) const HELPER_SURFACE: egui::Color32 = egui::Color32::from_rgb(21, 22, 26);
+pub(crate) const HELPER_CARD_SURFACE: egui::Color32 = egui::Color32::from_rgb(24, 25, 29);
+pub(crate) const HELPER_BORDER: egui::Color32 = egui::Color32::from_rgb(48, 50, 57);
+pub(crate) const SUCCESS: egui::Color32 = egui::Color32::from_rgb(78, 201, 143);
+pub(crate) const DANGER: egui::Color32 = egui::Color32::from_rgb(232, 119, 95);
+pub(crate) const TOGGLE_INACTIVE: egui::Color32 = egui::Color32::from_rgb(72, 72, 72);
+pub(crate) const TOGGLE_INACTIVE_HOVER: egui::Color32 = egui::Color32::from_rgb(92, 92, 92);
+pub(crate) const TOGGLE_KNOB: egui::Color32 = egui::Color32::from_rgb(245, 245, 245);
+pub(crate) const TOGGLE_LABEL: egui::Color32 = egui::Color32::from_rgb(218, 218, 218);
+pub(crate) const ANCHOR_OUTLINE: egui::Color32 = egui::Color32::from_rgb(128, 131, 140);
+pub(crate) const ANCHOR_IDLE_FILL: egui::Color32 = egui::Color32::from_rgb(35, 37, 42);
+pub(crate) const CHECKERBOARD_DARK: egui::Color32 = egui::Color32::from_gray(72);
+pub(crate) const CHECKERBOARD_LIGHT: egui::Color32 = egui::Color32::from_gray(176);
+pub(crate) const SECTION_SURFACE: egui::Color32 = egui::Color32::from_rgb(35, 35, 35);
+pub(crate) const SECTION_BORDER: egui::Color32 = egui::Color32::from_rgb(54, 54, 54);
+pub(crate) const SETTING_SEPARATOR_COLOR: egui::Color32 = egui::Color32::from_rgb(53, 53, 53);
+pub(crate) const MENU_HOVER: egui::Color32 = egui::Color32::from_rgb(42, 42, 42);
+pub(crate) const MENU_TEXT: egui::Color32 = egui::Color32::from_rgb(245, 245, 245);
+pub(crate) const ASSET_CARD_SELECTED: egui::Color32 = egui::Color32::from_rgb(57, 48, 46);
+pub(crate) const ASSET_CARD_SURFACE: egui::Color32 = egui::Color32::from_rgb(31, 32, 36);
+pub(crate) const ASSET_CARD_BORDER: egui::Color32 = egui::Color32::from_rgb(55, 57, 64);
+pub(crate) const ASSET_PREVIEW_SURFACE: egui::Color32 = egui::Color32::from_rgb(24, 25, 28);
+pub(crate) const SPLITTER_HOVER_SURFACE: egui::Color32 = egui::Color32::from_rgb(38, 40, 46);
+pub(crate) const SPLITTER_IDLE: egui::Color32 = egui::Color32::from_rgb(65, 68, 76);

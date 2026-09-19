@@ -1,5 +1,8 @@
 use eframe::egui;
 
+use crate::localization::LanguageId;
+use crate::ui::components::text_field::singleline;
+
 pub(crate) struct Modal<'a> {
     title: &'a str,
     id: egui::Id,
@@ -41,6 +44,87 @@ impl<'a> Modal<'a> {
         }
         let _ = window.show(context, body);
     }
+}
+
+/// A delete confirmation with a red delete button. Returns `Some(true)` to
+/// delete, `Some(false)` to cancel and `None` while it stays open. Strings are
+/// English locale keys; `{name}` in `message` is replaced by `name`.
+pub(crate) fn confirm_delete(
+    context: &egui::Context,
+    language: LanguageId,
+    title: &'static str,
+    id: &str,
+    message: &'static str,
+    name: &str,
+    delete_label: &'static str,
+) -> Option<bool> {
+    let mut decision = None;
+    Modal::new(language.text(title), id)
+        .width(310.0)
+        .fixed_height(110.0)
+        .show(context, |ui| {
+            ui.label(language.text(message).replace("{name}", name));
+            ui.add_space(10.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new(language.text(delete_label))
+                                .color(egui::Color32::WHITE),
+                        )
+                        .fill(egui::Color32::from_rgb(178, 48, 48)),
+                    )
+                    .clicked()
+                {
+                    decision = Some(true);
+                }
+                if ui.button(language.text("Cancel")).clicked() {
+                    decision = Some(false);
+                }
+            });
+        });
+    decision
+}
+
+/// Asks for a theme name. Returns `Some(true)` to confirm, `Some(false)` to
+/// cancel and `None` while it stays open. Strings are English locale keys.
+pub(crate) fn theme_name_prompt(
+    context: &egui::Context,
+    language: LanguageId,
+    title: &'static str,
+    id: &str,
+    prompt: &'static str,
+    confirm_label: &'static str,
+    name: &mut String,
+) -> Option<bool> {
+    let mut decision = None;
+    Modal::new(language.text(title), id).show(context, |ui| {
+        ui.label(language.text(prompt));
+        let response = ui.add(
+            singleline(name)
+                .desired_width(ui.available_width())
+                .hint_text(language.text("Theme name")),
+        );
+        response.request_focus();
+        let enter = response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+        ui.add_space(8.0);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .add_enabled(
+                    !name.trim().is_empty(),
+                    egui::Button::new(language.text(confirm_label)),
+                )
+                .clicked()
+                || enter
+            {
+                decision = Some(true);
+            }
+            if ui.button(language.text("Cancel")).clicked() {
+                decision = Some(false);
+            }
+        });
+    });
+    decision
 }
 
 #[cfg(test)]

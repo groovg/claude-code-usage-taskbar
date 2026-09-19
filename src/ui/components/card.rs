@@ -1,6 +1,6 @@
 use eframe::egui;
 
-use crate::ui::theme::{helper_border, helper_card_surface};
+use crate::ui::theme::{HELPER_BORDER, HELPER_CARD_SURFACE};
 
 pub(crate) fn reference_card(
     ui: &mut egui::Ui,
@@ -29,8 +29,8 @@ pub(crate) fn card(
     let horizontal_margin = f32::from(margin.left + margin.right);
     let vertical_margin = f32::from(margin.top + margin.bottom);
     egui::Frame::new()
-        .fill(helper_card_surface())
-        .stroke(egui::Stroke::new(1.0, helper_border()))
+        .fill(HELPER_CARD_SURFACE)
+        .stroke(egui::Stroke::new(1.0, HELPER_BORDER))
         .corner_radius(egui::CornerRadius::same(6))
         .inner_margin(margin)
         .show(ui, |ui| {

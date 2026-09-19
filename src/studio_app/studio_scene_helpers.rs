@@ -392,7 +392,7 @@ pub(super) fn scene_drop_from_response(
                     egui::pos2(response.rect.left(), y),
                     egui::pos2(response.rect.right(), y),
                 ],
-                egui::Stroke::new(2.0, accent()),
+                egui::Stroke::new(2.0, ACCENT),
             );
         }
         SceneDropTarget::Before(_) | SceneDropTarget::After(_) => {
@@ -406,14 +406,14 @@ pub(super) fn scene_drop_from_response(
                     egui::pos2(response.rect.left(), y),
                     egui::pos2(response.rect.right(), y),
                 ],
-                egui::Stroke::new(2.0, accent()),
+                egui::Stroke::new(2.0, ACCENT),
             );
         }
         SceneDropTarget::Into(_) => {
             ui.painter().rect_stroke(
                 response.rect.shrink(1.0),
                 4.0,
-                egui::Stroke::new(2.0, accent()),
+                egui::Stroke::new(2.0, ACCENT),
                 egui::StrokeKind::Inside,
             );
         }
