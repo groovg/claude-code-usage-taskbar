@@ -329,6 +329,9 @@ pub(super) fn fetch_usage_via_messages(token: &str) -> Result<UsageData, PollErr
             .header("Authorization", &format!("Bearer {token}"))
             .header("anthropic-version", "2023-06-01")
             .header("anthropic-beta", "oauth-2025-04-20")
+            // The rate-limit headers this probe reads ride on the 429 itself,
+            // so it must bypass the cooldown gate and see the raw status.
+            .extension(super::BypassCooldown)
             .config()
             .http_status_as_error(false)
             .build()
@@ -471,36 +474,54 @@ fn cli_refresh_token(source: &CredentialSource) {
     }
 }
 
+/// Claude Code 2.0.63 and later record every `-p` run in the user's session
+/// list. A background token refresh is not a session the user started, so ask
+/// for no persistence; older builds reject the option, hence the plain retry.
+const NO_SESSION: &str = "--no-session-persistence";
+
 fn cli_refresh_windows_token(directory: &Path) {
     let claude_path = resolve_windows_claude_path();
     diagnose::log(format!(
         "attempting Windows Claude token refresh via {claude_path}"
     ));
 
-    let mut command = cli_command(&claude_path);
-    command
-        .args(["-p", "."])
-        .env("CLAUDE_CONFIG_DIR", directory)
-        .env_remove("CLAUDECODE")
-        .env_remove("CLAUDE_CODE_ENTRYPOINT");
-    run_refresh(command, "Windows Claude token refresh");
+    let refresh = |extra: &[&str]| {
+        let mut command = cli_command(&claude_path);
+        command
+            .args(["-p", "."])
+            .args(extra)
+            .env("CLAUDE_CONFIG_DIR", directory)
+            .env_remove("CLAUDECODE")
+            .env_remove("CLAUDE_CODE_ENTRYPOINT");
+        run_refresh(command, "Windows Claude token refresh")
+    };
+    if !refresh(&[NO_SESSION]) {
+        refresh(&[]);
+    }
 }
 
 fn cli_refresh_wsl_token(distro: &str) {
     diagnose::log(format!(
         "attempting WSL Claude token refresh in distro {distro}"
     ));
-    let mut command = Command::new("wsl.exe");
-    command
-        .arg("-d")
-        .arg(distro)
-        .arg("--")
-        .arg("bash")
-        .arg("-lic")
-        .arg("export CLAUDE_CONFIG_DIR=\"$HOME/.claude\"; if command -v claude >/dev/null 2>&1; then claude -p .; elif [ -x \"$HOME/.local/bin/claude\" ]; then \"$HOME/.local/bin/claude\" -p .; else exit 127; fi")
-        .env_remove("CLAUDECODE")
-        .env_remove("CLAUDE_CODE_ENTRYPOINT");
-    run_refresh(command, "WSL Claude token refresh");
+    let refresh = |extra: &str| {
+        let mut command = Command::new("wsl.exe");
+        command
+            .arg("-d")
+            .arg(distro)
+            .arg("--")
+            .arg("bash")
+            .arg("-lic")
+            .arg(format!(
+                "export CLAUDE_CONFIG_DIR=\"$HOME/.claude\"; if command -v claude >/dev/null 2>&1; then claude -p .{extra}; elif [ -x \"$HOME/.local/bin/claude\" ]; then \"$HOME/.local/bin/claude\" -p .{extra}; else exit 127; fi"
+            ))
+            .env_remove("CLAUDECODE")
+            .env_remove("CLAUDE_CODE_ENTRYPOINT");
+        run_refresh(command, "WSL Claude token refresh")
+    };
+    if !refresh(&format!(" {NO_SESSION}")) {
+        refresh("");
+    }
 }
 
 fn resolve_windows_claude_path() -> String {

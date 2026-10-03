@@ -398,7 +398,9 @@ fn is_winget_install_path(path: &Path) -> bool {
     winget_install_roots()
         .into_iter()
         .map(|root| normalize_path(&root))
-        .any(|root| normalized_path.starts_with(&root))
+        // Match whole path components: a sibling such as `…\Packages-old`
+        // must not be taken for a WinGet install.
+        .any(|root| normalized_path.starts_with(&format!("{root}\\")))
 }
 
 fn winget_install_roots() -> Vec<PathBuf> {
@@ -485,5 +487,22 @@ mod tests {
                 env!("CARGO_PKG_REPOSITORY").replace("github.com/", "api.github.com/repos/")
             )
         );
+    }
+
+    #[test]
+    fn only_paths_inside_a_winget_root_count_as_winget_installs() {
+        let root = std::path::PathBuf::from(std::env::var("LOCALAPPDATA").unwrap())
+            .join("Microsoft")
+            .join("WinGet")
+            .join("Packages");
+        assert!(super::is_winget_install_path(
+            &root.join("groovg.App").join("app.exe")
+        ));
+        // A sibling folder merely starting with the same characters is not.
+        let sibling = root.with_file_name("Packages-old");
+        assert!(!super::is_winget_install_path(&sibling.join("app.exe")));
+        assert!(!super::is_winget_install_path(std::path::Path::new(
+            r"C:\Users\someone\Desktop\app.exe"
+        )));
     }
 }

@@ -23,6 +23,7 @@ mod window;
 mod winsqlite;
 
 fn main() {
+    diagnose::install_panic_hook();
     let args: Vec<String> = std::env::args().collect();
     // Without `--diagnose` the log stays closed and `diagnose::log` is a no-op.
     if args.iter().any(|arg| arg == "--diagnose") {

@@ -478,3 +478,44 @@ fn display_changes_at_the_next_unit_boundary() {
         );
     }
 }
+
+fn response_with_retry_after(value: &str) -> HttpResponse {
+    ureq::http::Response::builder()
+        .status(429)
+        .header("retry-after", value)
+        .body(ureq::Body::builder().data(Vec::new()))
+        .unwrap()
+}
+
+#[test]
+fn retry_after_is_read_in_seconds_and_capped() {
+    assert_eq!(
+        retry_after(&response_with_retry_after("7200")),
+        Some(Duration::from_secs(7200))
+    );
+    // A header that would mute the provider for weeks is capped at a day.
+    assert_eq!(
+        retry_after(&response_with_retry_after("9999999")),
+        Some(MAX_COOLDOWN)
+    );
+    assert_eq!(retry_after(&response_with_retry_after("0")), None);
+    // An HTTP date is not honoured; the ordinary retry applies instead.
+    assert_eq!(
+        retry_after(&response_with_retry_after("Wed, 21 Oct 2026 07:28:00 GMT")),
+        None
+    );
+}
+
+#[test]
+fn cooldown_keys_separate_accounts_sharing_one_url() {
+    let request = |token: &str| {
+        ureq::http::Request::builder()
+            .method("GET")
+            .uri("https://api.anthropic.com/api/oauth/usage")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(ureq::SendBody::none())
+            .unwrap()
+    };
+    assert_eq!(request_key(&request("one")), request_key(&request("one")));
+    assert_ne!(request_key(&request("one")), request_key(&request("two")));
+}

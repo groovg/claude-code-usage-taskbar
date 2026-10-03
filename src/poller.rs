@@ -1,6 +1,8 @@
+use std::collections::HashMap;
+use std::hash::{BuildHasher, Hash, Hasher, RandomState};
 use std::os::windows::process::CommandExt;
 use std::process::{Command, Stdio};
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use windows::Win32::System::Threading::CREATE_NO_WINDOW;
@@ -140,11 +142,114 @@ pub(crate) static HTTP_AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
     ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(30)))
         .tls_config(tls)
+        // The cooldown middleware needs to see the response before ureq turns
+        // a status into an error; it raises the error itself instead.
+        .http_status_as_error(false)
+        .middleware(cooldown_middleware)
         .build()
         .into()
 });
 
 type HttpResponse = ureq::http::Response<ureq::Body>;
+
+/// Marks a request that must reach the server even while its target is in a
+/// cooldown, and that wants the raw status back. The usage probe reads the
+/// rate-limit headers off the 429 itself. Request extensions stay local and
+/// are never sent.
+#[derive(Clone, Copy)]
+pub(crate) struct BypassCooldown;
+
+/// Longest cooldown to honour, so one absurd header cannot mute a provider
+/// until restart.
+const MAX_COOLDOWN: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// A rate-limited provider answers 429 with `Retry-After`. Polling it again
+/// before that passes only renews the block and, because a poll fails as a
+/// whole only when every account fails, our own backoff never kicks in. So
+/// hold the answer per request target and send nothing until it expires.
+/// Cooldowns live for the life of the process, as rate-limit windows do.
+fn cooldown_middleware(
+    request: ureq::http::Request<ureq::SendBody>,
+    next: ureq::middleware::MiddlewareNext,
+) -> Result<HttpResponse, ureq::Error> {
+    if request.extensions().get::<BypassCooldown>().is_some() {
+        return next.handle(request);
+    }
+    let key = request_key(&request);
+    {
+        let now = Instant::now();
+        let mut cooldowns = cooldowns()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        cooldowns.retain(|_, (received, delay, _)| now.duration_since(*received) < *delay);
+        if let Some((_, _, status)) = cooldowns.get(&key) {
+            return Err(ureq::Error::StatusCode(*status));
+        }
+    }
+
+    let response = next.handle(request)?;
+    let status = response.status();
+    if status.as_u16() == 429 || status.is_server_error() {
+        if let Some(delay) = retry_after(&response) {
+            let received = Instant::now();
+            let mut cooldowns = cooldowns()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let entry = cooldowns
+                .entry(key)
+                .or_insert((received, delay, status.as_u16()));
+            // A concurrent response must not shorten a live cooldown.
+            if delay > entry.1.saturating_sub(received.duration_since(entry.0)) {
+                *entry = (received, delay, status.as_u16());
+            }
+        }
+    }
+    if status.is_client_error() || status.is_server_error() {
+        Err(ureq::Error::StatusCode(status.as_u16()))
+    } else {
+        Ok(response)
+    }
+}
+
+/// Cooldown per request target: when it started, how long it lasts, and the
+/// status to answer with.
+type Cooldowns = HashMap<u64, (Instant, Duration, u16)>;
+
+fn cooldowns() -> &'static Mutex<Cooldowns> {
+    static COOLDOWNS: OnceLock<Mutex<Cooldowns>> = OnceLock::new();
+    COOLDOWNS.get_or_init(Mutex::default)
+}
+
+/// Keys separate accounts that share a URL without storing any credential:
+/// the headers are hashed, with a per-process random key, and never leave it.
+fn request_key(request: &ureq::http::Request<ureq::SendBody>) -> u64 {
+    static KEYS: OnceLock<RandomState> = OnceLock::new();
+    let mut hasher = KEYS.get_or_init(RandomState::new).build_hasher();
+    request.method().as_str().hash(&mut hasher);
+    request.uri().to_string().hash(&mut hasher);
+    for (name, value) in request.headers() {
+        name.as_str().hash(&mut hasher);
+        value.as_bytes().hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// `Retry-After` in seconds. Every provider we talk to sends a delay rather
+/// than a date; a date reads as no cooldown and the ordinary retry applies.
+fn retry_after(response: &HttpResponse) -> Option<Duration> {
+    let value = response
+        .headers()
+        .get(ureq::http::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .to_string();
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let delay = Duration::from_secs(value.parse().unwrap_or(MAX_COOLDOWN.as_secs()));
+    Some(delay.min(MAX_COOLDOWN)).filter(|delay| !delay.is_zero())
+}
 
 fn get_header_f64(response: &HttpResponse, name: &str) -> f64 {
     response
@@ -243,7 +348,9 @@ fn cli_command(path: &str) -> Command {
 }
 
 /// Run a CLI token refresh hidden and silent, killing it after 30 seconds.
-fn run_refresh(mut command: Command, what: &str) {
+/// Reports whether the CLI exited successfully, so a caller can retry without
+/// an option the installed version may not know.
+fn run_refresh(mut command: Command, what: &str) -> bool {
     command
         .creation_flags(CREATE_NO_WINDOW.0)
         .stdin(Stdio::null())
@@ -253,16 +360,17 @@ fn run_refresh(mut command: Command, what: &str) {
         Ok(child) => child,
         Err(error) => {
             diagnose::log_error(&format!("unable to spawn {what}"), error);
-            return;
+            return false;
         }
     };
     let start = Instant::now();
     loop {
         match child.try_wait() {
-            Ok(Some(_)) | Err(_) => break,
+            Ok(Some(status)) => return status.success(),
+            Err(_) => return false,
             Ok(None) if start.elapsed() > Duration::from_secs(30) => {
                 let _ = child.kill();
-                break;
+                return false;
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(500)),
         }
