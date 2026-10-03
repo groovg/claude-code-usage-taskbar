@@ -35,7 +35,7 @@ pub(crate) fn read() -> Option<ContextSection> {
     let (mut section, cwd) = context_from_transcript_tail(&tail)?;
     // ponytail: the window is cached with the reading; a settings edit shows
     // up after the next turn rather than immediately.
-    section.window = context_window(&config, cwd.as_deref());
+    section.window = context_window(&config, cwd.as_deref(), section.tokens);
     section.percentage = (section.tokens as f64 / section.window as f64 * 100.0).clamp(0.0, 100.0);
     if let Ok(mut last) = LAST.lock() {
         *last = Some((transcript, updated_at, section.clone()));
@@ -123,11 +123,24 @@ fn context_from_transcript_tail(tail: &str) -> Option<(ContextSection, Option<Pa
         })
 }
 
-/// Claude Code marks the long-context variant with a `[1m]` suffix on the
-/// `model` setting. The session's project settings win over the user's, in
-/// Claude Code's own order: `.claude/settings.local.json`, then
-/// `.claude/settings.json`, then the user settings in the config directory.
-fn context_window(config: &Path, cwd: Option<&Path>) -> u64 {
+/// Which context window the session runs against. Claude Code offers two,
+/// 200k and 1M, and the 1M one is picked either by a `[1m]` suffix on the
+/// `model` setting or in the session itself, where it leaves no trace we can
+/// read. So the settings are consulted first, and a session already holding
+/// more than the standard window proves the larger one. A 1M session still
+/// below 200k therefore reads against 200k until it grows past it.
+fn context_window(config: &Path, cwd: Option<&Path>, tokens: u64) -> u64 {
+    if tokens > DEFAULT_WINDOW {
+        return LONG_WINDOW;
+    }
+    configured_context_window(config, cwd)
+}
+
+/// The window named by the `model` setting, if any. The session's project
+/// settings win over the user's, in Claude Code's own order:
+/// `.claude/settings.local.json`, then `.claude/settings.json`, then the user
+/// settings in the config directory.
+fn configured_context_window(config: &Path, cwd: Option<&Path>) -> u64 {
     let project = cwd.map(|cwd| cwd.join(".claude"));
     let candidates = project
         .iter()
@@ -227,23 +240,45 @@ mod tests {
         )
         .unwrap();
         // No project settings: the user's plain model, standard window.
-        assert_eq!(context_window(&config, Some(&project)), DEFAULT_WINDOW);
+        assert_eq!(
+            configured_context_window(&config, Some(&project)),
+            DEFAULT_WINDOW
+        );
         // A project file without a model key falls through to the user's.
         std::fs::write(
             project.join(".claude").join("settings.json"),
             r#"{"permissions": {}}"#,
         )
         .unwrap();
-        assert_eq!(context_window(&config, Some(&project)), DEFAULT_WINDOW);
+        assert_eq!(
+            configured_context_window(&config, Some(&project)),
+            DEFAULT_WINDOW
+        );
         // The local project file wins.
         std::fs::write(
             project.join(".claude").join("settings.local.json"),
             r#"{"model": "claude-fable-5-1[1m]"}"#,
         )
         .unwrap();
-        assert_eq!(context_window(&config, Some(&project)), LONG_WINDOW);
-        assert_eq!(context_window(&config, None), DEFAULT_WINDOW);
+        assert_eq!(
+            configured_context_window(&config, Some(&project)),
+            LONG_WINDOW
+        );
+        assert_eq!(configured_context_window(&config, None), DEFAULT_WINDOW);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_session_holding_more_than_the_standard_window_runs_on_the_long_one() {
+        // The 1M window can be picked inside the session, where it leaves no
+        // trace in any settings file, so the session's own size proves it.
+        let missing = std::env::temp_dir().join("claude-window-absent");
+        assert_eq!(
+            context_window(&missing, None, DEFAULT_WINDOW + 1),
+            LONG_WINDOW
+        );
+        assert_eq!(context_window(&missing, None, 745_434), LONG_WINDOW);
+        assert_eq!(context_window(&missing, None, 150_000), DEFAULT_WINDOW);
     }
 
     #[test]
