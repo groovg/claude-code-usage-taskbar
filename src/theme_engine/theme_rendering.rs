@@ -1376,20 +1376,21 @@ pub(super) fn segmented_position_visible(position: u32, extent: u32, count: u32,
         return true;
     }
 
-    // Gaps exist only between segments. Clamp pathological inputs so every
-    // segment can retain at least one physical pixel when the bar is wide
-    // enough, then sample each pixel at its centre against cumulative bounds.
-    // This keeps both outer edges intact and distributes DPI rounding across
-    // the internal segments and gaps instead of dropping the final pixel.
+    // Gaps exist only between segments. Whole pixels throughout: a fractional
+    // stride made segment widths alternate by a pixel at display scales such
+    // as 125% or 150%. Every segment is the same width and every gap the same
+    // width; the bar may end a few pixels short of its box, and the track is
+    // drawn by this same function, so the two stay aligned.
     let count = count.min(extent);
-    let gap = if gap.is_finite() { gap.max(0.0) } else { 0.0 };
-    let max_gap = (extent - count) as f64 / (count - 1) as f64;
-    let gap = gap.min(max_gap);
-    let segment_extent = (extent as f64 - gap * (count - 1) as f64) / count as f64;
+    let gap = if gap.is_finite() {
+        gap.max(0.0).round() as u32
+    } else {
+        0
+    };
+    let gap = gap.min((extent - count) / (count - 1));
+    let segment_extent = (extent - gap * (count - 1)) / count;
     let stride = segment_extent + gap;
-    let pixel_center = position.min(extent - 1) as f64 + 0.5;
-    let segment = ((pixel_center / stride).floor() as u32).min(count - 1);
-    segment == count - 1 || pixel_center - segment as f64 * stride < segment_extent
+    position / stride < count && position % stride < segment_extent
 }
 
 pub(super) fn premultiply(color: Rgba) -> u32 {

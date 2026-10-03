@@ -2500,3 +2500,30 @@ fn widget_position_moves_only_built_in_taskbar_surfaces() {
         custom.surfaces[0].placement
     );
 }
+
+#[test]
+fn segments_are_uniform_whole_pixels_at_fractional_display_scales() {
+    use super::theme_rendering::segmented_position_visible;
+
+    // A ten-segment bar at 100%, 125%, 150%, 175% and 200% display scale.
+    for extent in [109_u32, 136, 164, 191, 218] {
+        let runs: Vec<u32> = (0..extent)
+            .map(|position| segmented_position_visible(position, extent, 10, 1.0))
+            .fold(Vec::new(), |mut runs: Vec<(bool, u32)>, visible| {
+                match runs.last_mut() {
+                    Some((last, count)) if *last == visible => *count += 1,
+                    _ => runs.push((visible, 1)),
+                }
+                runs
+            })
+            .into_iter()
+            .filter(|(visible, _)| *visible)
+            .map(|(_, count)| count)
+            .collect();
+        assert_eq!(runs.len(), 10, "extent {extent}: {runs:?}");
+        assert!(
+            runs.iter().all(|run| *run == runs[0]),
+            "extent {extent} has uneven segments: {runs:?}"
+        );
+    }
+}

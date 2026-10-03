@@ -84,10 +84,57 @@ pub fn current_install_channel() -> InstallChannel {
 }
 
 pub fn check_for_updates() -> Result<UpdateCheckResult, String> {
+    // A WinGet install upgrades through WinGet, so ask what WinGet publishes.
+    // GitHub can be ahead for days while a manifest waits for review, and
+    // offering that version would start an upgrade that changes nothing.
+    if current_install_channel() == InstallChannel::Winget {
+        return match winget_published_version() {
+            Some(version) if is_version_newer(&version, env!("CARGO_PKG_VERSION")) => {
+                Ok(UpdateCheckResult::Available(ReleaseDescriptor {
+                    latest_version: version,
+                    asset_url: String::new(),
+                }))
+            }
+            Some(_) => Ok(UpdateCheckResult::UpToDate),
+            None => Err("Unable to read the published WinGet version.".to_string()),
+        };
+    }
     match fetch_latest_release()? {
         Some(release) => Ok(UpdateCheckResult::Available(release)),
         None => Ok(UpdateCheckResult::UpToDate),
     }
+}
+
+/// The version the WinGet source currently offers for this package.
+fn winget_published_version() -> Option<String> {
+    let output = Command::new("winget.exe")
+        .args([
+            "show",
+            "--exact",
+            "--id",
+            WINGET_PACKAGE_ID,
+            "--source",
+            "winget",
+            "--disable-interactivity",
+        ])
+        .creation_flags(CREATE_NO_WINDOW.0)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    // Localized output keeps the English field name only in part, so match on
+    // the first line whose value parses as a version.
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .map(|(_, value)| value.trim().to_string())
+        .find(|value| {
+            !value.is_empty()
+                && value
+                    .split('.')
+                    .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+        })
 }
 
 pub fn begin_winget_update() -> Result<(), String> {
