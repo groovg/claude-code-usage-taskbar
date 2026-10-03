@@ -1297,14 +1297,16 @@ pub fn run() {
     }
     diagnose::log("window::run started");
 
-    // Single-instance guard: silently exit if another instance is running.
+    // Single-instance guard: silently exit if another instance is running in
+    // this session. The local namespace keeps other users' desktop and RDP
+    // sessions independent, each with its own widget.
     // Exception: when relaunched after an explorer restart (ENV_RELAUNCH set),
     // wait for the previous instance to release the mutex, then take over.
     let is_relaunch = std::env::var(ENV_RELAUNCH).is_ok();
     let mutex_name = native_interop::wide_str(&if allow_multiple {
-        format!("Global\\ClaudeCodeUsageTaskbar-{}", std::process::id())
+        format!("Local\\ClaudeCodeUsageTaskbar-{}", std::process::id())
     } else {
-        "Global\\ClaudeCodeUsageTaskbar".to_string()
+        "Local\\ClaudeCodeUsageTaskbar".to_string()
     });
     let _mutex = unsafe {
         let handle = CreateMutexW(None, true, PCWSTR::from_raw(mutex_name.as_ptr()));
