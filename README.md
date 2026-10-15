@@ -1,6 +1,7 @@
 # Claude Code Usage Taskbar
 
 ![Windows](https://img.shields.io/badge/platform-Windows-blue)
+[![WinGet](https://img.shields.io/winget/v/groovg.ClaudeCodeUsageTaskbar?label=winget)](https://github.com/microsoft/winget-pkgs/tree/master/manifests/g/groovg/ClaudeCodeUsageTaskbar)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A Windows taskbar widget that keeps your Claude Code limits in view: the 5-hour and weekly windows, the **Fable weekly cap**, and the **context window of the session you are working in right now**. It also shows Codex, Google Antigravity, OpenCode Go, and Cursor usage.
@@ -38,9 +39,15 @@ Claude Code credentials can be detected from the CLI, Claude desktop app, or WSL
 
 ## Installation
 
-Download `claude-code-usage-taskbar.exe` from [GitHub Releases](https://github.com/groovg/claude-code-usage-taskbar/releases) and run it. The app checks that repository for updates.
+Install with WinGet:
 
-The executable is not code-signed, so the first launch may show a SmartScreen prompt ("Windows protected your PC"): click **More info**, then **Run anyway**. If Smart App Control blocks it outright, the release page's checksum lets you verify the download before allowing it. A WinGet package is planned; the release workflow already publishes one once a `WINGETCREATE_GITHUB_TOKEN` secret is configured.
+```powershell
+winget install groovg.ClaudeCodeUsageTaskbar
+```
+
+Or download `claude-code-usage-taskbar.exe` from [GitHub Releases](https://github.com/groovg/claude-code-usage-taskbar/releases) and run it. A portable copy updates itself from that page; a WinGet install upgrades through `winget upgrade` and is offered the version WinGet publishes.
+
+The executable is not code-signed, so the first launch of a downloaded copy may show a SmartScreen prompt ("Windows protected your PC"): click **More info**, then **Run anyway**. Every release also publishes `claude-code-usage-taskbar.exe.sha256` to check the download against.
 
 ## Usage
 
@@ -69,7 +76,7 @@ Anthropic reports model-scoped weekly caps (Fable today) in the `limits` array o
 - `{claude.scoped.*}` — the cap that matters now: the one the API marks active, otherwise the fullest. `.label` (`Fable`), `.percentage`, `.remaining`, `.display`, `.reset.*`, `.active`, `.available`, `.count`, and `{claude.scoped:usage_line}` (`43% · 2d`).
 - `{claude.model.<slug>.*}` — every reported cap by name, for a bar per model: `{claude.model.fable.percentage}`. The slug is the display name in lower case with runs of punctuation and spaces folded to `_`.
 
-The same column shows the context window of a local Claude Code session, read from its transcript under `~/.claude/projects` every five seconds. Which session: the one whose transcript was written most recently, i.e. the chat that last sent or received a message. With several sessions open the figure switches to whichever you are actively using; sub-agent transcripts are ignored. Bindings: `{claude.context.percentage}`, `.remaining`, `.display`, `.tokens`, `.window`, `.model`, `.project` (last folder of the session's working directory), `.available`, and `{claude.context:usage_line}` (`14%`). The window is 1M tokens when the `model` setting carries the `[1m]` suffix, 200k otherwise; the session's `.claude/settings.local.json` and `.claude/settings.json` are consulted before `~/.claude/settings.json`, as Claude Code does. Nothing is sent anywhere; it works with the terminal CLI and the VS Code extension alike.
+The same column shows the context window of a local Claude Code session, read from its transcript under `~/.claude/projects` every five seconds. Which session: the one whose transcript was written most recently, i.e. the chat that last sent or received a message. With several sessions open the figure switches to whichever you are actively using; sub-agent transcripts are ignored. Bindings: `{claude.context.percentage}`, `.remaining`, `.display`, `.tokens`, `.window`, `.model`, `.project` (last folder of the session's working directory), `.available`, and `{claude.context:usage_line}` (`14%`). Claude Code offers two window sizes, 200k and 1M. A session already holding more than 200k tokens is on the 1M one, which also covers the case where the model was chosen with `/model` and nothing on disk records it. Otherwise the `model` setting decides, 1M when it carries the `[1m]` suffix: the session's `.claude/settings.local.json` and `.claude/settings.json` are consulted before `~/.claude/settings.json`, as Claude Code does. A 1M session under 200k tokens therefore reads against 200k until it grows past that. The figure is a share of the window, so it sits a little below Claude Code's own "% remaining until auto-compact", which counts down to a threshold slightly before the window ends. Nothing is sent anywhere; it works with the terminal CLI and the VS Code extension alike.
 
 In the default theme, left-click a provider tray icon to show or hide the widget and right-click it to open the menu.
 
