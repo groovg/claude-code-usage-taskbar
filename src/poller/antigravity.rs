@@ -226,13 +226,17 @@ pub(super) fn antigravity_usage_from_summary(
 
     for group in response.groups.unwrap_or_default() {
         let is_gemini = is_antigravity_gemini_summary_group(&group);
+        // The summary also carries the third-party pool for Claude and GPT
+        // models. Its numbers are not Antigravity's own allowance, so they
+        // must never stand in for it when no Gemini pool was recognised.
+        let is_external = !is_gemini && is_antigravity_external_summary_group(&group);
         let usage = antigravity_usage_from_summary_group(group);
 
         if is_gemini && usage.is_some() {
             return usage;
         }
 
-        if fallback.is_none() {
+        if fallback.is_none() && !is_external {
             fallback = usage;
         }
     }
@@ -286,6 +290,25 @@ fn is_antigravity_gemini_summary_group(group: &AntigravityQuotaSummaryGroup) -> 
                         .display_name
                         .as_deref()
                         .is_some_and(|name| name.to_ascii_lowercase().contains("gemini"))
+            })
+        })
+}
+
+/// The pool Antigravity buys from other vendors, named for its models in the
+/// summary: "Claude and GPT models", with `claude-`, `gpt-` or `3p-` buckets.
+fn is_antigravity_external_summary_group(group: &AntigravityQuotaSummaryGroup) -> bool {
+    let names_external = |text: &str| {
+        let text = text.to_ascii_lowercase();
+        text.contains("claude") || text.contains("gpt") || text.contains("external")
+    };
+    group.display_name.as_deref().is_some_and(names_external)
+        || group.description.as_deref().is_some_and(names_external)
+        || group.buckets.as_ref().is_some_and(|buckets| {
+            buckets.iter().any(|bucket| {
+                bucket.bucket_id.as_deref().is_some_and(|id| {
+                    let id = id.to_ascii_lowercase();
+                    id.starts_with("claude-") || id.starts_with("gpt-") || id.starts_with("3p-")
+                }) || bucket.display_name.as_deref().is_some_and(names_external)
             })
         })
 }

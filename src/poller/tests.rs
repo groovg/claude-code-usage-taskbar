@@ -519,3 +519,39 @@ fn cooldown_keys_separate_accounts_sharing_one_url() {
     assert_eq!(request_key(&request("one")), request_key(&request("one")));
     assert_ne!(request_key(&request("one")), request_key(&request("two")));
 }
+
+#[test]
+fn an_antigravity_summary_without_a_gemini_pool_does_not_show_the_external_one() {
+    // The third-party pool is Claude and GPT quota bought by Antigravity; its
+    // numbers are not the user's Antigravity allowance.
+    let response: antigravity::AntigravityQuotaSummaryResponse = serde_json::from_str(
+        r#"{
+            "groups": [
+                {
+                    "displayName": "Claude and GPT models",
+                    "buckets": [
+                        {"bucketId": "3p-5h", "window": "5h", "remainingFraction": 0.5},
+                        {"bucketId": "3p-weekly", "window": "weekly", "remainingFraction": 0.5}
+                    ]
+                }
+            ]
+        }"#,
+    )
+    .unwrap();
+    assert!(antigravity::antigravity_usage_from_summary(response).is_none());
+
+    // An unnamed pool is still accepted when it is all the account reports.
+    let response: antigravity::AntigravityQuotaSummaryResponse = serde_json::from_str(
+        r#"{
+            "groups": [
+                {
+                    "displayName": "Included models",
+                    "buckets": [{"bucketId": "included-5h", "window": "5h", "remainingFraction": 0.25}]
+                }
+            ]
+        }"#,
+    )
+    .unwrap();
+    let usage = antigravity::antigravity_usage_from_summary(response).unwrap();
+    assert_eq!(usage.session.percentage, 75.0);
+}
