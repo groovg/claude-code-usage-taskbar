@@ -490,14 +490,17 @@ fn response_with_retry_after(value: &str) -> HttpResponse {
 #[test]
 fn retry_after_is_read_in_seconds_and_capped() {
     assert_eq!(
-        retry_after(&response_with_retry_after("7200")),
-        Some(Duration::from_secs(7200))
+        retry_after(&response_with_retry_after("120")),
+        Some(Duration::from_secs(120))
     );
-    // A header that would mute the provider for weeks is capped at a day.
-    assert_eq!(
-        retry_after(&response_with_retry_after("9999999")),
-        Some(MAX_COOLDOWN)
-    );
+    // A long wait is capped, so the provider is re-asked before the hour is
+    // out and a lifted rate limit is noticed.
+    for header in ["7200", "9999999"] {
+        assert_eq!(
+            retry_after(&response_with_retry_after(header)),
+            Some(MAX_COOLDOWN)
+        );
+    }
     assert_eq!(retry_after(&response_with_retry_after("0")), None);
     // An HTTP date is not honoured; the ordinary retry applies instead.
     assert_eq!(

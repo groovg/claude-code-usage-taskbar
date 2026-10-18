@@ -159,9 +159,12 @@ type HttpResponse = ureq::http::Response<ureq::Body>;
 #[derive(Clone, Copy)]
 pub(crate) struct BypassCooldown;
 
-/// Longest cooldown to honour, so one absurd header cannot mute a provider
-/// until restart.
-const MAX_COOLDOWN: Duration = Duration::from_secs(24 * 60 * 60);
+/// Longest cooldown to honour. A `Retry-After` of hours would otherwise mute
+/// a provider for the rest of the day, including the manual refresh, and a
+/// rate limit that has since been lifted would go unnoticed. At worst this
+/// costs one request every quarter of an hour, and the server simply says
+/// 429 again if it still means it.
+const MAX_COOLDOWN: Duration = Duration::from_secs(15 * 60);
 
 /// A rate-limited provider answers 429 with `Retry-After`. Polling it again
 /// before that passes only renews the block and, because a poll fails as a
