@@ -432,7 +432,26 @@ fn templates_apply_numeric_character_formats() {
         format_template("Used {claude.session.percentage:0.0}%", &context),
         "Used 73.5%"
     );
-    assert_eq!(format_template("{reset:duration_short}", &context), "4d");
+    assert_eq!(format_template("{reset:duration_short}", &context), "5d");
+}
+
+#[test]
+fn short_durations_round_to_the_nearest_whole_unit() {
+    let short = |seconds: f64| {
+        let mut context = DataContext::default();
+        context.insert("reset", seconds);
+        format_template("{reset:duration_short}", &context)
+    };
+    assert_eq!(short(4.0 * 3_600.0 + 40.0 * 60.0), "5h");
+    assert_eq!(short(12.0 * 3_600.0 + 30.0 * 60.0), "13h");
+    assert_eq!(short(23.0 * 3_600.0 + 20.0 * 60.0), "23h");
+    // A value that fills its unit carries: no 24h, no 60m.
+    assert_eq!(short(23.0 * 3_600.0 + 45.0 * 60.0), "1d");
+    assert_eq!(short(3_580.0), "1h");
+    assert_eq!(short(29.0), "29s");
+    assert_eq!(short(0.0), "now");
+    // A saturated value must not wrap.
+    assert_eq!(short(f64::MAX), "213503982334601d");
 }
 
 #[test]

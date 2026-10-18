@@ -568,15 +568,27 @@ pub(super) fn format_value(value: f64, format: &str, context: &DataContext) -> S
     }
     if format.eq_ignore_ascii_case("duration_short") {
         let seconds = value.max(0.0).round() as u64;
-        let days = seconds / 86_400;
-        let hours = seconds / 3_600;
-        let minutes = seconds / 60;
-        return if days > 0 {
-            format!("{days}{}", localized(context, "i18n.day_suffix", "d"))
-        } else if hours > 0 {
-            format!("{hours}{}", localized(context, "i18n.hour_suffix", "h"))
-        } else if minutes > 0 {
-            format!("{minutes}{}", localized(context, "i18n.minute_suffix", "m"))
+        // The unit comes from the magnitude, the number is then rounded
+        // within it instead of truncated: 4h40m reads 5h, not 4h. A value
+        // that rounds up to a full unit carries into the next one, so 23h45m
+        // reads 1d rather than 24h. The remainder form cannot overflow the
+        // way `seconds + half` can.
+        let round = |unit: u64| seconds / unit + u64::from(seconds % unit >= unit / 2);
+        let day = localized(context, "i18n.day_suffix", "d");
+        let hour = localized(context, "i18n.hour_suffix", "h");
+        let minute = localized(context, "i18n.minute_suffix", "m");
+        return if seconds >= 86_400 {
+            format!("{}{day}", round(86_400))
+        } else if seconds >= 3_600 {
+            match round(3_600) {
+                24 => format!("1{day}"),
+                hours => format!("{hours}{hour}"),
+            }
+        } else if seconds >= 60 {
+            match round(60) {
+                60 => format!("1{hour}"),
+                minutes => format!("{minutes}{minute}"),
+            }
         } else if seconds > 0 {
             format!("{seconds}{}", localized(context, "i18n.second_suffix", "s"))
         } else {
