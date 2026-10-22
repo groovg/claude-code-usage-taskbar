@@ -5,7 +5,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 use windows::Win32::System::Threading::CREATE_NO_WINDOW;
-use windows::Win32::UI::Shell::FOLDERID_RoamingAppData;
 
 use super::claude_desktop;
 use super::{
@@ -139,7 +138,9 @@ fn desktop_credentials_for_default_path(path: &Path) -> Option<Credentials> {
     if crate::accounts::source_key(path) != crate::accounts::source_key(&default) {
         return None;
     }
-    let credentials = read_desktop_app_credentials(&claude_desktop::config_path()?)?;
+    let credentials = claude_desktop::config_paths()
+        .iter()
+        .find_map(|config| read_desktop_app_credentials(config))?;
     diagnose::log("default profile fell back to the Claude desktop app token cache");
     Some(credentials)
 }
@@ -536,13 +537,17 @@ fn resolve_windows_claude_path() -> String {
 /// `%APPDATA%\Claude\claude-code\<version>\claude.exe`, which is the only
 /// Claude binary present when the standalone CLI was never installed.
 fn bundled_desktop_claude_path() -> Option<PathBuf> {
-    let versions = crate::accounts::known_folder(FOLDERID_RoamingAppData)?
-        .join("Claude")
-        .join("claude-code");
-    let mut candidates: Vec<PathBuf> = std::fs::read_dir(versions)
-        .ok()?
-        .flatten()
-        .map(|entry| entry.path().join("claude.exe"))
+    // The bundled CLI lives beside the desktop app's data, which has moved;
+    // search every directory the app may be using.
+    let mut candidates: Vec<PathBuf> = claude_desktop::data_directories()
+        .into_iter()
+        .flat_map(|directory| {
+            std::fs::read_dir(directory.join("claude-code"))
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|entry| entry.path().join("claude.exe"))
+        })
         .filter(|path| path.is_file())
         .collect();
     // Directory order is not version order; the newest install wins.
@@ -683,7 +688,10 @@ fn windows_credential_source() -> Option<CredentialSource> {
 }
 
 fn desktop_app_credential_source() -> Option<CredentialSource> {
-    claude_desktop::config_path().map(CredentialSource::DesktopApp)
+    claude_desktop::config_paths()
+        .into_iter()
+        .find(|config| config.is_file())
+        .map(CredentialSource::DesktopApp)
 }
 
 /// Whether the CLI credentials file at `path` holds a usable token. When it

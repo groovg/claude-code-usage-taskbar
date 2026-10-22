@@ -36,7 +36,7 @@ pub(crate) fn source_signature(provider: ProviderId, path: &std::path::Path) -> 
             crate::accounts::source_key(&default) == crate::accounts::source_key(path)
         });
     if is_default && !claude::windows_file_has_token(path) {
-        if let Some(config) = claude_desktop::config_path() {
+        for config in claude_desktop::config_paths() {
             signature.push('|');
             signature.push_str(&claude_desktop::watch_signature(&config));
         }

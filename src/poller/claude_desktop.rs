@@ -20,7 +20,7 @@ use windows::Win32::Security::Cryptography::{
     BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION, BCRYPT_FLAGS, BCRYPT_KEY_HANDLE,
     CRYPT_INTEGER_BLOB,
 };
-use windows::Win32::UI::Shell::FOLDERID_RoamingAppData;
+use windows::Win32::UI::Shell::{FOLDERID_LocalAppData, FOLDERID_RoamingAppData};
 
 use crate::diagnose;
 
@@ -41,12 +41,60 @@ pub(super) struct DesktopToken {
     pub(super) expires_at: Option<i64>,
 }
 
-pub(super) fn config_path() -> Option<PathBuf> {
-    Some(
-        crate::accounts::known_folder(FOLDERID_RoamingAppData)?
-            .join("Claude")
-            .join("config.json"),
-    )
+/// Where the desktop app keeps its data, newest layout first. It moved from
+/// `%APPDATA%\Claude` to a per-install directory under
+/// `%LOCALAPPDATA%\Claude-Data`, so both are searched; an install that never
+/// migrated still answers from the old one.
+pub(super) fn data_directories() -> Vec<PathBuf> {
+    let mut directories = Vec::new();
+    if let Some(migrated) = crate::accounts::known_folder(FOLDERID_LocalAppData) {
+        let migrated = migrated.join("Claude-Data");
+        let mut installs: Vec<PathBuf> = std::fs::read_dir(&migrated)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(is_desktop_install_directory)
+            })
+            .collect();
+        // Stable order, with the published publisher first when present.
+        installs.sort();
+        if let Some(index) = installs
+            .iter()
+            .position(|path| path.ends_with(PUBLISHED_INSTALL_DIRECTORY))
+        {
+            installs.swap(0, index);
+        }
+        directories.extend(installs);
+    }
+    if let Some(roaming) = crate::accounts::known_folder(FOLDERID_RoamingAppData) {
+        directories.push(roaming.join("Claude"));
+    }
+    directories
+}
+
+/// The install directory the published desktop app uses.
+const PUBLISHED_INSTALL_DIRECTORY: &str = "claude_pzs8sxrjxfjjc";
+
+/// `claude_` followed by 13 lower-case letters or digits.
+fn is_desktop_install_directory(name: &str) -> bool {
+    name.strip_prefix("claude_").is_some_and(|publisher| {
+        publisher.len() == 13
+            && publisher
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    })
+}
+
+/// Every `config.json` the desktop app may have written, newest layout first.
+pub(super) fn config_paths() -> Vec<PathBuf> {
+    data_directories()
+        .into_iter()
+        .map(|directory| directory.join("config.json"))
+        .collect()
 }
 
 fn local_state_path(config_path: &Path) -> PathBuf {
@@ -398,10 +446,23 @@ mod tests {
     #[test]
     #[ignore = "requires a signed-in Claude desktop app on this machine"]
     fn reads_a_token_from_the_installed_desktop_app() {
-        let path = config_path().expect("a roaming config directory");
-        let token = read_token(&path).expect("the desktop app should expose a token");
+        let token = config_paths()
+            .iter()
+            .find_map(|path| read_token(path))
+            .expect("the desktop app should expose a token");
         assert!(token.access_token.starts_with("sk-ant-"));
         assert!(token.expires_at.unwrap_or_default() > 0);
+    }
+
+    #[test]
+    fn only_a_claude_install_directory_counts_as_desktop_data() {
+        assert!(is_desktop_install_directory(PUBLISHED_INSTALL_DIRECTORY));
+        assert!(is_desktop_install_directory("claude_0123456789abc"));
+        // Wrong length, wrong case, or not an install directory at all.
+        assert!(!is_desktop_install_directory("claude_short"));
+        assert!(!is_desktop_install_directory("claude_0123456789abcd"));
+        assert!(!is_desktop_install_directory("claude_PZS8SXRJXFJJC"));
+        assert!(!is_desktop_install_directory("Claude"));
     }
 
     #[test]
