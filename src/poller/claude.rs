@@ -141,7 +141,7 @@ fn desktop_credentials_for_default_path(path: &Path) -> Option<Credentials> {
     let credentials = claude_desktop::config_paths()
         .iter()
         .find_map(|config| read_desktop_app_credentials(config))?;
-    diagnose::log("default profile fell back to the Claude desktop app token cache");
+    diagnose::log("the default CLI path fell back to the Claude desktop app token cache");
     Some(credentials)
 }
 
@@ -447,10 +447,23 @@ fn refresh_credentials(credentials: Credentials) -> Result<Credentials, PollErro
     let source = credentials.source;
     cli_refresh_token(&source);
     // An expired login is still a selected account. Do not replace it with
-    // another account found in Desktop or WSL when its refresh fails.
+    // another account found in Desktop or WSL when its refresh fails. The
+    // desktop app is the exception, and only for the default CLI file it
+    // takes over: it leaves that file behind with a token it no longer
+    // refreshes, so a live desktop token is the same account, not another.
     read_credentials_from_source(&source)
         .filter(|credentials| !is_token_expired(credentials.expires_at))
+        .or_else(|| fresh_desktop_credentials(&source))
         .ok_or(PollError::TokenExpired)
+}
+
+/// The desktop app's token when it is live, for a stale default CLI file.
+fn fresh_desktop_credentials(stale: &CredentialSource) -> Option<Credentials> {
+    let CredentialSource::Windows(path) = stale else {
+        return None;
+    };
+    desktop_credentials_for_default_path(path)
+        .filter(|credentials| !is_token_expired(credentials.expires_at))
 }
 
 fn cli_refresh_token(source: &CredentialSource) {
