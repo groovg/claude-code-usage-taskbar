@@ -309,28 +309,28 @@ pub(super) fn clear_tray_mouse_hover_if_left(hwnd: HWND) {
     }
 }
 
-pub(super) unsafe fn set_surface_cursor(hwnd: HWND) -> bool {
+/// Set the cursor for the pixel under the pointer. The caller answers
+/// WM_SETCURSOR either way, so this always picks a cursor: leaving one
+/// unset would keep the hand after the pointer moves off a clickable layer.
+pub(super) unsafe fn set_surface_cursor(hwnd: HWND) {
     let mut point = POINT::default();
     if GetCursorPos(&mut point).is_err() {
-        return false;
+        return;
     }
     let mut client = [point];
     MapWindowPoints(None, Some(hwnd), &mut client);
     // The same 16-bit range as the mouse LPARAMs the other callers decode.
     let client = (client[0].x as i16 as f64, client[0].y as i16 as f64);
-    let Some((surface, object)) = mouse_target_at(hwnd, client) else {
-        return false;
-    };
-    let clickable = [
-        MouseEventKind::Click,
-        MouseEventKind::DoubleClick,
-        MouseEventKind::RightClick,
-    ]
-    .into_iter()
-    .any(|event| mouse_handler_exists(surface, &object, event));
-    if clickable {
-        let cursor = LoadCursorW(None, IDC_HAND).unwrap_or_default();
-        SetCursor(Some(cursor));
-    }
-    clickable
+    let clickable = mouse_target_at(hwnd, client).is_some_and(|(surface, object)| {
+        [
+            MouseEventKind::Click,
+            MouseEventKind::DoubleClick,
+            MouseEventKind::RightClick,
+        ]
+        .into_iter()
+        .any(|event| mouse_handler_exists(surface, &object, event))
+    });
+    let cursor =
+        LoadCursorW(None, if clickable { IDC_HAND } else { IDC_ARROW }).unwrap_or_default();
+    SetCursor(Some(cursor));
 }

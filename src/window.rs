@@ -1241,7 +1241,17 @@ unsafe extern "system" fn mirror_wnd_proc(
 ) -> LRESULT {
     match msg {
         WM_NCHITTEST => LRESULT(HTCLIENT as isize),
-        WM_SETCURSOR if set_surface_cursor(hwnd) => LRESULT(1),
+        // Our surfaces are child windows of the taskbar, so anything left to
+        // DefWindowProc is sent on to Explorer, synchronously, on its own UI
+        // thread. Answer every mouse message here instead, including over
+        // pixels that are not clickable: a click must not activate the
+        // taskbar, and a wheel or a context-menu key must go nowhere.
+        WM_SETCURSOR => {
+            set_surface_cursor(hwnd);
+            LRESULT(1)
+        }
+        WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
+        WM_MOUSEWHEEL | WM_MOUSEHWHEEL | WM_APPCOMMAND | WM_CONTEXTMENU => LRESULT(0),
         WM_MOUSEMOVE => {
             update_mouse_hover(hwnd, lparam);
             LRESULT(0)
