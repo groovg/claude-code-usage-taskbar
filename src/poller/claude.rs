@@ -156,16 +156,19 @@ pub(super) fn fetch_usage_with_fallback(token: &str) -> Result<UsageData, PollEr
 fn fetch_remote_usage(token: &str) -> Result<UsageData, PollError> {
     // Try the dedicated usage endpoint first
     if let Some(data) = try_usage_endpoint(token)? {
-        // If reset timers are missing, fill them in from the Messages API
-        if data.session.resets_at.is_none() || data.weekly.resets_at.is_none() {
+        // Fill a missing reset time from the Messages API, but only for a
+        // window the usage endpoint reported. A plan without a five-hour
+        // allowance says so by leaving it out, and the rate-limit headers
+        // would otherwise put an empty five-hour bar back on the widget.
+        let missing_reset = (data.session.available && data.session.resets_at.is_none())
+            || (data.weekly.available && data.weekly.resets_at.is_none());
+        if missing_reset {
             if let Ok(fallback) = fetch_usage_via_messages(token) {
                 let mut merged = data;
-                merged.session.available |= fallback.session.available;
-                merged.weekly.available |= fallback.weekly.available;
-                if merged.session.resets_at.is_none() {
+                if merged.session.available && merged.session.resets_at.is_none() {
                     merged.session.resets_at = fallback.session.resets_at;
                 }
-                if merged.weekly.resets_at.is_none() {
+                if merged.weekly.available && merged.weekly.resets_at.is_none() {
                     merged.weekly.resets_at = fallback.weekly.resets_at;
                 }
                 return Ok(merged);
@@ -909,6 +912,18 @@ mod tests {
         let response: UsageResponse =
             serde_json::from_str(json).expect("the fixture should deserialize");
         usage_from_response(response)
+    }
+
+    #[test]
+    fn a_plan_without_a_five_hour_window_is_not_given_one() {
+        // Plans that have no five-hour allowance leave it out of the usage
+        // response. The widget must not draw a bar for it, and must not ask
+        // the Messages API for a reset time it has no window to fill.
+        let data = usage_from_json(r#"{"seven_day": {"utilization": 26.0}}"#);
+        assert!(!data.session.available);
+        assert!(data.session.resets_at.is_none());
+        assert!(data.weekly.available);
+        assert!(data.weekly.resets_at.is_none());
     }
 
     #[test]
