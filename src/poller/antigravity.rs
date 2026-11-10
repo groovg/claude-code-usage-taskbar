@@ -2,8 +2,6 @@ use std::collections::HashMap;
 
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
-use windows::core::HSTRING;
-use windows::Win32::Security::Credentials::{CredFree, CredReadW, CREDENTIALW, CRED_TYPE_GENERIC};
 
 use super::{parse_iso8601, PollError, HTTP_AGENT};
 use crate::diagnose;
@@ -90,7 +88,7 @@ pub(super) fn poll_antigravity() -> Result<UsageData, PollError> {
 }
 
 pub(super) fn credential_watch_signature() -> String {
-    match read_windows_generic_credential(ANTIGRAVITY_CREDENTIAL_TARGET) {
+    match super::read_generic_credential(ANTIGRAVITY_CREDENTIAL_TARGET) {
         Some(content) => format!(
             "{ANTIGRAVITY_CREDENTIAL_TARGET}|present|{}|{}",
             content.len(),
@@ -334,37 +332,7 @@ fn is_antigravity_display_model(model: &str) -> bool {
 }
 
 fn read_antigravity_credentials() -> Option<AntigravityTokenData> {
-    let content = read_windows_generic_credential(ANTIGRAVITY_CREDENTIAL_TARGET)?;
+    let content = super::read_generic_credential(ANTIGRAVITY_CREDENTIAL_TARGET)?;
     let auth: AntigravityAuthFile = serde_json::from_str(&content).ok()?;
     (!auth.token.access_token.is_empty()).then_some(auth.token)
-}
-
-fn read_windows_generic_credential(target: &str) -> Option<String> {
-    let mut credential: *mut CREDENTIALW = std::ptr::null_mut();
-    let read = unsafe {
-        CredReadW(
-            &HSTRING::from(target),
-            CRED_TYPE_GENERIC,
-            None,
-            &mut credential,
-        )
-    };
-    if read.is_err() || credential.is_null() {
-        diagnose::log(format!(
-            "unable to read Windows generic credential target {target}"
-        ));
-        return None;
-    }
-
-    unsafe {
-        let blob = (*credential).CredentialBlob;
-        let size = (*credential).CredentialBlobSize as usize;
-        let text = if size == 0 || blob.is_null() {
-            None
-        } else {
-            String::from_utf8(std::slice::from_raw_parts(blob, size).to_vec()).ok()
-        };
-        CredFree(credential.cast());
-        text
-    }
 }

@@ -540,3 +540,33 @@ pub fn app_is_past_reset(data: &AppUsageData) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+/// The UTF-8 text stored in a generic Windows credential, or `None` when the
+/// target does not exist or is not text.
+fn read_generic_credential(target: &str) -> Option<String> {
+    use windows::Win32::Security::Credentials::{
+        CredFree, CredReadW, CREDENTIALW, CRED_TYPE_GENERIC,
+    };
+
+    let mut credential: *mut CREDENTIALW = std::ptr::null_mut();
+    let read = unsafe {
+        CredReadW(
+            &windows::core::HSTRING::from(target),
+            CRED_TYPE_GENERIC,
+            None,
+            &mut credential,
+        )
+    };
+    if read.is_err() || credential.is_null() {
+        return None;
+    }
+    unsafe {
+        let blob = (*credential).CredentialBlob;
+        let size = (*credential).CredentialBlobSize as usize;
+        let text = (size > 0 && !blob.is_null())
+            .then(|| String::from_utf8(std::slice::from_raw_parts(blob, size).to_vec()).ok())
+            .flatten();
+        CredFree(credential.cast());
+        text
+    }
+}

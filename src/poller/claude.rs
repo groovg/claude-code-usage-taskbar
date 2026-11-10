@@ -87,6 +87,13 @@ struct Credentials {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum CredentialSource {
     Windows(PathBuf),
+    /// Windows Credential Manager, where newer Claude Code builds keep the
+    /// claude.ai login instead of `.credentials.json`. Holds the
+    /// CLAUDE_CONFIG_DIR value the CLI ran with, which names the entry; `None`
+    /// for the default configuration.
+    CredentialManager {
+        config_dir: Option<String>,
+    },
     /// The Claude desktop app's own token cache, used when Claude Code has
     /// only ever run inside the desktop app and no CLI login wrote
     /// `~/.claude/.credentials.json`.
@@ -123,12 +130,110 @@ pub(super) fn poll_account(path: &Path) -> Result<UsageData, PollError> {
     let credentials =
         match read_credentials_from_source(&CredentialSource::Windows(path.to_path_buf())) {
             Some(credentials) => credentials,
-            None => desktop_credentials_for_default_path(path).ok_or(PollError::NoCredentials)?,
+            None => fallback_credentials(path).ok_or(PollError::NoCredentials)?,
         };
 
     // Refresh against whichever source actually produced the token.
     let credentials = refresh_credentials(credentials)?;
     fetch_usage_with_fallback(&credentials.access_token)
+}
+
+/// Where else the login behind a CLI credentials file can be: the Credential
+/// Manager entry the same CLI writes on newer builds, then, for the default
+/// path only, the desktop app.
+fn fallback_credentials(path: &Path) -> Option<Credentials> {
+    credential_manager_source_for(path)
+        .and_then(|source| read_credentials_from_source(&source))
+        .or_else(|| desktop_credentials_for_default_path(path))
+}
+
+/// The Credential Manager entry a CLI using this credentials file would
+/// write, if the file is a CLI one. The CLI names the entry after the
+/// CLAUDE_CONFIG_DIR it ran with, so the default file maps to the default
+/// entry (or to the one for an inherited CLAUDE_CONFIG_DIR) and a profile's
+/// own directory maps to an entry keyed by that directory.
+fn credential_manager_source_for(path: &Path) -> Option<CredentialSource> {
+    if path.file_name()? != ".credentials.json" {
+        return None;
+    }
+    let default = crate::accounts::default_credential_path(crate::providers::ProviderId::Claude)?;
+    let config_dir = if crate::accounts::source_key(path) == crate::accounts::source_key(&default) {
+        inherited_config_dir()
+    } else {
+        Some(path.parent()?.to_string_lossy().into_owned())
+    };
+    Some(CredentialSource::CredentialManager { config_dir })
+}
+
+fn inherited_config_dir() -> Option<String> {
+    std::env::var("CLAUDE_CONFIG_DIR")
+        .ok()
+        .filter(|value| !value.is_empty())
+}
+
+/// Claude Code stores the login through Bun.secrets, as the generic
+/// credential `<service>/claude-code-user`. The service is
+/// `Claude Code-credentials`, followed for a custom CLAUDE_CONFIG_DIR by `-`
+/// and the first eight hex digits of SHA-256 of that directory. A value over
+/// 2400 bytes is base64 split across `#0`..`#n-1` beside a `#m` manifest
+/// `{"n": chunks, "l": total length}`.
+fn read_credential_manager_json(config_dir: Option<&str>) -> Option<String> {
+    credential_manager_json(config_dir, super::read_generic_credential)
+}
+
+/// `read_credential_manager_json` over any credential reader, so the naming
+/// and the chunk assembly can be tested without touching the real store.
+fn credential_manager_json(
+    config_dir: Option<&str>,
+    read: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Manifest {
+        n: usize,
+        l: usize,
+    }
+
+    let service = match config_dir {
+        Some(directory) => format!("Claude Code-credentials-{}", sha256_hex_prefix(directory)?),
+        None => "Claude Code-credentials".to_string(),
+    };
+    let target = |suffix: &str| format!("{service}/claude-code-user{suffix}");
+    let Some(manifest) = read(&target("#m")) else {
+        return read(&target(""));
+    };
+    let manifest: Manifest = serde_json::from_str(&manifest).ok()?;
+    if manifest.n == 0 || manifest.n > 256 {
+        return None;
+    }
+    let encoded = (0..manifest.n)
+        .map(|index| read(&target(&format!("#{index}"))))
+        .collect::<Option<String>>()?;
+    if encoded.len() != manifest.l {
+        diagnose::log("Claude Code credential chunks do not add up to their manifest");
+        return None;
+    }
+    String::from_utf8(super::base64_decode(encoded.trim_end_matches('='), false)?).ok()
+}
+
+/// The first eight hex digits of SHA-256, as Claude Code keys a custom
+/// configuration directory. The CLI normalizes the path to NFC first; paths
+/// are hashed as given here, which is the same for anything but composed
+/// Unicode characters.
+fn sha256_hex_prefix(text: &str) -> Option<String> {
+    use windows::Win32::Security::Cryptography::{BCryptHash, BCRYPT_SHA256_ALG_HANDLE};
+
+    let mut digest = [0u8; 32];
+    let status =
+        unsafe { BCryptHash(BCRYPT_SHA256_ALG_HANDLE, None, text.as_bytes(), &mut digest) };
+    if status.is_err() {
+        return None;
+    }
+    Some(
+        digest[..4]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+    )
 }
 
 /// The desktop app's token, but only for a profile that points at the default
@@ -456,17 +561,16 @@ fn refresh_credentials(credentials: Credentials) -> Result<Credentials, PollErro
     // refreshes, so a live desktop token is the same account, not another.
     read_credentials_from_source(&source)
         .filter(|credentials| !is_token_expired(credentials.expires_at))
-        .or_else(|| fresh_desktop_credentials(&source))
+        .or_else(|| fresh_fallback_credentials(&source))
         .ok_or(PollError::TokenExpired)
 }
 
-/// The desktop app's token when it is live, for a stale default CLI file.
-fn fresh_desktop_credentials(stale: &CredentialSource) -> Option<Credentials> {
+/// A live token from where else the login behind a stale CLI file can be.
+fn fresh_fallback_credentials(stale: &CredentialSource) -> Option<Credentials> {
     let CredentialSource::Windows(path) = stale else {
         return None;
     };
-    desktop_credentials_for_default_path(path)
-        .filter(|credentials| !is_token_expired(credentials.expires_at))
+    fallback_credentials(path).filter(|credentials| !is_token_expired(credentials.expires_at))
 }
 
 fn cli_refresh_token(source: &CredentialSource) {
@@ -478,9 +582,15 @@ fn cli_refresh_token(source: &CredentialSource) {
                 .is_some_and(|name| name == ".credentials.json")
             {
                 if let Some(directory) = path.parent() {
-                    cli_refresh_windows_token(directory);
+                    cli_refresh_windows_token(Some(directory));
                 }
             }
+        }
+        // The CLI rewrites its Credential Manager entry when it refreshes. It
+        // finds the entry by CLAUDE_CONFIG_DIR, so pass exactly the one it
+        // was written under, and none for the default entry.
+        CredentialSource::CredentialManager { config_dir } => {
+            cli_refresh_windows_token(config_dir.as_deref().map(Path::new))
         }
         // The desktop app owns this token and refreshes it itself, so there is
         // nothing to drive from here; re-reading the cache is the whole retry.
@@ -496,7 +606,10 @@ fn cli_refresh_token(source: &CredentialSource) {
 /// for no persistence; older builds reject the option, hence the plain retry.
 const NO_SESSION: &str = "--no-session-persistence";
 
-fn cli_refresh_windows_token(directory: &Path) {
+/// Run the CLI once so it refreshes its stored login. `directory` becomes its
+/// CLAUDE_CONFIG_DIR; `None` leaves the variable unset, which a Credential
+/// Manager login needs, because setting it renames the entry the CLI uses.
+fn cli_refresh_windows_token(directory: Option<&Path>) {
     let claude_path = resolve_windows_claude_path();
     diagnose::log(format!(
         "attempting Windows Claude token refresh via {claude_path}"
@@ -507,9 +620,12 @@ fn cli_refresh_windows_token(directory: &Path) {
         command
             .args(["-p", "."])
             .args(extra)
-            .env("CLAUDE_CONFIG_DIR", directory)
             .env_remove("CLAUDECODE")
             .env_remove("CLAUDE_CODE_ENTRYPOINT");
+        match directory {
+            Some(directory) => command.env("CLAUDE_CONFIG_DIR", directory),
+            None => command.env_remove("CLAUDE_CONFIG_DIR"),
+        };
         run_refresh(command, "Windows Claude token refresh")
     };
     if !refresh(&[NO_SESSION]) {
@@ -616,6 +732,11 @@ fn read_desktop_app_credentials(path: &Path) -> Option<Credentials> {
 fn read_credentials_from_source(source: &CredentialSource) -> Option<Credentials> {
     match source {
         CredentialSource::Windows(path) => read_windows_credentials(path),
+        CredentialSource::CredentialManager { config_dir } => {
+            let content = read_credential_manager_json(config_dir.as_deref())?;
+            diagnose::log("using the Claude Code login in Windows Credential Manager");
+            parse_credentials(&content, source.clone())
+        }
         CredentialSource::DesktopApp(path) => read_desktop_app_credentials(path),
         CredentialSource::Wsl { distro } => read_wsl_credentials(distro),
     }
@@ -673,6 +794,10 @@ fn credential_sources_in_order() -> impl Iterator<Item = CredentialSource> {
     let explicit = std::env::var_os("CLAUDE_CONFIG_DIR").is_some_and(|value| !value.is_empty());
     windows_credential_source()
         .into_iter()
+        // Newer CLI builds keep the login here instead of the file.
+        .chain(std::iter::once(CredentialSource::CredentialManager {
+            config_dir: inherited_config_dir(),
+        }))
         .chain((!explicit).then(desktop_app_credential_source).flatten())
         .chain(
             std::iter::once_with(move || {
@@ -727,9 +852,35 @@ pub(super) fn native_credential_path() -> Option<PathBuf> {
 fn credential_watch_signature(source: &CredentialSource) -> Option<String> {
     match source {
         CredentialSource::Windows(path) => Some(crate::accounts::file_signature(path)),
+        CredentialSource::CredentialManager { config_dir } => {
+            Some(credential_manager_signature(config_dir.as_deref()))
+        }
         CredentialSource::DesktopApp(path) => Some(claude_desktop::watch_signature(path)),
         CredentialSource::Wsl { distro } => wsl_credential_watch_signature(distro),
     }
+}
+
+/// A change to the Credential Manager login, as a hash: the stored value is
+/// a secret and never leaves this function.
+fn credential_manager_signature(config_dir: Option<&str>) -> String {
+    match read_credential_manager_json(config_dir) {
+        Some(content) => format!("credman|{}", crate::accounts::fingerprint(&content)),
+        None => "credman|missing".to_string(),
+    }
+}
+
+/// The part of an account's signature that tracks where a tokenless CLI file
+/// sends the poll: its Credential Manager entry and, for the default path,
+/// the desktop app.
+pub(super) fn fallback_watch_signature(path: &Path) -> String {
+    let mut signature = String::new();
+    if let Some(CredentialSource::CredentialManager { config_dir }) =
+        credential_manager_source_for(path)
+    {
+        signature.push('|');
+        signature.push_str(&credential_manager_signature(config_dir.as_deref()));
+    }
+    signature
 }
 
 fn wsl_credential_watch_signature(distro: &str) -> Option<String> {
@@ -891,6 +1042,86 @@ mod tests {
         assert_eq!(poll_account(&path), Err(PollError::TokenExpired));
         std::fs::remove_file(path).unwrap();
         std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn the_config_directory_hash_matches_claude_code() {
+        // SHA-256("abc") starts ba7816bf.
+        assert_eq!(sha256_hex_prefix("abc").as_deref(), Some("ba7816bf"));
+    }
+
+    #[test]
+    fn reads_the_claude_code_login_from_credential_manager() {
+        use std::collections::HashMap;
+
+        let login = r#"{"claudeAiOauth":{"accessToken":"sk-ant-oat01-x","expiresAt":4102444800000},"mcpOAuth":{}}"#;
+
+        // A small value is stored whole under the default entry.
+        let store = HashMap::from([(
+            "Claude Code-credentials/claude-code-user".to_string(),
+            login.to_string(),
+        )]);
+        let read = |target: &str| store.get(target).cloned();
+        assert_eq!(credential_manager_json(None, read).as_deref(), Some(login));
+        let parsed = parse_credentials(
+            &credential_manager_json(None, read).unwrap(),
+            CredentialSource::CredentialManager { config_dir: None },
+        )
+        .unwrap();
+        assert_eq!(parsed.access_token, "sk-ant-oat01-x");
+
+        // A large value is base64 split across numbered chunks with a
+        // manifest, under the entry keyed by the configuration directory.
+        let large = format!(
+            r#"{{"claudeAiOauth":{{"accessToken":"t"}},"pad":"{}"}}"#,
+            "x".repeat(3000)
+        );
+        let encoded = base64_encode(large.as_bytes());
+        let service = format!(
+            "Claude Code-credentials-{}",
+            sha256_hex_prefix(r"D:\claude").unwrap()
+        );
+        let mut store: HashMap<String, String> = encoded
+            .as_bytes()
+            .chunks(2400)
+            .enumerate()
+            .map(|(index, chunk)| {
+                (
+                    format!("{service}/claude-code-user#{index}"),
+                    String::from_utf8(chunk.to_vec()).unwrap(),
+                )
+            })
+            .collect();
+        let chunks = store.len();
+        store.insert(
+            format!("{service}/claude-code-user#m"),
+            format!(r#"{{"n":{chunks},"l":{}}}"#, encoded.len()),
+        );
+        let read = |target: &str| store.get(target).cloned();
+        assert_eq!(
+            credential_manager_json(Some(r"D:\claude"), read).as_deref(),
+            Some(large.as_str())
+        );
+        // The default entry is a different one.
+        assert_eq!(credential_manager_json(None, read), None);
+    }
+
+    fn base64_encode(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let value = chunk.iter().enumerate().fold(0u32, |acc, (index, byte)| {
+                acc | (u32::from(*byte) << (16 - 8 * index))
+            });
+            for index in 0..4 {
+                if index <= chunk.len() {
+                    out.push(ALPHABET[((value >> (18 - 6 * index)) & 63) as usize] as char);
+                } else {
+                    out.push('=');
+                }
+            }
+        }
+        out
     }
 
     #[test]

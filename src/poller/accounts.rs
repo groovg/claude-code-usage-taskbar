@@ -31,11 +31,18 @@ impl Target {
 /// a re-login there must count as a change too, or an auth pause never lifts.
 pub(crate) fn source_signature(provider: ProviderId, path: &std::path::Path) -> String {
     let mut signature = file_signature(path);
-    let is_default = provider == ProviderId::Claude
-        && crate::accounts::default_credential_path(ProviderId::Claude).is_some_and(|default| {
+    if provider != ProviderId::Claude || claude::windows_file_has_token(path) {
+        return signature;
+    }
+    // A tokenless CLI file sends the poll to its Credential Manager entry
+    // and, on the default path, to the desktop app; a sign-in there must
+    // count as a change too, or an auth pause never lifts.
+    signature.push_str(&claude::fallback_watch_signature(path));
+    let is_default =
+        crate::accounts::default_credential_path(ProviderId::Claude).is_some_and(|default| {
             crate::accounts::source_key(&default) == crate::accounts::source_key(path)
         });
-    if is_default && !claude::windows_file_has_token(path) {
+    if is_default {
         for config in claude_desktop::config_paths() {
             signature.push('|');
             signature.push_str(&claude_desktop::watch_signature(&config));
