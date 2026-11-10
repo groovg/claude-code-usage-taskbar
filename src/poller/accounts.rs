@@ -581,7 +581,15 @@ mod tests {
             data.get(ProviderId::Claude).unwrap().session.percentage,
             80.0
         );
-        assert_eq!(data.accounts[0].source_signature, file_signature(&path));
+        // The file holds no login, so the signature also follows the
+        // Credential Manager entry that profile's CLI would write.
+        assert_eq!(
+            data.accounts[0].source_signature,
+            source_signature(ProviderId::Claude, &path)
+        );
+        assert!(data.accounts[0]
+            .source_signature
+            .starts_with(&file_signature(&path)));
         let mut cached = data;
         std::fs::write(&path, "another login").unwrap();
         cached.invalidate_changed_credentials();
