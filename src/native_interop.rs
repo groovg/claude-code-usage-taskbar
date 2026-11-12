@@ -160,15 +160,17 @@ pub fn embed_as_child(hwnd: HWND, parent: HWND) {
     unsafe {
         let current_parent = GetParent(hwnd).ok();
         let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
-        let _ = SetWindowLongW(
-            hwnd,
-            GWL_EXSTYLE,
-            (ex_style | WS_EX_TOOLWINDOW.0 as i32 | WS_EX_NOACTIVATE.0 as i32)
-                & !(WS_EX_TOPMOST.0 as i32),
-        );
-
+        let new_ex_style = (ex_style | WS_EX_TOOLWINDOW.0 as i32 | WS_EX_NOACTIVATE.0 as i32)
+            & !(WS_EX_TOPMOST.0 as i32);
         let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
         let new_style = (style & !WS_POPUP.0) | WS_CHILD.0 | WS_CLIPSIBLINGS.0;
+        // Already hosted here: every render calls this, and a forced frame
+        // change is a placement change that makes Windows post an unmoved
+        // WM_MOUSEMOVE, showing a pointer hidden while typing again.
+        if current_parent == Some(parent) && new_ex_style == ex_style && new_style == style {
+            return;
+        }
+        let _ = SetWindowLongW(hwnd, GWL_EXSTYLE, new_ex_style);
         let _ = SetWindowLongW(hwnd, GWL_STYLE, new_style as i32);
 
         if current_parent != Some(parent) {

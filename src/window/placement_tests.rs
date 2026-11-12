@@ -98,3 +98,161 @@ fn fullscreen_bounds_cover_the_monitor_but_maximized_work_area_does_not() {
         monitor,
     ));
 }
+
+thread_local! {
+    static FRAME_CHANGES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+unsafe extern "system" fn count_frame_changes(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if message == WM_WINDOWPOSCHANGING {
+        let position = &*(lparam.0 as *const WINDOWPOS);
+        if position.flags.contains(SWP_FRAMECHANGED) {
+            FRAME_CHANGES.with(|changes| changes.set(changes.get() + 1));
+        }
+    }
+    DefWindowProcW(hwnd, message, wparam, lparam)
+}
+
+fn take_frame_changes() -> usize {
+    FRAME_CHANGES.with(|changes| changes.replace(0))
+}
+
+/// A private hidden window; these tests never touch Explorer.
+struct TestWindow(HWND);
+
+impl TestWindow {
+    fn new(ex_style: WINDOW_EX_STYLE) -> Self {
+        unsafe {
+            let class = native_interop::wide_str("CCUTHostedSurfaceRegression");
+            let instance = GetModuleHandleW(PCWSTR::null()).unwrap();
+            RegisterClassW(&WNDCLASSW {
+                lpfnWndProc: Some(count_frame_changes),
+                hInstance: instance.into(),
+                lpszClassName: PCWSTR(class.as_ptr()),
+                ..Default::default()
+            });
+            Self(
+                CreateWindowExW(
+                    ex_style | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                    PCWSTR(class.as_ptr()),
+                    PCWSTR::null(),
+                    WS_POPUP,
+                    0,
+                    0,
+                    1,
+                    1,
+                    None,
+                    None,
+                    Some(instance.into()),
+                    None,
+                )
+                .unwrap(),
+            )
+        }
+    }
+}
+
+impl Drop for TestWindow {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = DestroyWindow(self.0);
+        }
+    }
+}
+
+#[test]
+fn re_embedding_a_hosted_surface_does_not_change_its_frame() {
+    let parent = TestWindow::new(WINDOW_EX_STYLE::default());
+    let window = TestWindow::new(WS_EX_LAYERED);
+    native_interop::embed_as_child(window.0, parent.0);
+    assert!(take_frame_changes() > 0);
+
+    for _ in 0..3 {
+        native_interop::embed_as_child(window.0, parent.0);
+    }
+    assert_eq!(take_frame_changes(), 0);
+
+    // A surface that left the hosted form is still converted back.
+    native_interop::make_popup(window.0, true);
+    take_frame_changes();
+    native_interop::embed_as_child(window.0, parent.0);
+    assert!(take_frame_changes() > 0);
+    assert_eq!(unsafe { GetParent(window.0) }.unwrap(), parent.0);
+}
+
+#[test]
+fn re_embedding_repairs_styles_even_when_the_parent_matches() {
+    let parent = TestWindow::new(WINDOW_EX_STYLE::default());
+    let window = TestWindow::new(WS_EX_LAYERED);
+    native_interop::embed_as_child(window.0, parent.0);
+    unsafe {
+        let style = GetWindowLongW(window.0, GWL_STYLE);
+        SetWindowLongW(window.0, GWL_STYLE, style & !(WS_CLIPSIBLINGS.0 as i32));
+    }
+    take_frame_changes();
+    native_interop::embed_as_child(window.0, parent.0);
+    assert!(take_frame_changes() > 0);
+    assert_ne!(
+        unsafe { GetWindowLongW(window.0, GWL_STYLE) } as u32 & WS_CLIPSIBLINGS.0,
+        0
+    );
+}
+
+#[test]
+fn hosted_placement_detects_real_moves_resizes_and_z_order_changes() {
+    let parent = TestWindow::new(WINDOW_EX_STYLE::default());
+    let window = TestWindow::new(WS_EX_LAYERED);
+    let sibling = TestWindow::new(WS_EX_LAYERED);
+    let origin = POINT { x: 23, y: 17 };
+    let placed = |origin: POINT, width, height| unsafe {
+        positioning::hosted_child_is_placed(window.0, parent.0, origin, width, height)
+    };
+    unsafe {
+        // A displaced host checks the screen-to-client conversion.
+        SetWindowPos(
+            parent.0,
+            None,
+            -200,
+            100,
+            200,
+            100,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        )
+        .unwrap();
+        native_interop::embed_as_child(window.0, parent.0);
+        SetWindowPos(
+            window.0,
+            Some(HWND_TOP),
+            origin.x,
+            origin.y,
+            30,
+            20,
+            SWP_NOACTIVATE,
+        )
+        .unwrap();
+    }
+    assert!(placed(origin, 30, 20));
+    assert!(!placed(POINT { x: 24, y: 17 }, 30, 20));
+    assert!(!placed(origin, 31, 20));
+    assert!(!placed(origin, 30, 21));
+    native_interop::embed_as_child(sibling.0, parent.0);
+    assert!(!placed(origin, 30, 20));
+    unsafe {
+        SetWindowPos(
+            window.0,
+            Some(HWND_TOP),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        )
+        .unwrap();
+    }
+    assert!(placed(origin, 30, 20));
+}

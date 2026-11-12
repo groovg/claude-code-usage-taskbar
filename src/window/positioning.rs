@@ -21,6 +21,32 @@ pub(super) fn position_at_taskbar() {
     }
 }
 
+/// True when a hosted child is already the top sibling at exactly this
+/// rectangle (origin in `parent` client coordinates).
+pub(super) unsafe fn hosted_child_is_placed(
+    hwnd: HWND,
+    parent: HWND,
+    origin: POINT,
+    width: i32,
+    height: i32,
+) -> bool {
+    if GetTopWindow(Some(parent)).ok() != Some(hwnd) {
+        return false;
+    }
+    let Some(rect) = native_interop::get_window_rect_safe(hwnd) else {
+        return false;
+    };
+    let mut current = [POINT {
+        x: rect.left,
+        y: rect.top,
+    }];
+    MapWindowPoints(None, Some(parent), &mut current);
+    current[0].x == origin.x
+        && current[0].y == origin.y
+        && rect.right - rect.left == width
+        && rect.bottom - rect.top == height
+}
+
 pub(super) fn reset_layered_window(hwnd: HWND) {
     unsafe {
         let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
@@ -186,15 +212,19 @@ pub(super) fn position_custom_theme(hwnd: HWND, theme: &ThemeDocument, scale: f6
                 native_interop::embed_as_child(hwnd, taskbar.hwnd);
                 let mut point = [POINT { x, y }];
                 MapWindowPoints(None, Some(taskbar.hwnd), &mut point);
-                let _ = SetWindowPos(
-                    hwnd,
-                    Some(HWND_TOP),
-                    point[0].x,
-                    point[0].y,
-                    width,
-                    height,
-                    SWP_NOACTIVATE,
-                );
+                // Routine renders land on the same rectangle; touch the window
+                // only when its place or z-order actually has to change.
+                if !hosted_child_is_placed(hwnd, taskbar.hwnd, point[0], width, height) {
+                    let _ = SetWindowPos(
+                        hwnd,
+                        Some(HWND_TOP),
+                        point[0].x,
+                        point[0].y,
+                        width,
+                        height,
+                        SWP_NOACTIVATE,
+                    );
+                }
             }
             SurfaceNest::Desktop => {
                 if let Some(desktop) = native_interop::find_desktop_host() {
