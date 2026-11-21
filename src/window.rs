@@ -955,17 +955,51 @@ fn begin_winget_update(hwnd: HWND) {
 const STARTUP_REGISTRY_PATH: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Run");
 const STARTUP_REGISTRY_KEY: PCWSTR = w!("ClaudeCodeUsageTaskbar");
 
-/// Returns true only if the startup registry value points to this executable.
-pub(crate) fn is_startup_enabled() -> bool {
-    let Some(value) = native_interop::read_registry_string(
+/// Run-key command for an executable. Always quoted: Windows resolves an
+/// unquoted path with spaces by trying each prefix, so a copy under
+/// `C:\Users\John Smith\...` could start `C:\Users\John.exe` at sign-in.
+fn startup_command(executable: &str) -> String {
+    format!("\"{executable}\"")
+}
+
+/// Whether a Run-key command launches exactly this executable, accepting the
+/// unquoted form written before 3.1.2. Commands with arguments are not ours.
+fn startup_command_targets(command: &str, executable: &str) -> bool {
+    let command = command.trim();
+    let target = command
+        .strip_prefix('"')
+        .and_then(|quoted| quoted.strip_suffix('"'))
+        .unwrap_or(command);
+    // Windows paths are case-insensitive.
+    !target.contains('"') && target.eq_ignore_ascii_case(executable)
+}
+
+fn startup_command_and_executable() -> Option<(String, String)> {
+    let command = native_interop::read_registry_string(
         HKEY_CURRENT_USER,
         STARTUP_REGISTRY_PATH,
         STARTUP_REGISTRY_KEY,
-    ) else {
-        return false;
+    )?;
+    let executable = std::env::current_exe().ok()?;
+    Some((command, executable.to_string_lossy().into_owned()))
+}
+
+/// Returns true only if the startup registry value points to this executable.
+pub(crate) fn is_startup_enabled() -> bool {
+    startup_command_and_executable()
+        .is_some_and(|(command, executable)| startup_command_targets(&command, &executable))
+}
+
+/// Rewrite this executable's legacy unquoted startup command in quoted form,
+/// leaving disabled startup and other installations' commands untouched.
+fn upgrade_legacy_startup_command() {
+    let Some((command, executable)) = startup_command_and_executable() else {
+        return;
     };
-    // Case-insensitive comparison (Windows paths are case-insensitive)
-    std::env::current_exe().is_ok_and(|exe| value.eq_ignore_ascii_case(&exe.to_string_lossy()))
+    if command != startup_command(&executable) && startup_command_targets(&command, &executable) {
+        set_startup_enabled(true);
+        diagnose::log("startup command upgraded to a quoted path");
+    }
 }
 
 pub(crate) fn set_startup_enabled(enable: bool) {
@@ -993,7 +1027,7 @@ pub(crate) fn set_startup_enabled(enable: bool) {
         }
         if let Ok(exe) = std::env::current_exe() {
             // REG_SZ data includes the null terminator.
-            let data: Vec<u8> = native_interop::wide_str(&exe.to_string_lossy())
+            let data: Vec<u8> = native_interop::wide_str(&startup_command(&exe.to_string_lossy()))
                 .into_iter()
                 .flat_map(u16::to_le_bytes)
                 .collect();
@@ -1354,6 +1388,7 @@ pub fn run() {
         }
     };
 
+    upgrade_legacy_startup_command();
     let class_name = w!("ClaudeCodeUsageTaskbar");
 
     unsafe {
@@ -2090,6 +2125,42 @@ mod mouse;
 use mouse::*;
 mod window_context_menu;
 use window_context_menu::*;
+
+#[cfg(test)]
+mod startup_command_tests {
+    use super::{startup_command, startup_command_targets};
+
+    const EXE: &str = r"C:\Users\John Smith\AppData\Local\claude-code-usage-taskbar.exe";
+
+    #[test]
+    fn startup_command_quotes_paths_with_spaces() {
+        let command = startup_command(EXE);
+        assert_eq!(command, format!("\"{EXE}\""));
+        assert!(startup_command_targets(&command, EXE));
+    }
+
+    #[test]
+    fn legacy_unquoted_and_case_variant_commands_still_target_this_executable() {
+        assert!(startup_command_targets(EXE, EXE));
+        assert!(startup_command_targets(&EXE.to_ascii_uppercase(), EXE));
+        assert!(startup_command_targets(&format!("  \"{EXE}\"  "), EXE));
+    }
+
+    #[test]
+    fn other_installations_and_commands_with_arguments_are_not_ours() {
+        assert!(!startup_command_targets(
+            r"C:\Other\claude-code-usage-taskbar.exe",
+            EXE
+        ));
+        assert!(!startup_command_targets(
+            &format!("\"{EXE}\" --dashboard"),
+            EXE
+        ));
+        assert!(!startup_command_targets(&format!("\"{EXE}"), EXE));
+        assert!(!startup_command_targets(&format!("\"\"{EXE}\"\""), EXE));
+        assert!(!startup_command_targets("", EXE));
+    }
+}
 
 #[cfg(test)]
 mod placement_tests;
