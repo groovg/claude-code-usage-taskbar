@@ -1,10 +1,12 @@
 use super::*;
 
 pub fn themes_directory() -> PathBuf {
-    let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(appdata)
-        .join("ClaudeCodeUsageTaskbar")
-        .join("themes")
+    crate::app_settings::app_data_directory().join("themes")
+}
+
+/// The file `save_theme` writes a theme with this id to.
+pub fn theme_file_path(id: &str) -> PathBuf {
+    themes_directory().join(format!("{}.json", safe_file_stem(id)))
 }
 
 #[derive(Clone, Debug)]
@@ -176,12 +178,15 @@ pub(super) fn remove_asset_references_from_saved_themes(path: &str) -> Result<()
             continue;
         }
         let source = std::fs::read_to_string(&theme_path).map_err(|error| error.to_string())?;
-        let mut theme: ThemeDocument =
-            serde_json::from_str(&source).map_err(|error| error.to_string())?;
+        // A broken theme file can't be loaded anyway; it must not block the delete.
+        let Ok(mut theme) = serde_json::from_str::<ThemeDocument>(&source) else {
+            continue;
+        };
         if remove_asset_references(&mut theme, path) > 0 {
             theme.prepare_runtime();
-            theme.check()?;
-            updates.push((theme_path, theme));
+            if theme.check().is_ok() {
+                updates.push((theme_path, theme));
+            }
         }
     }
     for (theme_path, theme) in updates {
@@ -220,9 +225,8 @@ pub fn save_theme(theme: &ThemeDocument) -> Result<PathBuf, String> {
         ));
     }
     theme.check()?;
-    let directory = themes_directory();
-    std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-    let path = directory.join(format!("{}.json", safe_file_stem(&theme.id)));
+    std::fs::create_dir_all(themes_directory()).map_err(|e| e.to_string())?;
+    let path = theme_file_path(&theme.id);
     crate::app_settings::write_json_atomic(&path, &theme)?;
     Ok(path)
 }
@@ -323,4 +327,34 @@ fn parse_bundled_theme(
         .check()
         .map_err(|errors| format!("{kind} '{}' is invalid:\n{errors}", theme.name))?;
     Ok(theme)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deleting_an_asset_skips_a_broken_theme_file() {
+        let _app_data = crate::app_settings::TestAppData::new();
+        let mut image = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(1, 1)
+            .write_to(&mut image, image::ImageFormat::Png)
+            .unwrap();
+        let asset = import_asset_bytes("logo.png", image.get_ref()).unwrap();
+        let mut theme = ThemeDocument::starter();
+        theme.id = "uses-logo".into();
+        theme.surfaces[0].background = LayerBackground::Image {
+            path: asset.relative_path.clone(),
+            fit: ImageFit::default(),
+        };
+        let theme_path = save_theme(&theme).unwrap();
+        std::fs::write(themes_directory().join("broken.json"), "{ not json").unwrap();
+
+        delete_asset(&asset.relative_path).unwrap();
+        assert!(!asset.absolute_path.exists());
+        assert_eq!(
+            theme_asset_usage(&load_theme(&theme_path).unwrap(), &asset.relative_path),
+            0
+        );
+    }
 }

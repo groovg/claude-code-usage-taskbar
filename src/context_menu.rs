@@ -170,7 +170,8 @@ impl ContextMenuDocument {
             errors.push("A context menu needs at least one item".into());
         }
         let mut ids = std::collections::HashSet::new();
-        validate_items(&self.items, 0, &mut ids, &mut errors);
+        let context = DataContext::from_usage(None, &theme_engine::Canvas::default());
+        validate_items(&self.items, 0, &mut ids, &mut errors, &context);
         errors
     }
 }
@@ -180,33 +181,33 @@ fn validate_items(
     depth: usize,
     ids: &mut std::collections::HashSet<String>,
     errors: &mut Vec<String>,
+    context: &DataContext,
 ) {
     if depth > 5 {
         errors.push("Context menus support at most six nested levels".into());
         return;
     }
-    let context = DataContext::from_usage(None, &theme_engine::Canvas::default());
     for item in items {
         if item.id.trim().is_empty() || !ids.insert(item.id.to_ascii_lowercase()) {
             errors.push(format!("Menu item '{}' needs a unique id", item.label));
         }
-        match theme_engine::evaluate(&item.render.0, &context) {
+        match theme_engine::evaluate(&item.render.0, context) {
             Ok(value) if value.is_finite() => {}
             Ok(_) => errors.push(format!("{}.render did not produce a finite value", item.id)),
             Err(error) => errors.push(format!("{}.render: {error}", item.id)),
         }
         match &item.kind {
             ContextMenuItemKind::Separator => {}
-            ContextMenuItemKind::Text => validate_item_label(item, "Menu text", errors),
+            ContextMenuItemKind::Text => validate_item_label(item, "Menu text", errors, context),
             ContextMenuItemKind::Submenu { items } => {
-                validate_item_label(item, "Submenu", errors);
+                validate_item_label(item, "Submenu", errors, context);
                 if items.is_empty() {
                     errors.push(format!("Submenu '{}' needs at least one item", item.label));
                 }
-                validate_items(items, depth + 1, ids, errors);
+                validate_items(items, depth + 1, ids, errors, context);
             }
             ContextMenuItemKind::Action { action } => {
-                validate_item_label(item, "Menu action", errors);
+                validate_item_label(item, "Menu action", errors, context);
                 match action {
                     ContextMenuAction::SetUpdateFrequency { seconds }
                         if !matches!(
@@ -246,14 +247,17 @@ fn validate_items(
     }
 }
 
-fn validate_item_label(item: &ContextMenuItem, kind: &str, errors: &mut Vec<String>) {
+fn validate_item_label(
+    item: &ContextMenuItem,
+    kind: &str,
+    errors: &mut Vec<String>,
+    context: &DataContext,
+) {
     if item.label.trim().is_empty() {
         errors.push(format!("{kind} '{}' needs a label", item.id));
         return;
     }
-    let context =
-        crate::theme_engine::DataContext::from_usage(None, &crate::theme_engine::Canvas::default());
-    for error in crate::theme_engine::validate_template(&item.label, &context) {
+    for error in crate::theme_engine::validate_template(&item.label, context) {
         errors.push(format!("{}.label: {error}", item.id));
     }
 }
@@ -455,8 +459,8 @@ pub fn ensure_builtin_context_menus() -> Result<PathBuf, String> {
     let directory = context_menus_directory();
     std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     let mut classic_path = None;
+    // Tests keep the built-ins valid; they are not re-validated on every right-click.
     for document in [classic_context_menu(), dashboard_v2_context_menu()] {
-        document.check()?;
         let path = directory.join(format!("{}.json", document.id));
         let canonical = serde_json::to_vec_pretty(&document).map_err(|error| error.to_string())?;
         if std::fs::read(&path).ok().as_deref() != Some(canonical.as_slice()) {
@@ -470,15 +474,29 @@ pub fn ensure_builtin_context_menus() -> Result<PathBuf, String> {
 }
 
 pub fn load_context_menu(path: &Path) -> Result<ContextMenuDocument, String> {
-    let source = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
-    let mut document: ContextMenuDocument =
-        serde_json::from_str(&source).map_err(|error| error.to_string())?;
-    remove_empty_submenus(&mut document.items);
+    let document = parse_context_menu(path)?;
     document.check()?;
     Ok(document)
 }
 
+fn parse_context_menu(path: &Path) -> Result<ContextMenuDocument, String> {
+    let source = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
+    let mut document: ContextMenuDocument =
+        serde_json::from_str(&source).map_err(|error| error.to_string())?;
+    remove_empty_submenus(&mut document.items);
+    Ok(document)
+}
+
 pub fn list_context_menus() -> Result<Vec<ContextMenuDescriptor>, String> {
+    Ok(parsed_context_menus()?
+        .into_iter()
+        .filter(|(_, menu)| menu.validate().is_empty())
+        .map(|(descriptor, _)| descriptor)
+        .collect())
+}
+
+/// Every menu file that parses, in library order, not yet validated.
+fn parsed_context_menus() -> Result<Vec<(ContextMenuDescriptor, ContextMenuDocument)>, String> {
     let built_in_path = ensure_builtin_context_menus()?;
     let mut menus = std::fs::read_dir(context_menus_directory())
         .map_err(|error| error.to_string())?
@@ -490,34 +508,40 @@ pub fn list_context_menus() -> Result<Vec<ContextMenuDescriptor>, String> {
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
         })
         .filter_map(|path| {
-            let menu = load_context_menu(&path).ok()?;
-            Some(ContextMenuDescriptor {
+            let menu = parse_context_menu(&path).ok()?;
+            let descriptor = ContextMenuDescriptor {
                 built_in: path == built_in_path || menu.is_builtin(),
                 path,
-                id: menu.id,
-                name: menu.name,
-            })
+                id: menu.id.clone(),
+                name: menu.name.clone(),
+            };
+            Some((descriptor, menu))
         })
         .collect::<Vec<_>>();
-    menus.sort_by_key(|menu| (!menu.built_in, menu.name.to_ascii_lowercase()));
+    menus.sort_by_key(|(menu, _)| (!menu.built_in, menu.name.to_ascii_lowercase()));
     Ok(menus)
 }
 
 pub fn resolve_context_menu(reference: Option<&str>) -> Result<ContextMenuDocument, String> {
     let reference = reference.unwrap_or(CLASSIC_CONTEXT_MENU_ID).trim();
-    let menus = list_context_menus()?;
-    let mut matches = menus
+    let menus = parsed_context_menus()?;
+    // Only the menus `reference` names are validated, as list_context_menus would.
+    let valid =
+        |(_, menu): &&(ContextMenuDescriptor, ContextMenuDocument)| menu.validate().is_empty();
+    if let Some((_, menu)) = menus
         .iter()
-        .filter(|menu| menu.id.eq_ignore_ascii_case(reference));
-    if let Some(menu) = matches.next() {
-        return load_context_menu(&menu.path);
+        .filter(|(menu, _)| menu.id.eq_ignore_ascii_case(reference))
+        .find(valid)
+    {
+        return Ok(menu.clone());
     }
     let matches = menus
         .iter()
-        .filter(|menu| menu.name.eq_ignore_ascii_case(reference))
+        .filter(|(menu, _)| menu.name.eq_ignore_ascii_case(reference))
+        .filter(valid)
         .collect::<Vec<_>>();
     match matches.as_slice() {
-        [menu] => load_context_menu(&menu.path),
+        [(_, menu)] => Ok(menu.clone()),
         [] => Err(format!("Context menu '{reference}' was not found")),
         _ => Err(format!(
             "Context menu name '{reference}' is ambiguous; use its id"
@@ -536,11 +560,25 @@ pub fn save_context_menu(document: &ContextMenuDocument) -> Result<PathBuf, Stri
         ));
     }
     document.check()?;
-    let directory = context_menus_directory();
-    std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-    let path = directory.join(format!("{}.json", safe_file_stem(&document.id)));
+    std::fs::create_dir_all(context_menus_directory()).map_err(|error| error.to_string())?;
+    let path = context_menu_file(&document.id);
+    // Ids that differ only in spacing or punctuation share a file name.
+    if let Ok(existing) = parse_context_menu(&path) {
+        if !existing.id.trim().eq_ignore_ascii_case(document.id.trim()) {
+            return Err(format!(
+                "The context menu '{}' already uses the file {}; choose a different id",
+                existing.name,
+                path.file_name().unwrap_or_default().to_string_lossy()
+            ));
+        }
+    }
     crate::app_settings::write_json_atomic(&path, &document)?;
     Ok(path)
+}
+
+/// The file `save_context_menu` writes a menu with this id to.
+pub fn context_menu_file(id: &str) -> PathBuf {
+    context_menus_directory().join(format!("{}.json", safe_file_stem(id)))
 }
 
 /// Studio adds a group before its first item; saving drops groups that are
@@ -578,19 +616,19 @@ pub fn unique_document_id(name: &str) -> String {
         &base
     };
     let existing = list_context_menus().unwrap_or_default();
-    if !existing
-        .iter()
-        .any(|menu| menu.id.eq_ignore_ascii_case(base))
-    {
+    // A file can be held by a menu whose id differs from its file name.
+    let taken = |candidate: &str| {
+        existing
+            .iter()
+            .any(|menu| menu.id.eq_ignore_ascii_case(candidate))
+            || context_menu_file(candidate).exists()
+    };
+    if !taken(base) {
         return base.into();
     }
     (2..)
         .map(|suffix| format!("{base}-{suffix}"))
-        .find(|candidate| {
-            !existing
-                .iter()
-                .any(|menu| menu.id.eq_ignore_ascii_case(candidate))
-        })
+        .find(|candidate| !taken(candidate))
         .unwrap_or_else(|| format!("{base}-copy"))
 }
 
@@ -789,5 +827,43 @@ mod tests {
             item.render = Expression(render.into());
             assert_eq!(item.should_render(&context), visible);
         }
+    }
+
+    #[test]
+    fn saving_never_overwrites_another_menus_file() {
+        let _app_data = crate::app_settings::TestAppData::new();
+        let mut work = ContextMenuDocument::blank("Work");
+        work.id = "work-menu".into();
+        let path = save_context_menu(&work).unwrap();
+
+        let mut other = ContextMenuDocument::blank("Other");
+        other.id = "Work Menu".into();
+        assert!(save_context_menu(&other).is_err());
+        assert_eq!(load_context_menu(&path).unwrap().name, "Work");
+        assert_eq!(unique_document_id("Work Menu"), "work-menu-2");
+
+        // The same id in another case is the same menu.
+        work.id = "Work-Menu".into();
+        assert_eq!(save_context_menu(&work).unwrap(), path);
+    }
+
+    #[test]
+    fn resolving_skips_invalid_menus_with_the_same_id() {
+        let _app_data = crate::app_settings::TestAppData::new();
+        ensure_builtin_context_menus().unwrap();
+        let mut valid = ContextMenuDocument::blank("Shared");
+        valid.id = "shared".into();
+        save_context_menu(&valid).unwrap();
+        let mut invalid = valid.clone();
+        invalid.name = "Another".into();
+        invalid.items.clear();
+        crate::app_settings::write_json_atomic(&context_menu_file("a-shared"), &invalid).unwrap();
+
+        assert_eq!(resolve_context_menu(Some("SHARED")).unwrap(), valid);
+        assert!(resolve_context_menu(Some("Another")).is_err());
+        assert!(!list_context_menus()
+            .unwrap()
+            .iter()
+            .any(|menu| menu.name == "Another"));
     }
 }

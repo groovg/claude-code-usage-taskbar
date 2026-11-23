@@ -188,7 +188,44 @@ pub struct UsageCache {
     pub data: AppUsageData,
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_APP_DATA: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Points this test thread's app data at a fresh temp folder until dropped.
+#[cfg(test)]
+pub(crate) struct TestAppData(PathBuf);
+
+#[cfg(test)]
+impl TestAppData {
+    pub(crate) fn new() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let directory = std::env::temp_dir().join(format!(
+            "claude-code-usage-taskbar-test-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        TEST_APP_DATA.with(|data| *data.borrow_mut() = Some(directory.clone()));
+        Self(directory)
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestAppData {
+    fn drop(&mut self) {
+        TEST_APP_DATA.with(|data| *data.borrow_mut() = None);
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 pub fn app_data_directory() -> PathBuf {
+    #[cfg(test)]
+    if let Some(directory) = TEST_APP_DATA.with(|data| data.borrow().clone()) {
+        return directory;
+    }
     let root = std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
@@ -203,12 +240,34 @@ pub fn usage_cache_path() -> PathBuf {
 }
 
 pub fn load_settings() -> SettingsFile {
-    let mut settings = std::fs::read_to_string(settings_path())
-        .ok()
-        .and_then(|content| decode_settings(&content))
-        .unwrap_or_default();
+    read_settings().unwrap_or_else(|_| {
+        let mut settings = SettingsFile::default();
+        settings.normalize();
+        settings
+    })
+}
+
+/// The settings file, or the defaults when it is missing or is not JSON at
+/// all (a copy of such a file is kept as `settings.json.bad`). `Err` only when
+/// the file exists but can't be read.
+fn read_settings() -> std::io::Result<SettingsFile> {
+    let path = settings_path();
+    let mut settings = match std::fs::read(&path) {
+        Ok(bytes) => std::str::from_utf8(&bytes)
+            .ok()
+            .and_then(decode_settings)
+            .unwrap_or_else(|| {
+                let backup = path.with_extension("json.bad");
+                if std::fs::read(&backup).ok().as_ref() != Some(&bytes) {
+                    let _ = std::fs::write(&backup, &bytes);
+                }
+                SettingsFile::default()
+            }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => SettingsFile::default(),
+        Err(error) => return Err(error),
+    };
     settings.normalize();
-    settings
+    Ok(settings)
 }
 
 pub fn save_settings(settings: &SettingsFile) -> Result<(), String> {
@@ -217,13 +276,71 @@ pub fn save_settings(settings: &SettingsFile) -> Result<(), String> {
     write_json_atomic(&settings_path(), &settings_json(&normalized))
 }
 
+/// Saves only the fields `edited` changed from `base`; every other field keeps
+/// the file's current value, so changes another process made since `base` was
+/// read survive. Returns the settings as saved.
+pub fn save_settings_changes(
+    base: &SettingsFile,
+    edited: &SettingsFile,
+) -> Result<SettingsFile, String> {
+    let current =
+        read_settings().map_err(|error| format!("Unable to read the settings file: {error}"))?;
+    let mut merged = merge_settings(base, edited, &current);
+    merged.normalize();
+    save_settings(&merged)?;
+    Ok(merged)
+}
+
+fn merge_settings(
+    base: &SettingsFile,
+    edited: &SettingsFile,
+    current: &SettingsFile,
+) -> SettingsFile {
+    // No language and "system" are the same choice; Studio's picker turns one
+    // into the other just by showing it.
+    let compared = |settings: &SettingsFile| {
+        let mut settings = settings.clone();
+        settings.language.take_if(|code| code == "system");
+        settings_fields(&settings)
+    };
+    let (base, changed, edited) = (compared(base), compared(edited), settings_fields(edited));
+    let mut merged = settings_fields(current);
+    for key in base.keys().chain(changed.keys()) {
+        if base.get(key) != changed.get(key) {
+            match edited.get(key) {
+                Some(value) => merged.insert(key.clone(), value.clone()),
+                None => merged.remove(key),
+            };
+        }
+    }
+    serde_json::from_value(merged.into()).unwrap_or_else(|_| current.clone())
+}
+
 fn decode_settings(content: &str) -> Option<SettingsFile> {
     // Through a Value, as before: duplicate keys keep the last one.
-    serde_json::from_value(serde_json::from_str(content).ok()?).ok()
+    let serde_json::Value::Object(fields) = serde_json::from_str(content).ok()? else {
+        return None;
+    };
+    // A field with a bad value falls back to its default alone.
+    let mut valid = serde_json::Map::new();
+    for (key, value) in fields {
+        valid.insert(key.clone(), value);
+        if serde_json::from_value::<SettingsFile>(valid.clone().into()).is_err() {
+            valid.remove(&key);
+        }
+    }
+    serde_json::from_value(valid.into()).ok()
 }
 
 fn settings_json(settings: &SettingsFile) -> serde_json::Value {
     serde_json::to_value(settings).unwrap_or_default()
+}
+
+fn settings_fields(settings: &SettingsFile) -> serde_json::Map<String, serde_json::Value> {
+    match settings_json(settings) {
+        serde_json::Value::Object(fields) => fields,
+        _ => serde_json::Map::new(),
+    }
 }
 
 pub fn load_usage_cache() -> Option<UsageCache> {
@@ -448,5 +565,61 @@ mod tests {
         invalid.normalize();
         assert_eq!(invalid.dashboard_width, None);
         assert_eq!(invalid.dashboard_height, None);
+    }
+
+    #[test]
+    fn one_bad_field_keeps_the_other_settings() {
+        let settings = decode_settings(
+            r#"{"show_codex":true,"usage_countdown":"yes","poll_interval_ms":300000}"#,
+        )
+        .unwrap();
+        assert!(settings.show_codex);
+        assert!(!settings.usage_countdown);
+        assert_eq!(settings.poll_interval_ms, POLL_5_MIN);
+    }
+
+    #[test]
+    fn a_file_that_does_not_parse_is_kept_as_bad() {
+        let _app_data = TestAppData::new();
+        let broken = r#"{"show_codex":true,}"#;
+        std::fs::create_dir_all(app_data_directory()).unwrap();
+        std::fs::write(settings_path(), broken).unwrap();
+
+        assert!(!load_settings().show_codex);
+        save_settings(&SettingsFile::default()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(settings_path().with_extension("json.bad")).unwrap(),
+            broken
+        );
+    }
+
+    #[test]
+    fn saving_changes_keeps_fields_changed_by_another_process() {
+        let _app_data = TestAppData::new();
+        let loaded = load_settings();
+        // The tray turns Codex on and picks a language after Studio loaded.
+        let mut tray = loaded.clone();
+        tray.set_provider_enabled(ProviderId::Codex, true);
+        tray.language = Some("de".into());
+        tray.last_update_check_unix = Some(42);
+        save_settings(&tray).unwrap();
+
+        // Studio changes only the countdown; showing its language picker
+        // turned "no language" into "system".
+        let mut studio = loaded.clone();
+        studio.usage_countdown = true;
+        studio.language = Some("system".into());
+        let saved = save_settings_changes(&loaded, &studio).unwrap();
+        let on_disk = load_settings();
+        assert_eq!(settings_json(&saved), settings_json(&on_disk));
+        assert!(on_disk.usage_countdown);
+        assert!(on_disk.provider_enabled(ProviderId::Codex));
+        assert_eq!(on_disk.language.as_deref(), Some("de"));
+        assert_eq!(on_disk.last_update_check_unix, Some(42));
+
+        // A language Studio did pick wins.
+        studio.language = Some("fr".into());
+        save_settings_changes(&loaded, &studio).unwrap();
+        assert_eq!(load_settings().language.as_deref(), Some("fr"));
     }
 }
