@@ -1,5 +1,12 @@
 use super::*;
 
+thread_local! {
+    /// The settings as Studio last loaded or wrote them: the base that tells
+    /// Studio's own edits from changes the widget made to the file since.
+    static SAVED_SETTINGS: std::cell::RefCell<Option<SettingsFile>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 fn clock_refresh_delay(interval: Duration) -> Duration {
     let interval_ms = interval.as_millis().max(1);
     let elapsed_ms = SystemTime::now()
@@ -47,6 +54,7 @@ impl StudioApp {
         initial_page: Page,
     ) -> Self {
         let settings = app_settings::load_settings();
+        SAVED_SETTINGS.with(|saved| *saved.borrow_mut() = Some(settings.clone()));
         let language = settings_language(&settings);
         egui_extras::install_image_loaders(&context.egui_ctx);
         configure_style(&context.egui_ctx, language);
@@ -195,10 +203,8 @@ impl StudioApp {
     }
 
     pub(super) fn save_settings(&mut self) {
-        self.sync_poll_interval(app_settings::load_settings().poll_interval_ms);
-        match app_settings::save_settings(&self.settings) {
+        match self.write_settings() {
             Ok(()) => {
-                self.synced_poll_interval_ms = self.settings.poll_interval_ms;
                 self.settings_error = None;
                 self.notify_owner();
             }
@@ -209,6 +215,20 @@ impl StudioApp {
                 ));
             }
         }
+    }
+
+    /// Writes only the settings Studio changed since it last loaded or wrote
+    /// them, so choices made meanwhile from the widget's tray menu survive.
+    fn write_settings(&mut self) -> Result<(), String> {
+        let mut base = SAVED_SETTINGS
+            .with(|saved| saved.borrow().clone())
+            .unwrap_or_else(|| self.settings.clone());
+        base.poll_interval_ms = self.synced_poll_interval_ms;
+        let written = app_settings::save_settings_changes(&base, &self.settings)?;
+        // A frequency picked from the tray replaces an unchanged local one.
+        self.sync_poll_interval(written.poll_interval_ms);
+        SAVED_SETTINGS.with(|saved| *saved.borrow_mut() = Some(self.settings.clone()));
+        Ok(())
     }
 
     pub(super) fn save_theme(&mut self) -> bool {
@@ -235,7 +255,7 @@ impl StudioApp {
         self.theme_path = Some(path.clone());
         self.settings.active_theme_path = Some(path.to_string_lossy().into_owned());
         self.dirty = false;
-        if let Err(error) = app_settings::save_settings(&self.settings) {
+        if let Err(error) = self.write_settings() {
             self.theme_error = Some(format!(
                 "{}: {error}",
                 language.text("The theme was saved, but it could not be activated")
@@ -279,7 +299,7 @@ impl StudioApp {
         self.preview_mouse_overrides.clear();
         self.preview_hover_target = None;
         self.preview_pending_click = None;
-        if let Err(error) = app_settings::save_settings(&self.settings) {
+        if let Err(error) = self.write_settings() {
             self.theme_error = Some(format!(
                 "{}: {error}",
                 language.text("The theme could not be activated")
@@ -667,7 +687,7 @@ impl StudioApp {
         self.preview_hover_target = None;
         self.preview_pending_click = None;
         self.reset_history();
-        if let Err(error) = app_settings::save_settings(&self.settings) {
+        if let Err(error) = self.write_settings() {
             self.theme_error = Some(format!(
                 "The Classic theme was restored, but it could not be activated: {error}"
             ));

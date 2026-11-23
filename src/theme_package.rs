@@ -156,6 +156,19 @@ fn import_decoded(mut package: DecodedPackage) -> Result<ImportedTheme, String> 
         }
     }
 
+    // The menu goes first: a rejected one must not leave assets behind.
+    let imported_menu = match package.context_menu {
+        Some(menu) => {
+            let packaged_id = menu.id.clone();
+            let (menu, path) = persist_context_menu(menu)?;
+            if menu.id != packaged_id {
+                rename_menu_references(&mut package.theme, &packaged_id, &menu.id);
+            }
+            Some((menu, path))
+        }
+        None => None,
+    };
+
     let mut imported_assets = 0;
     for (relative_path, bytes) in package.assets {
         let file_name = managed_asset_file_name(&relative_path)?;
@@ -172,7 +185,6 @@ fn import_decoded(mut package: DecodedPackage) -> Result<ImportedTheme, String> 
         imported_assets += 1;
     }
 
-    let imported_menu = package.context_menu.map(persist_context_menu).transpose()?;
     let (theme, theme_path) = persist_theme(package.theme)?;
     Ok(ImportedTheme {
         theme,
@@ -265,6 +277,16 @@ fn persist_theme(mut theme: ThemeDocument) -> Result<(ThemeDocument, PathBuf), S
         return Ok((existing, path));
     }
     theme.prepare_runtime();
+    let path = theme_engine::theme_file_path(&theme.id);
+    if path.exists() {
+        if theme_engine::load_theme(&path).is_ok_and(|existing| themes_match(&existing, &theme)) {
+            return Ok((theme, path));
+        }
+        // Keep the library's theme; the import becomes a numbered copy.
+        (theme.id, theme.name) = numbered_copy(&theme.id, &theme.name, |id| {
+            theme_engine::theme_file_path(id).exists()
+        });
+    }
     let path = theme_engine::save_theme(&theme)?;
     Ok((theme, path))
 }
@@ -273,8 +295,17 @@ fn themes_match(left: &ThemeDocument, right: &ThemeDocument) -> bool {
     serde_json::to_value(left).ok() == serde_json::to_value(right).ok()
 }
 
+/// `<id>-<n>` and `<name> (<n>)` for the first `n` from 2 whose id is free.
+fn numbered_copy(id: &str, name: &str, taken: impl Fn(&str) -> bool) -> (String, String) {
+    let mut number = 2;
+    while taken(&format!("{id}-{number}")) {
+        number += 1;
+    }
+    (format!("{id}-{number}"), format!("{name} ({number})"))
+}
+
 fn persist_context_menu(
-    menu: ContextMenuDocument,
+    mut menu: ContextMenuDocument,
 ) -> Result<(ContextMenuDocument, PathBuf), String> {
     if menu.is_builtin() {
         context_menu::ensure_builtin_context_menus()?;
@@ -285,8 +316,53 @@ fn persist_context_menu(
         let path = context_menu::context_menus_directory().join(format!("{}.json", menu.id));
         return Ok((existing, path));
     }
+    let library = context_menu::list_context_menus()?;
+    let taken = |id: &str| {
+        library
+            .iter()
+            .any(|existing| existing.id.trim().eq_ignore_ascii_case(id.trim()))
+            || context_menu::context_menu_file(id).exists()
+    };
+    if taken(&menu.id) {
+        let path = context_menu::context_menu_file(&menu.id);
+        if context_menu::load_context_menu(&path).is_ok_and(|existing| existing == menu) {
+            return Ok((menu, path));
+        }
+        // Keep the library's menu; the import becomes a numbered copy.
+        (menu.id, menu.name) = numbered_copy(&menu.id, &menu.name, taken);
+    }
     let path = context_menu::save_context_menu(&menu)?;
     Ok((menu, path))
+}
+
+/// Points the theme's `show_context_menu("<from>")` actions at a renamed menu.
+// shortcut: only the exact form Studio writes is matched, not a menu name or
+// other spacing; parse the actions if hand-written themes need it.
+fn rename_menu_references(theme: &mut ThemeDocument, from: &str, to: &str) {
+    let call = |id: &str| {
+        let id = id.replace('\\', "\\\\").replace('"', "\\\"");
+        format!("show_context_menu(\"{id}\")")
+    };
+    let (from, to) = (call(from), call(to));
+    let objects = theme.surfaces.iter_mut().flat_map(|surface| {
+        std::iter::once(&mut surface.mouse_events).chain(
+            surface
+                .children
+                .iter_mut()
+                .map(|object| &mut object.mouse_events),
+        )
+    });
+    for events in objects.flatten() {
+        for handler in [
+            &mut events.click,
+            &mut events.double_click,
+            &mut events.right_click,
+            &mut events.mouse_enter,
+            &mut events.mouse_leave,
+        ] {
+            *handler = handler.replace(&from, &to);
+        }
+    }
 }
 
 fn safe_entry_name(name: &str) -> Result<String, String> {
@@ -341,6 +417,91 @@ mod tests {
         let decoded = decode_package(bytes).unwrap();
         assert_eq!(decoded.theme.id, theme.id);
         assert_eq!(decoded.context_menu.unwrap().id, menu.id);
+    }
+
+    fn package(theme: ThemeDocument, context_menu: Option<ContextMenuDocument>) -> DecodedPackage {
+        DecodedPackage {
+            theme,
+            context_menu,
+            assets: HashMap::new(),
+        }
+    }
+
+    fn user_theme(id: &str, name: &str) -> ThemeDocument {
+        let mut theme = ThemeDocument::starter();
+        theme.id = id.into();
+        theme.name = name.into();
+        theme
+    }
+
+    #[test]
+    fn import_keeps_an_existing_theme_with_the_same_id() {
+        let _app_data = crate::app_settings::TestAppData::new();
+        let mine = user_theme("shared-theme", "Mine");
+        let mine_path = theme_engine::save_theme(&mine).unwrap();
+
+        let imported = import_decoded(package(user_theme("shared-theme", "Theirs"), None)).unwrap();
+        assert_eq!(theme_engine::load_theme(&mine_path).unwrap().name, "Mine");
+        assert_eq!(imported.theme.id, "shared-theme-2");
+        assert_eq!(imported.theme.name, "Theirs (2)");
+        assert_eq!(
+            theme_engine::load_theme(&imported.theme_path).unwrap().name,
+            "Theirs (2)"
+        );
+
+        // The same theme again is the one already in the library.
+        let again = import_decoded(package(mine, None)).unwrap();
+        assert_eq!(again.theme_path, mine_path);
+    }
+
+    #[test]
+    fn import_keeps_an_existing_menu_and_points_the_theme_at_its_copy() {
+        let _app_data = crate::app_settings::TestAppData::new();
+        let mut mine = ContextMenuDocument::blank("Work");
+        mine.id = "work".into();
+        let mine_path = context_menu::save_context_menu(&mine).unwrap();
+        let mut theirs = mine.clone();
+        theirs.items.remove(0);
+        let mut theme = user_theme("menu-theme", "Menu theme");
+        theme.surfaces[0].mouse_events = Some(theme_engine::MouseEvents {
+            right_click: "show_context_menu(\"work\")".into(),
+            ..Default::default()
+        });
+
+        let imported = import_decoded(package(theme, Some(theirs))).unwrap();
+        let (menu, menu_path) = imported.context_menu.unwrap();
+        assert_eq!(context_menu::load_context_menu(&mine_path).unwrap(), mine);
+        assert_eq!(
+            (menu.id.as_str(), menu.name.as_str()),
+            ("work-2", "Work (2)")
+        );
+        assert_eq!(context_menu::load_context_menu(&menu_path).unwrap(), menu);
+        assert_eq!(
+            imported.theme.surfaces[0]
+                .mouse_events
+                .as_ref()
+                .unwrap()
+                .right_click,
+            "show_context_menu(\"work-2\")"
+        );
+    }
+
+    #[test]
+    fn a_rejected_menu_leaves_no_asset_behind() {
+        let _app_data = crate::app_settings::TestAppData::new();
+        let mut changed = context_menu::classic_context_menu();
+        changed.name = "Changed".into();
+        let mut image = Cursor::new(Vec::new());
+        image::RgbaImage::new(1, 1)
+            .write_to(&mut image, image::ImageFormat::Png)
+            .unwrap();
+        let mut decoded = package(user_theme("asset-theme", "Asset theme"), Some(changed));
+        decoded
+            .assets
+            .insert("assets/orphan.png".into(), image.into_inner());
+
+        assert!(import_decoded(decoded).is_err());
+        assert!(!theme_engine::assets_directory().join("orphan.png").exists());
     }
 
     #[test]
