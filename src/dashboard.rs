@@ -12,7 +12,7 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowW, MessageBoxW, PostMessageW, SetForegroundWindow, ShowWindowAsync, MB_ICONERROR,
-    MB_OK, SW_RESTORE, WM_CLOSE,
+    MB_OK, MB_SETFOREGROUND, MB_TOPMOST, SW_RESTORE, WM_CLOSE,
 };
 
 const DASHBOARD_TITLE: &str = "Claude Code Usage Taskbar";
@@ -33,13 +33,10 @@ pub fn show(owner: HWND) {
     let executable = match std::env::current_exe() {
         Ok(executable) => executable,
         Err(error) => {
-            report_launch_failure(
-                owner,
-                &format!(
-                    "{}: {error}",
-                    language().text("Unable to locate the application")
-                ),
-            );
+            report_launch_failure(&format!(
+                "{}: {error}",
+                language().text("Unable to locate the application")
+            ));
             return;
         }
     };
@@ -52,13 +49,10 @@ pub fn show(owner: HWND) {
         command.arg("--diagnose").arg("--diagnose-append");
     }
     if let Err(error) = command.spawn() {
-        report_launch_failure(
-            owner,
-            &format!(
-                "{}: {error}",
-                language().text("Unable to start the dashboard")
-            ),
-        );
+        report_launch_failure(&format!(
+            "{}: {error}",
+            language().text("Unable to start the dashboard")
+        ));
     }
 }
 
@@ -143,16 +137,18 @@ pub fn request_from_existing_monitor() -> Result<(), String> {
         .into())
 }
 
-pub fn report_launch_failure(owner: HWND, detail: &str) {
+/// Ownerless like `window::message_box`: owning it by the widget would disable
+/// the taskbar the widget lives in.
+pub fn report_launch_failure(detail: &str) {
     crate::diagnose::log(format!("dashboard launch failed: {detail}"));
     unsafe {
         let title = crate::native_interop::wide_str(language().text("Unable to open dashboard"));
         let message = crate::native_interop::wide_str(detail);
         let _ = MessageBoxW(
-            Some(owner),
+            None,
             PCWSTR::from_raw(message.as_ptr()),
             PCWSTR::from_raw(title.as_ptr()),
-            MB_OK | MB_ICONERROR,
+            MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST,
         );
     }
 }

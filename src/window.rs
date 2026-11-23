@@ -394,8 +394,10 @@ fn poll_display_state(
 }
 
 fn effective_theme_from_state(state: &AppState) -> ThemeDocument {
-    let theme = theme_engine::apply_widget_position(&state.active_theme, state.widget_position);
-    theme_engine::apply_mouse_action_overrides(&theme, &state.mouse_action_overrides)
+    theme_engine::with_mouse_action_overrides(
+        theme_engine::apply_widget_position(&state.active_theme, state.widget_position),
+        &state.mouse_action_overrides,
+    )
 }
 
 fn theme_has_floating_surface(theme: &ThemeDocument) -> bool {
@@ -1331,7 +1333,7 @@ pub fn run() {
                     } else {
                         if open_dashboard_on_start {
                             if let Err(error) = crate::dashboard::request_from_existing_monitor() {
-                                crate::dashboard::report_launch_failure(HWND::default(), &error);
+                                crate::dashboard::report_launch_failure(&error);
                             }
                         }
                         diagnose::log("startup aborted: another instance is already running");
@@ -1971,16 +1973,7 @@ fn schedule_countdown_timer() {
         }
     }
 
-    let min_delay = s.data.as_ref().and_then(|data| {
-        data.all_usage()
-            .flat_map(|usage| {
-                [usage.session.resets_at, usage.weekly.resets_at]
-                    .into_iter()
-                    .chain(usage.scoped.iter().map(|limit| limit.resets_at))
-            })
-            .filter_map(poller::time_until_display_change)
-            .min()
-    });
+    let min_delay = s.data.as_ref().and_then(poller::next_countdown_change);
 
     let ms = min_delay
         .unwrap_or(Duration::from_secs(60))
@@ -2095,6 +2088,7 @@ use positioning::*;
 mod mouse;
 use mouse::*;
 mod window_context_menu;
+pub(crate) use window_context_menu::context_menu_action_checked;
 use window_context_menu::*;
 
 #[cfg(test)]

@@ -240,11 +240,8 @@ pub(super) fn native_context_menu_width(
 pub(super) struct ContextMenuPreviewState<'a> {
     pub(super) language: LanguageId,
     pub(super) context: &'a DataContext,
-    pub(super) settings: &'a SettingsFile,
-    pub(super) startup_enabled: bool,
+    pub(super) app: &'a StudioApp,
     pub(super) theme: &'a ThemeDocument,
-    pub(super) usage: Option<&'a AppUsageData>,
-    pub(super) runtime: ThemeRuntime,
     pub(super) appearance: &'a NativeContextMenuAppearance,
     pub(super) preview_bounds: &'a std::cell::Cell<egui::Rect>,
     pub(super) open_submenu_state_ids: &'a std::cell::RefCell<Vec<egui::Id>>,
@@ -304,14 +301,9 @@ pub(super) fn preview_context_menu_items(
             ContextMenuItemKind::Action { action } => {
                 let label =
                     context_menu::rendered_label(state.language, &item.label, state.context);
-                let checked = context_menu_preview_action_checked(
-                    action,
-                    state.settings,
-                    state.startup_enabled,
-                    state.theme,
-                    state.usage,
-                    state.runtime,
-                );
+                let checked = state
+                    .app
+                    .context_menu_preview_action_checked(state.theme, action);
                 let response = ui.add(native_context_menu_button(
                     state.appearance,
                     ui.available_width(),
@@ -560,38 +552,31 @@ pub(super) fn native_menu_separator_color(
     )
 }
 
-pub(super) fn context_menu_preview_action_checked(
-    action: &ContextMenuAction,
-    settings: &SettingsFile,
-    startup_enabled: bool,
-    theme: &ThemeDocument,
-    usage: Option<&AppUsageData>,
-    runtime: ThemeRuntime,
-) -> bool {
-    match action {
-        ContextMenuAction::SetUpdateFrequency { seconds } => {
-            settings.poll_interval_ms == seconds.saturating_mul(1_000)
-        }
-        ContextMenuAction::ToggleProvider { provider } => settings.provider_enabled(*provider),
-        ContextMenuAction::ToggleStartup => startup_enabled,
-        ContextMenuAction::ToggleWidget => theme
-            .surfaces
-            .iter()
-            .position(|surface| surface.placement.nest != SurfaceNest::TrayIcon)
-            .is_some_and(|surface_index| {
-                theme_engine::surface_should_render(theme, surface_index, usage, runtime)
-            }),
-        ContextMenuAction::SetLanguage { language } => settings.language.as_deref().map_or_else(
-            || language.eq_ignore_ascii_case("system"),
-            |current| current.eq_ignore_ascii_case(language),
-        ),
-        ContextMenuAction::ToggleLayerRender { target } => theme
-            .surfaces
-            .iter()
-            .position(|surface| surface.id.eq_ignore_ascii_case(target))
-            .is_some_and(|surface_index| {
-                theme_engine::surface_should_render(theme, surface_index, usage, runtime)
-            }),
-        _ => false,
+impl StudioApp {
+    /// What the widget's right-click menu would show checked, for `theme`.
+    pub(super) fn context_menu_preview_action_checked(
+        &self,
+        theme: &ThemeDocument,
+        action: &ContextMenuAction,
+    ) -> bool {
+        crate::window::context_menu_action_checked(
+            action,
+            self.settings.poll_interval_ms,
+            self.settings.enabled_providers(),
+            self.settings
+                .language
+                .as_deref()
+                .and_then(LanguageId::from_code),
+            || self.startup_enabled,
+            theme,
+            |surface_index| {
+                theme_engine::surface_should_render(
+                    theme,
+                    surface_index,
+                    self.usage.as_ref(),
+                    self.theme_runtime_for_surface(surface_index),
+                )
+            },
+        )
     }
 }

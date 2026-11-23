@@ -109,12 +109,11 @@ pub fn handle_cli_mode(args: &[String]) -> bool {
         .and_then(|index| args.get(index + 1))
         .and_then(|value| value.parse::<isize>().ok())
         .unwrap_or(0);
-    let owner_hwnd = HWND(owner as *mut _);
     let _dashboard_instance = match crate::dashboard::claim_instance() {
         Ok(Some(instance)) => instance,
         Ok(None) => return true,
         Err(error) => {
-            crate::dashboard::report_launch_failure(owner_hwnd, &error);
+            crate::dashboard::report_launch_failure(&error);
             return true;
         }
     };
@@ -140,13 +139,10 @@ pub fn handle_cli_mode(args: &[String]) -> bool {
         Box::new(move |context| Ok(Box::new(StudioApp::new(context, owner)))),
     ) {
         let language = settings_language(&app_settings::load_settings());
-        crate::dashboard::report_launch_failure(
-            owner_hwnd,
-            &format!(
-                "{}: {error}",
-                language.text("The dashboard could not initialize")
-            ),
-        );
+        crate::dashboard::report_launch_failure(&format!(
+            "{}: {error}",
+            language.text("The dashboard could not initialize")
+        ));
     }
     true
 }
@@ -599,29 +595,13 @@ fn preview_render_scale(
     (scale, width, height)
 }
 
-fn preview_countdown_refresh_delay(data: Option<&AppUsageData>) -> Option<Duration> {
-    let now = std::time::SystemTime::now();
-    data?
-        .all_usage()
-        .flat_map(|usage| [&usage.session, &usage.weekly])
-        .filter_map(|section| section.resets_at?.duration_since(now).ok())
-        .map(preview_countdown_delay)
-        .min()
-}
-
-fn preview_countdown_delay(remaining: Duration) -> Duration {
-    let seconds = remaining.as_secs();
-    if seconds >= 60 {
-        Duration::from_secs(seconds % 60 + 1)
-    } else {
-        Duration::from_secs(1)
-    }
-}
-
 struct StudioApp {
     owner: isize,
     page: Page,
     settings: SettingsFile,
+    /// The settings as Studio last loaded or wrote them: the base that tells
+    /// Studio's own edits from changes the widget made to the file since.
+    saved_settings: SettingsFile,
     synced_poll_interval_ms: u32,
     poll_interval_editor_generation: u64,
     startup_enabled: bool,
@@ -785,13 +765,7 @@ fn remap_mouse_action_targets(object: &mut SceneObject, replacements: &HashMap<S
     let Some(events) = &mut object.mouse_events else {
         return;
     };
-    for event in [
-        MouseEventKind::Click,
-        MouseEventKind::DoubleClick,
-        MouseEventKind::RightClick,
-        MouseEventKind::MouseEnter,
-        MouseEventKind::MouseLeave,
-    ] {
+    for event in MouseEventKind::ALL {
         let handler = events.handler_mut(event);
         for (old, new) in replacements {
             let old = quote_action_string(old).to_ascii_lowercase();

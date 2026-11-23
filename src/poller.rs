@@ -512,6 +512,22 @@ pub fn time_until_display_change(resets_at: Option<SystemTime>) -> Option<Durati
     ))
 }
 
+/// When the next countdown label of any reset a theme can show can change.
+pub fn next_countdown_change(data: &AppUsageData) -> Option<Duration> {
+    data.all_usage()
+        .flat_map(|usage| {
+            [
+                usage.session.resets_at,
+                usage.weekly.resets_at,
+                usage.monthly.as_ref().and_then(|monthly| monthly.resets_at),
+            ]
+            .into_iter()
+            .chain(usage.scoped.iter().map(|limit| limit.resets_at))
+        })
+        .filter_map(time_until_display_change)
+        .min()
+}
+
 /// When the next countdown label can change. `duration` ("2d 3h", "4h 15m")
 /// truncates, `duration_short` ("5h") rounds within its unit, so beyond a day
 /// both change on the hour, beyond an hour on the minute, and under an hour

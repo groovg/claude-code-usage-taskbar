@@ -124,65 +124,32 @@ pub(super) fn context_menu_action_flags(action: &ContextMenuAction) -> MENU_ITEM
     let Some(state) = state.as_ref() else {
         return MENU_ITEM_FLAGS(0);
     };
-    let checked = match action {
-        ContextMenuAction::SetUpdateFrequency { seconds } => {
-            state.poll_interval_ms == seconds.saturating_mul(1_000)
-        }
-        ContextMenuAction::ToggleProvider { provider } => state.providers.contains(*provider),
-        ContextMenuAction::ToggleStartup => is_startup_enabled(),
-        ContextMenuAction::ToggleWidget => {
+    let checked = context_menu_action_checked(
+        action,
+        state.poll_interval_ms,
+        state.providers,
+        state.language_override,
+        is_startup_enabled,
+        &state.active_theme,
+        |surface_index| {
+            // Overrides never move surfaces, so the index found in the active theme holds.
             let effective = theme_engine::apply_mouse_action_overrides(
                 &state.active_theme,
                 &state.mouse_action_overrides,
             );
-            context_menu_widget_origin(&effective).is_some_and(|(surface_index, _)| {
-                let runtime = theme_runtime_for_surface(
-                    &effective,
-                    surface_index,
-                    theme_runtime_from_state(state),
-                );
-                theme_engine::surface_should_render(
-                    &effective,
-                    surface_index,
-                    state.data.as_ref(),
-                    runtime,
-                )
-            })
-        }
-        ContextMenuAction::SetLanguage { language } => {
-            if language.eq_ignore_ascii_case("system") {
-                state.language_override.is_none()
-            } else {
-                state
-                    .language_override
-                    .is_some_and(|current| current.code().eq_ignore_ascii_case(language))
-            }
-        }
-        ContextMenuAction::ToggleLayerRender { target } => {
-            let effective = theme_engine::apply_mouse_action_overrides(
-                &state.active_theme,
-                &state.mouse_action_overrides,
+            let runtime = theme_runtime_for_surface(
+                &effective,
+                surface_index,
+                theme_runtime_from_state(state),
             );
-            effective
-                .surfaces
-                .iter()
-                .position(|surface| surface.id.eq_ignore_ascii_case(target))
-                .is_some_and(|surface_index| {
-                    let runtime = theme_runtime_for_surface(
-                        &effective,
-                        surface_index,
-                        theme_runtime_from_state(state),
-                    );
-                    theme_engine::surface_should_render(
-                        &effective,
-                        surface_index,
-                        state.data.as_ref(),
-                        runtime,
-                    )
-                })
-        }
-        _ => false,
-    };
+            theme_engine::surface_should_render(
+                &effective,
+                surface_index,
+                state.data.as_ref(),
+                runtime,
+            )
+        },
+    );
     let disabled = matches!(
         action,
         ContextMenuAction::CheckForUpdates
@@ -193,6 +160,42 @@ pub(super) fn context_menu_action_flags(action: &ContextMenuAction) -> MENU_ITEM
         (true, false) => MF_CHECKED,
         (false, true) => MF_GRAYED,
         (false, false) => MENU_ITEM_FLAGS(0),
+    }
+}
+
+/// Whether the right-click menu shows `action` checked; Studio's preview
+/// uses it too. `surface_renders` tells whether a theme surface is drawn.
+pub(crate) fn context_menu_action_checked(
+    action: &ContextMenuAction,
+    poll_interval_ms: u32,
+    providers: ProviderSet,
+    language_override: Option<LanguageId>,
+    startup_enabled: impl FnOnce() -> bool,
+    theme: &ThemeDocument,
+    surface_renders: impl FnOnce(usize) -> bool,
+) -> bool {
+    match action {
+        ContextMenuAction::SetUpdateFrequency { seconds } => {
+            poll_interval_ms == seconds.saturating_mul(1_000)
+        }
+        ContextMenuAction::ToggleProvider { provider } => providers.contains(*provider),
+        ContextMenuAction::ToggleStartup => startup_enabled(),
+        ContextMenuAction::ToggleWidget => context_menu_widget_origin(theme)
+            .is_some_and(|(surface_index, _)| surface_renders(surface_index)),
+        ContextMenuAction::SetLanguage { language } => {
+            if language.eq_ignore_ascii_case("system") {
+                language_override.is_none()
+            } else {
+                language_override
+                    .is_some_and(|current| current.code().eq_ignore_ascii_case(language))
+            }
+        }
+        ContextMenuAction::ToggleLayerRender { target } => theme
+            .surfaces
+            .iter()
+            .position(|surface| surface.id.eq_ignore_ascii_case(target))
+            .is_some_and(surface_renders),
+        _ => false,
     }
 }
 

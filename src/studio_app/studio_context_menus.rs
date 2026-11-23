@@ -521,11 +521,8 @@ impl StudioApp {
         let mut preview_state = ContextMenuPreviewState {
             language,
             context: &context,
-            settings: &self.settings,
-            startup_enabled: self.startup_enabled,
+            app: self,
             theme: &effective_theme,
-            usage: self.usage.as_ref(),
-            runtime,
             appearance: &appearance,
             preview_bounds: &preview_bounds,
             open_submenu_state_ids: &open_submenu_state_ids,

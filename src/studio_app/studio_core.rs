@@ -1,12 +1,5 @@
 use super::*;
 
-thread_local! {
-    /// The settings as Studio last loaded or wrote them: the base that tells
-    /// Studio's own edits from changes the widget made to the file since.
-    static SAVED_SETTINGS: std::cell::RefCell<Option<SettingsFile>> =
-        const { std::cell::RefCell::new(None) };
-}
-
 fn clock_refresh_delay(interval: Duration) -> Duration {
     let interval_ms = interval.as_millis().max(1);
     let elapsed_ms = SystemTime::now()
@@ -64,7 +57,6 @@ impl StudioApp {
 
     pub(super) fn new(context: &eframe::CreationContext<'_>, owner: isize) -> Self {
         let settings = app_settings::load_settings();
-        SAVED_SETTINGS.with(|saved| *saved.borrow_mut() = Some(settings.clone()));
         let language = settings_language(&settings);
         egui_extras::install_image_loaders(&context.egui_ctx);
         configure_style(&context.egui_ctx, language);
@@ -108,7 +100,9 @@ impl StudioApp {
                         .any(|account| account.error.is_some()))
         });
         let usage = usage_cache.map(|cache| cache.data);
-        let next_preview_countdown_refresh = preview_countdown_refresh_delay(usage.as_ref())
+        let next_preview_countdown_refresh = usage
+            .as_ref()
+            .and_then(crate::poller::next_countdown_change)
             .and_then(|delay| Instant::now().checked_add(delay));
         let next_preview_clock_refresh = theme
             .current_time_refresh_interval()
@@ -118,6 +112,7 @@ impl StudioApp {
             page: Page::Settings,
             synced_poll_interval_ms: settings.poll_interval_ms,
             poll_interval_editor_generation: 0,
+            saved_settings: settings.clone(),
             settings,
             startup_enabled: crate::window::is_startup_enabled(),
             theme,
@@ -231,14 +226,12 @@ impl StudioApp {
     /// Writes only the settings Studio changed since it last loaded or wrote
     /// them, so choices made meanwhile from the widget's tray menu survive.
     fn write_settings(&mut self) -> Result<(), String> {
-        let mut base = SAVED_SETTINGS
-            .with(|saved| saved.borrow().clone())
-            .unwrap_or_else(|| self.settings.clone());
+        let mut base = self.saved_settings.clone();
         base.poll_interval_ms = self.synced_poll_interval_ms;
         let written = app_settings::save_settings_changes(&base, &self.settings)?;
         // A frequency picked from the tray replaces an unchanged local one.
         self.sync_poll_interval(written.poll_interval_ms);
-        SAVED_SETTINGS.with(|saved| *saved.borrow_mut() = Some(self.settings.clone()));
+        self.saved_settings = self.settings.clone();
         Ok(())
     }
 
@@ -849,9 +842,11 @@ impl StudioApp {
                 .is_none_or(|deadline| now >= deadline);
         if usage_changed || countdown_due || clock_due {
             self.preview_dirty = true;
-            self.next_preview_countdown_refresh =
-                preview_countdown_refresh_delay(self.usage.as_ref())
-                    .and_then(|delay| now.checked_add(delay));
+            self.next_preview_countdown_refresh = self
+                .usage
+                .as_ref()
+                .and_then(crate::poller::next_countdown_change)
+                .and_then(|delay| now.checked_add(delay));
         }
         if clock_interval.is_none() {
             self.next_preview_clock_refresh = None;

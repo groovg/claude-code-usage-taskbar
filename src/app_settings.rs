@@ -365,6 +365,24 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Option<T> {
     serde_json::from_str(&content).ok()
 }
 
+/// File-name stem of `value`: each run of characters `keep` rejects becomes
+/// one `-`, trimmed from both ends. Saved files are named by it, so its output
+/// must not change.
+pub fn file_stem(value: &str, keep: impl Fn(char) -> bool) -> String {
+    let mut result = String::new();
+    let mut separator = false;
+    for character in value.trim().chars() {
+        if keep(character) {
+            result.push(character);
+            separator = false;
+        } else if !separator && !result.is_empty() {
+            result.push('-');
+            separator = true;
+        }
+    }
+    result.trim_matches('-').to_string()
+}
+
 pub fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let parent = path.parent().ok_or("Invalid settings path")?;
     std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;

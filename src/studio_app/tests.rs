@@ -265,24 +265,28 @@ fn context_menu_preview_marks_a_rendered_target_layer_as_checked() {
     let action = ContextMenuAction::ToggleLayerRender {
         target: "main".into(),
     };
-    assert!(context_menu_preview_action_checked(
-        &action,
-        &app.settings,
-        app.startup_enabled,
-        &app.theme,
-        app.usage.as_ref(),
-        app.theme_runtime(),
-    ));
+    assert!(app.context_menu_preview_action_checked(&app.theme, &action));
 
     app.theme.surfaces[0].render = 0.0.into();
-    assert!(!context_menu_preview_action_checked(
-        &action,
-        &app.settings,
-        app.startup_enabled,
-        &app.theme,
-        app.usage.as_ref(),
-        app.theme_runtime(),
-    ));
+    assert!(!app.context_menu_preview_action_checked(&app.theme, &action));
+}
+
+#[test]
+fn context_menu_preview_checks_the_language_the_widget_resolves() {
+    let mut app = app_with_surfaces(vec![root("main")]);
+    app.settings.language = Some("de-DE".into());
+    let checked = |app: &StudioApp, language: &str| {
+        app.context_menu_preview_action_checked(
+            &app.theme,
+            &ContextMenuAction::SetLanguage {
+                language: language.into(),
+            },
+        )
+    };
+    assert!(checked(&app, "de"));
+    assert!(!checked(&app, "system"));
+    app.settings.language = Some("not-a-language".into());
+    assert!(checked(&app, "system"));
 }
 
 #[test]
@@ -338,6 +342,7 @@ fn app_with_surfaces(surfaces: Vec<SceneObject>) -> StudioApp {
         owner: 0,
         page: Page::Studio,
         settings: SettingsFile::default(),
+        saved_settings: SettingsFile::default(),
         synced_poll_interval_ms: SettingsFile::default().poll_interval_ms,
         poll_interval_editor_generation: 0,
         startup_enabled: false,
@@ -519,22 +524,6 @@ fn unchanged_usage_cache_does_not_invalidate_the_preview() {
     app.preview_dirty = false;
     assert!(!app.update_usage_cache(cache));
     assert!(!app.preview_dirty);
-}
-
-#[test]
-fn preview_countdowns_refresh_on_minute_boundaries_until_the_final_minute() {
-    assert_eq!(
-        preview_countdown_delay(Duration::from_secs(125)),
-        Duration::from_secs(6)
-    );
-    assert_eq!(
-        preview_countdown_delay(Duration::from_secs(119)),
-        Duration::from_secs(60)
-    );
-    assert_eq!(
-        preview_countdown_delay(Duration::from_secs(59)),
-        Duration::from_secs(1)
-    );
 }
 
 #[test]
@@ -1320,4 +1309,21 @@ fn expression_helper_drafts_start_from_plain_values() {
         scene_object_expression(&surface, ExpressionField::PlacementOffsetX).as_deref(),
         Some("host.width / 2")
     );
+}
+
+#[test]
+fn export_file_names_keep_their_current_spelling() {
+    for (name, file_name) in [
+        ("My Menu!", "My-Menu"),
+        (
+            "  \u{dc}n\u{ef}code  Men\u{fc}  ",
+            "\u{dc}n\u{ef}code-Men\u{fc}",
+        ),
+        ("a--b__c", "a--b__c"),
+        ("Weekly (Fable) v2", "Weekly-Fable-v2"),
+        ("---", "theme"),
+        ("", "theme"),
+    ] {
+        assert_eq!(safe_file_name(name, "theme"), file_name, "{name}");
+    }
 }
