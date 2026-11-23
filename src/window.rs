@@ -394,8 +394,10 @@ fn poll_display_state(
 }
 
 fn effective_theme_from_state(state: &AppState) -> ThemeDocument {
-    let theme = theme_engine::apply_widget_position(&state.active_theme, state.widget_position);
-    theme_engine::apply_mouse_action_overrides(&theme, &state.mouse_action_overrides)
+    theme_engine::with_mouse_action_overrides(
+        theme_engine::apply_widget_position(&state.active_theme, state.widget_position),
+        &state.mouse_action_overrides,
+    )
 }
 
 fn theme_has_floating_surface(theme: &ThemeDocument) -> bool {

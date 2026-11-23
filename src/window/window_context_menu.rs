@@ -186,7 +186,8 @@ pub(crate) fn context_menu_action_checked(
             if language.eq_ignore_ascii_case("system") {
                 language_override.is_none()
             } else {
-                language_override.is_some_and(|current| current.code().eq_ignore_ascii_case(language))
+                language_override
+                    .is_some_and(|current| current.code().eq_ignore_ascii_case(language))
             }
         }
         ContextMenuAction::ToggleLayerRender { target } => theme

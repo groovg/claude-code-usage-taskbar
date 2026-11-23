@@ -342,6 +342,7 @@ fn app_with_surfaces(surfaces: Vec<SceneObject>) -> StudioApp {
         owner: 0,
         page: Page::Studio,
         settings: SettingsFile::default(),
+        saved_settings: SettingsFile::default(),
         synced_poll_interval_ms: SettingsFile::default().poll_interval_ms,
         poll_interval_editor_generation: 0,
         startup_enabled: false,
@@ -1314,7 +1315,10 @@ fn expression_helper_drafts_start_from_plain_values() {
 fn export_file_names_keep_their_current_spelling() {
     for (name, file_name) in [
         ("My Menu!", "My-Menu"),
-        ("  \u{dc}n\u{ef}code  Men\u{fc}  ", "\u{dc}n\u{ef}code-Men\u{fc}"),
+        (
+            "  \u{dc}n\u{ef}code  Men\u{fc}  ",
+            "\u{dc}n\u{ef}code-Men\u{fc}",
+        ),
         ("a--b__c", "a--b__c"),
         ("Weekly (Fable) v2", "Weekly-Fable-v2"),
         ("---", "theme"),

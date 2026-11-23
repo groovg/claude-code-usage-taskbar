@@ -1693,7 +1693,14 @@ pub fn apply_mouse_action_overrides(
     theme: &ThemeDocument,
     overrides: &HashMap<MouseActionOverrideKey, Expression>,
 ) -> ThemeDocument {
-    let mut effective = theme.clone();
+    with_mouse_action_overrides(theme.clone(), overrides)
+}
+
+/// `apply_mouse_action_overrides` for a theme the caller already owns.
+pub fn with_mouse_action_overrides(
+    mut effective: ThemeDocument,
+    overrides: &HashMap<MouseActionOverrideKey, Expression>,
+) -> ThemeDocument {
     for (key, expression) in overrides {
         let Some(surface) = effective.surfaces.get_mut(key.surface_index) else {
             continue;

@@ -599,6 +599,9 @@ struct StudioApp {
     owner: isize,
     page: Page,
     settings: SettingsFile,
+    /// The settings as Studio last loaded or wrote them: the base that tells
+    /// Studio's own edits from changes the widget made to the file since.
+    saved_settings: SettingsFile,
     synced_poll_interval_ms: u32,
     poll_interval_editor_generation: u64,
     startup_enabled: bool,
@@ -762,13 +765,7 @@ fn remap_mouse_action_targets(object: &mut SceneObject, replacements: &HashMap<S
     let Some(events) = &mut object.mouse_events else {
         return;
     };
-    for event in [
-        MouseEventKind::Click,
-        MouseEventKind::DoubleClick,
-        MouseEventKind::RightClick,
-        MouseEventKind::MouseEnter,
-        MouseEventKind::MouseLeave,
-    ] {
+    for event in MouseEventKind::ALL {
         let handler = events.handler_mut(event);
         for (old, new) in replacements {
             let old = quote_action_string(old).to_ascii_lowercase();

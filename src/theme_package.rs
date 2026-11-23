@@ -353,13 +353,8 @@ fn rename_menu_references(theme: &mut ThemeDocument, from: &str, to: &str) {
         )
     });
     for events in objects.flatten() {
-        for handler in [
-            &mut events.click,
-            &mut events.double_click,
-            &mut events.right_click,
-            &mut events.mouse_enter,
-            &mut events.mouse_leave,
-        ] {
+        for event in theme_engine::MouseEventKind::ALL {
+            let handler = events.handler_mut(event);
             *handler = handler.replace(&from, &to);
         }
     }

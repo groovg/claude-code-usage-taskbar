@@ -85,16 +85,17 @@ pub(super) fn execute_mouse_action_source(
         let Some(state) = state.as_mut() else {
             return false;
         };
-        let theme = state.active_theme.clone();
-        let data = state.data.clone();
-        let runtime =
-            theme_runtime_for_surface(&theme, surface_index, theme_runtime_from_state(state));
+        let runtime = theme_runtime_for_surface(
+            &state.active_theme,
+            surface_index,
+            theme_runtime_from_state(state),
+        );
         theme_engine::execute_mouse_actions(
-            &theme,
+            &state.active_theme,
             surface_index,
             object_id,
             source,
-            data.as_ref(),
+            state.data.as_ref(),
             runtime,
             &mut state.mouse_action_overrides,
         )
