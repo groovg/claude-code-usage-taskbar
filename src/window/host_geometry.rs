@@ -12,25 +12,31 @@ struct ThemeHostGeometry {
 static THEME_HOST_GEOMETRY: Mutex<Vec<ThemeHostGeometry>> = Mutex::new(Vec::new());
 static REFRESHING: AtomicBool = AtomicBool::new(false);
 
-/// Called at startup and on shell/display layout changes, with STATE unlocked.
+/// Called at startup, on shell/display layout changes and before each render,
+/// with STATE unlocked.
 pub(super) fn refresh_theme_host_geometry() {
-    refresh_with(|| {
-        let displays = native_interop::find_monitors();
-        let taskbars = native_interop::find_taskbars();
-        displays
-            .into_iter()
-            .map(|display| ThemeHostGeometry {
-                monitor: display.rect,
-                taskbar: taskbars
-                    .iter()
-                    .find(|taskbar| unsafe {
-                        MonitorFromWindow(taskbar.hwnd, MONITOR_DEFAULTTOPRIMARY) == display.handle
-                    })
-                    .map(|taskbar| taskbar.rect),
-                scale: monitor_scale(display),
-            })
-            .collect()
-    });
+    refresh_with(query_host_geometry);
+}
+
+fn query_host_geometry() -> Vec<ThemeHostGeometry> {
+    let taskbars = native_interop::find_taskbars();
+    native_interop::find_monitors()
+        .into_iter()
+        .map(|display| ThemeHostGeometry {
+            monitor: display.rect,
+            taskbar: native_interop::taskbar_on(&taskbars, display.handle).map(|bar| bar.rect),
+            scale: monitor_scale(display),
+        })
+        .collect()
+}
+
+/// The studio runs in a separate process without the monitor's layout cache.
+pub(crate) fn query_theme_runtime_for_surface(
+    theme: &ThemeDocument,
+    surface_index: usize,
+    runtime: ThemeRuntime,
+) -> ThemeRuntime {
+    runtime_with_geometry(theme, surface_index, runtime, &query_host_geometry())
 }
 
 fn refresh_with(query: impl FnOnce() -> Vec<ThemeHostGeometry>) {

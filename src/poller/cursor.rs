@@ -51,9 +51,25 @@ pub(super) fn credential_watch_snapshot() -> Vec<String> {
         .map(|value| format!("environment|present|{}", fingerprint(&value)))
         .unwrap_or_else(|| "environment|missing".into());
     let database = cursor_state_db_path()
-        .map(|path| format!("database|{}", file_signature(&path)))
+        .map(|path| database_signature(&path))
         .unwrap_or_else(|| "database|missing".into());
     vec![environment, database]
+}
+
+/// Cursor's database runs in WAL mode: a new login lands in `-wal` first.
+fn database_signature(path: &Path) -> String {
+    format!(
+        "database|{}|{}",
+        file_signature(path),
+        file_signature(&sidecar(path, "-wal"))
+    )
+}
+
+/// SQLite's `-wal` or `-shm` file next to a database.
+fn sidecar(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    name.into()
 }
 
 /// Resolve a Cursor dashboard session cookie. An explicit environment value
@@ -140,8 +156,16 @@ fn query_cursor_access_token_from_copy(path: &Path) -> Option<String> {
         diagnose::log(format!("Cursor state DB temp copy failed: {error}"));
         return None;
     }
+    // A recently refreshed token can still sit in the write-ahead log.
+    let _ = std::fs::copy(sidecar(path, "-wal"), sidecar(&temporary, "-wal"));
     let result = query_cursor_access_token(&temporary);
-    let _ = std::fs::remove_file(&temporary);
+    for file in [
+        sidecar(&temporary, "-wal"),
+        sidecar(&temporary, "-shm"),
+        temporary,
+    ] {
+        let _ = std::fs::remove_file(file);
+    }
     match result {
         Ok(token) => token,
         Err(error) => {
@@ -219,6 +243,124 @@ mod tests {
             cursor_cookie_from_access_token(jwt).as_deref(),
             Some("user_123%3A%3Aheader.eyJzdWIiOiJhdXRoMHx1c2VyXzEyMyJ9.signature")
         );
+    }
+
+    #[test]
+    fn session_cookies_drop_the_prefix_and_encode_the_separator() {
+        for (token, expected) in [
+            ("WorkosCursorSessionToken=user_1::jwt", "user_1%3A%3Ajwt"),
+            (" user_1::jwt ", "user_1%3A%3Ajwt"),
+            (
+                "WorkosCursorSessionToken=user_1%3A%3Ajwt",
+                "user_1%3A%3Ajwt",
+            ),
+            (
+                "header.eyJzdWIiOiJhdXRoMHx1c2VyXzEyMyJ9.signature",
+                "user_123%3A%3Aheader.eyJzdWIiOiJhdXRoMHx1c2VyXzEyMyJ9.signature",
+            ),
+        ] {
+            assert_eq!(
+                normalize_cursor_session_cookie(token).as_deref(),
+                Some(expected),
+                "{token}"
+            );
+        }
+        assert!(normalize_cursor_session_cookie("WorkosCursorSessionToken=").is_none());
+    }
+
+    fn scratch_directory(name: &str) -> PathBuf {
+        let directory = std::env::temp_dir().join(format!(
+            "claude-cursor-{name}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        directory
+    }
+
+    #[test]
+    fn a_login_written_to_the_write_ahead_log_changes_the_signature() {
+        let directory = scratch_directory("signature");
+        let path = directory.join("state.vscdb");
+        std::fs::write(&path, "database").unwrap();
+        let before = database_signature(&path);
+        std::fs::write(sidecar(&path, "-wal"), "new login").unwrap();
+        let after = database_signature(&path);
+        std::fs::remove_dir_all(&directory).unwrap();
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn the_temp_copy_reads_a_token_still_in_the_write_ahead_log() {
+        use std::ffi::{c_char, c_int, c_void, CString};
+
+        // Same shapes as the declarations in winsqlite.rs.
+        #[repr(C)]
+        struct Sqlite3 {
+            _private: [u8; 0],
+        }
+        #[link(name = "winsqlite3", kind = "raw-dylib")]
+        unsafe extern "C" {
+            fn sqlite3_open_v2(
+                filename: *const c_char,
+                database: *mut *mut Sqlite3,
+                flags: c_int,
+                vfs: *const c_char,
+            ) -> c_int;
+            fn sqlite3_exec(
+                database: *mut Sqlite3,
+                sql: *const c_char,
+                callback: Option<
+                    unsafe extern "C" fn(
+                        *mut c_void,
+                        c_int,
+                        *mut *mut c_char,
+                        *mut *mut c_char,
+                    ) -> c_int,
+                >,
+                context: *mut c_void,
+                error_message: *mut *mut c_char,
+            ) -> c_int;
+            fn sqlite3_close(database: *mut Sqlite3) -> c_int;
+        }
+
+        let directory = scratch_directory("wal");
+        let path = directory.join("state.vscdb");
+        let filename = CString::new(path.to_str().unwrap()).unwrap();
+        let sql = CString::new(
+            "PRAGMA journal_mode=WAL;
+             CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT);
+             INSERT INTO ItemTable VALUES ('cursorAuth/accessToken', 'old-token');
+             PRAGMA wal_checkpoint(TRUNCATE);
+             UPDATE ItemTable SET value = 'new-token';",
+        )
+        .unwrap();
+        let mut database = std::ptr::null_mut();
+        unsafe {
+            // Read-write and create.
+            assert_eq!(
+                sqlite3_open_v2(filename.as_ptr(), &mut database, 0x6, std::ptr::null()),
+                0
+            );
+            let result = sqlite3_exec(
+                database,
+                sql.as_ptr(),
+                None,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
+            assert_eq!(result, 0);
+        }
+        // The writer stays open, so the update has not reached the main file.
+        let token = query_cursor_access_token_from_copy(&path);
+        unsafe {
+            sqlite3_close(database);
+        }
+        std::fs::remove_dir_all(&directory).unwrap();
+        assert_eq!(token.as_deref(), Some("new-token"));
     }
 
     #[test]

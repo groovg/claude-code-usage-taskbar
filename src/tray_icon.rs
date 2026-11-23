@@ -132,11 +132,23 @@ fn create_themed_icon(icon: &ThemedTrayIcon) -> HICON {
             ReleaseDC(None, screen_dc);
             return HICON::default();
         }
-        std::ptr::copy_nonoverlapping(icon.pixels.as_ptr(), bits.cast::<u32>(), icon.pixels.len());
+        let target = std::slice::from_raw_parts_mut(bits.cast::<u32>(), icon.pixels.len());
+        for (target, source) in target.iter_mut().zip(&icon.pixels) {
+            *target = unpremultiply(*source);
+        }
 
-        // A zero monochrome mask lets the 32-bit colour bitmap's alpha channel
-        // define the transparent pixels and antialiased edges.
-        let mask_bitmap = CreateBitmap(icon.width as i32, icon.height as i32, 1, 1, None);
+        // The 32-bit colour bitmap's alpha channel defines the transparent
+        // pixels and antialiased edges. Windows falls back to the mask when
+        // every alpha is zero, so an all-ones mask keeps that icon transparent.
+        let mask_row_bytes = (icon.width as usize).div_ceil(16) * 2;
+        let mask = vec![0xFF_u8; mask_row_bytes * icon.height as usize];
+        let mask_bitmap = CreateBitmap(
+            icon.width as i32,
+            icon.height as i32,
+            1,
+            1,
+            Some(mask.as_ptr().cast()),
+        );
         let icon_info = ICONINFO {
             fIcon: TRUE,
             xHotspot: 0,
@@ -151,6 +163,21 @@ fn create_themed_icon(icon: &ThemedTrayIcon) -> HICON {
         let _ = DeleteDC(memory_dc);
         ReleaseDC(None, screen_dc);
         result
+    }
+}
+
+/// The renderer's pixels are premultiplied ARGB; icon pixels are straight
+/// alpha, so a translucent edge would otherwise draw too dark.
+fn unpremultiply(pixel: u32) -> u32 {
+    let alpha = pixel >> 24;
+    match alpha {
+        0 => 0,
+        255 => pixel,
+        _ => {
+            let channel =
+                |shift: u32| ((((pixel >> shift) & 0xFF) * 255 + alpha / 2) / alpha).min(255);
+            (alpha << 24) | (channel(16) << 16) | (channel(8) << 8) | channel(0)
+        }
     }
 }
 
@@ -209,8 +236,8 @@ pub fn sync(hwnd: HWND, tooltip: &str) {
 
 /// Register Theme Studio roots as independent notification-area icons. The
 /// shell owns their order and overflow placement just like every other app icon.
-pub fn sync_themed(hwnd: HWND, icons: &[ThemedTrayIcon]) {
-    remove_id(hwnd, APP_TRAY_ICON_ID);
+/// Returns false when none could be shown; the app icon then stays registered.
+pub fn sync_themed(hwnd: HWND, icons: &[ThemedTrayIcon]) -> bool {
     let mut refreshed_ids = Vec::with_capacity(icons.len());
     for icon in icons {
         let hicon = create_themed_icon(icon);
@@ -232,7 +259,12 @@ pub fn sync_themed(hwnd: HWND, icons: &[ThemedTrayIcon]) {
     {
         remove_id(hwnd, id);
     }
+    let shown = !refreshed_ids.is_empty();
+    if shown {
+        remove_id(hwnd, APP_TRAY_ICON_ID);
+    }
     *registered = refreshed_ids;
+    shown
 }
 
 /// Show a Windows balloon notification from the application tray icon.
@@ -279,5 +311,36 @@ mod tests {
     fn theme_icon_ids_do_not_overlap_the_application_icon() {
         assert_ne!(themed_icon_id(0), APP_TRAY_ICON_ID);
         assert_ne!(themed_icon_id(42), themed_icon_id(43));
+    }
+
+    #[test]
+    fn icons_get_straight_alpha_pixels_and_a_transparent_mask() {
+        assert_eq!(unpremultiply(0xFF12_3456), 0xFF12_3456);
+        assert_eq!(unpremultiply(0x0012_3456), 0);
+        // 50% white, premultiplied, must stay white rather than turn grey.
+        let icon = create_themed_icon(&ThemedTrayIcon {
+            surface_index: 0,
+            tooltip: String::new(),
+            width: 16,
+            height: 2,
+            pixels: vec![0x8080_8080; 32],
+        });
+        assert!(!icon.is_invalid());
+        let mut color = [0u32; 32];
+        let mut mask = [0u8; 4];
+        unsafe {
+            let mut info = ICONINFO::default();
+            GetIconInfo(icon, &mut info).unwrap();
+            GetBitmapBits(info.hbmColor, 128, color.as_mut_ptr().cast());
+            GetBitmapBits(info.hbmMask, 4, mask.as_mut_ptr().cast());
+            let _ = DeleteObject(info.hbmColor.into());
+            let _ = DeleteObject(info.hbmMask.into());
+            let _ = DestroyIcon(icon);
+        }
+        assert!(
+            color.iter().all(|pixel| *pixel == 0x80FF_FFFF),
+            "{color:x?}"
+        );
+        assert_eq!(mask, [0xFF; 4]);
     }
 }

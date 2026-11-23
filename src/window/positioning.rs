@@ -149,19 +149,10 @@ pub(super) fn render_custom_window(
 }
 
 pub(super) fn position_custom_theme(hwnd: HWND, theme: &ThemeDocument, scale: f64) {
-    let taskbars = native_interop::find_taskbars();
-    let displays = native_interop::find_monitors();
-    let display_index = theme.placement.reference.display;
-    let selected_display = displays
-        .get(display_index)
-        .copied()
-        .or_else(|| displays.first().copied());
-    let Some(display) = selected_display else {
+    let Some(display) = native_interop::find_monitor(theme.placement.reference.display) else {
         return;
     };
-    let taskbar = taskbars.iter().find(|taskbar| unsafe {
-        MonitorFromWindow(taskbar.hwnd, MONITOR_DEFAULTTOPRIMARY) == display.handle
-    });
+    let taskbar = native_interop::taskbar_on(&native_interop::find_taskbars(), display.handle);
     let reference = match theme.placement.reference.region {
         ReferenceRegion::Monitor => display.rect,
         ReferenceRegion::Taskbar => taskbar.map(|taskbar| taskbar.rect).unwrap_or(display.rect),
@@ -364,12 +355,7 @@ pub(super) fn foreground_is_fullscreen_on_display(display_index: usize) -> bool 
             return false;
         }
 
-        let displays = native_interop::find_monitors();
-        let Some(display) = displays
-            .get(display_index)
-            .copied()
-            .or_else(|| displays.first().copied())
-        else {
+        let Some(display) = native_interop::find_monitor(display_index) else {
             return false;
         };
         if MonitorFromWindow(foreground, MONITOR_DEFAULTTONULL) != display.handle {

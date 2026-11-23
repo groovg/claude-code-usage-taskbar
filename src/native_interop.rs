@@ -3,7 +3,8 @@ use std::sync::Mutex;
 use windows::core::{w, BOOL, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
+    EnumDisplayMonitors, GetMonitorInfoW, MonitorFromWindow, HDC, HMONITOR, MONITORINFO,
+    MONITOR_DEFAULTTOPRIMARY,
 };
 use windows::Win32::System::Registry::{RegGetValueW, HKEY, RRF_NOEXPAND, RRF_RT_ANY};
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -82,6 +83,19 @@ pub fn find_monitors() -> Vec<DisplayMonitor> {
     }
     result.sort_by_key(|display| (!display.primary, display.rect.left, display.rect.top));
     result
+}
+
+/// The display a theme refers to by index, else the primary one.
+pub fn find_monitor(index: usize) -> Option<DisplayMonitor> {
+    let displays = find_monitors();
+    displays.get(index).or(displays.first()).copied()
+}
+
+/// The taskbar shown on `display`, if it has one.
+pub fn taskbar_on(taskbars: &[TaskbarWindow], display: HMONITOR) -> Option<TaskbarWindow> {
+    taskbars.iter().copied().find(|taskbar| unsafe {
+        MonitorFromWindow(taskbar.hwnd, MONITOR_DEFAULTTOPRIMARY) == display
+    })
 }
 
 pub fn find_taskbars() -> Vec<TaskbarWindow> {
@@ -193,6 +207,14 @@ pub fn make_popup(hwnd: HWND, topmost: bool) {
     unsafe {
         let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
         let new_style = (style & !WS_CHILD.0 & !WS_CLIPSIBLINGS.0) | WS_POPUP.0;
+        let in_band =
+            ((GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST.0 as i32) != 0) == topmost;
+        // Already a top-level popup in the right band: skip the forced frame
+        // change, for the same hidden-pointer reason as in embed_as_child.
+        // Windows keeps WS_CLIPSIBLINGS on every top-level window.
+        if GetParent(hwnd).is_err() && new_style == (style & !WS_CLIPSIBLINGS.0) && in_band {
+            return;
+        }
         let _ = SetWindowLongW(hwnd, GWL_STYLE, new_style as i32);
         let _ = SetParent(hwnd, None);
 
@@ -246,8 +268,9 @@ pub fn find_desktop_host() -> Option<DesktopHost> {
         if let Some((parent_value, insert_after_value)) = cached {
             let parent = HWND(parent_value as *mut _);
             let insert_after = HWND(insert_after_value as *mut _);
-            let sibling_is_valid =
-                insert_after == HWND_BOTTOM || IsWindow(Some(insert_after)).as_bool();
+            let sibling_is_valid = insert_after == HWND_BOTTOM
+                || insert_after == HWND_TOP
+                || IsWindow(Some(insert_after)).as_bool();
             if IsWindow(Some(parent)).as_bool()
                 && IsWindowVisible(parent).as_bool()
                 && sibling_is_valid

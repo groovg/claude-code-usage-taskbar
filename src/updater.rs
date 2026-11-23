@@ -7,12 +7,14 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{CloseHandle, HWND};
+use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::System::Threading::{
     OpenProcess, WaitForSingleObject, CREATE_NEW_CONSOLE, CREATE_NO_WINDOW, PROCESS_SYNCHRONIZE,
 };
 use windows::Win32::UI::Shell::FOLDERID_LocalAppData;
-use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+use windows::Win32::UI::WindowsAndMessaging::{
+    MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MB_TOPMOST,
+};
 
 use crate::native_interop::wide_str;
 use crate::poller::HTTP_AGENT;
@@ -514,11 +516,12 @@ fn show_error_message(title: &str, message: &str) {
     unsafe {
         let title_wide = wide_str(title);
         let message_wide = wide_str(message);
+        // The helper has no window of its own: bring the box to the front.
         let _ = MessageBoxW(
-            Some(HWND::default()),
+            None,
             PCWSTR::from_raw(message_wide.as_ptr()),
             PCWSTR::from_raw(title_wide.as_ptr()),
-            MB_OK | MB_ICONERROR,
+            MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST,
         );
     }
 }
@@ -551,5 +554,58 @@ mod tests {
         assert!(!super::is_winget_install_path(std::path::Path::new(
             r"C:\Users\someone\Desktop\app.exe"
         )));
+    }
+
+    fn scratch_directory(name: &str) -> std::path::PathBuf {
+        let directory = std::env::temp_dir().join(format!(
+            "claude-updater-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        directory
+    }
+
+    #[test]
+    fn the_swap_replaces_the_target_and_cleans_up_the_backup() {
+        let directory = scratch_directory("swap");
+        let target = directory.join("app.exe");
+        let source = directory.join("update-download.exe");
+        std::fs::write(&target, "old").unwrap();
+        std::fs::write(&source, "new").unwrap();
+        super::replace_target_binary(&target, &source).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+        assert!(!super::backup_path_for(&target).exists());
+
+        // Without a download, the installed file is left alone.
+        std::fs::remove_file(&source).unwrap();
+        assert!(super::apply_update(target.clone(), source, 0).is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn a_cut_off_download_is_never_installed() {
+        let directory = scratch_directory("download");
+        let partial = directory.join("update-download.exe.part");
+        let finished = directory.join("update-download.exe");
+
+        let (url, server) = crate::poller::serve_once(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nConnection: close\r\n\r\nonly ten b",
+        );
+        assert!(super::download_release_asset(&url, &partial, &finished).is_err());
+        drop(server.join().unwrap());
+        assert!(!finished.exists());
+
+        let (url, server) = crate::poller::serve_once(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\ncomplete!!",
+        );
+        super::download_release_asset(&url, &partial, &finished).unwrap();
+        drop(server.join().unwrap());
+        assert_eq!(std::fs::read_to_string(&finished).unwrap(), "complete!!");
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 }

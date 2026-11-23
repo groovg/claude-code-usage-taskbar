@@ -256,3 +256,40 @@ fn hosted_placement_detects_real_moves_resizes_and_z_order_changes() {
     }
     assert!(placed(origin, 30, 20));
 }
+
+#[test]
+fn re_making_a_popup_does_not_change_its_frame() {
+    let window = TestWindow::new(WS_EX_LAYERED);
+    native_interop::make_popup(window.0, true);
+    take_frame_changes();
+    for _ in 0..3 {
+        native_interop::make_popup(window.0, true);
+    }
+    assert_eq!(take_frame_changes(), 0);
+
+    // Leaving the topmost band or a host still goes through.
+    native_interop::make_popup(window.0, false);
+    assert!(take_frame_changes() > 0);
+    assert_eq!(
+        unsafe { GetWindowLongW(window.0, GWL_EXSTYLE) } & WS_EX_TOPMOST.0 as i32,
+        0
+    );
+    let parent = TestWindow::new(WINDOW_EX_STYLE::default());
+    native_interop::embed_as_child(window.0, parent.0);
+    take_frame_changes();
+    native_interop::make_popup(window.0, false);
+    assert!(take_frame_changes() > 0);
+    assert!(unsafe { GetParent(window.0) }.is_err());
+}
+
+#[test]
+fn desktop_windows_past_the_new_surface_count_are_destroyed() {
+    let window = TestWindow::new(WINDOW_EX_STYLE::default());
+    let kept = SendHwnd::from_hwnd(window.0);
+    // Never a live window; only its slot position matters here.
+    let removed = SendHwnd(2);
+    let mut windows = vec![Some(kept), Some(removed), None];
+    let stale = take_stale_desktop_windows(&mut windows, 1, &[true]);
+    assert!(windows == vec![Some(kept)]);
+    assert!(stale == vec![removed]);
+}
