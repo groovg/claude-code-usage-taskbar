@@ -24,8 +24,143 @@ impl StudioApp {
     }
 
     pub(super) fn studio_page(&mut self, ui: &mut egui::Ui) {
+        self.theme_toolbar(ui);
+        self.new_theme_dialog(ui.ctx());
+        self.duplicate_theme_dialog(ui.ctx());
+        self.delete_theme_dialog(ui.ctx());
+        let read_only = self.theme_is_read_only();
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        if self.theme_helper_ui(ui) {
+            return;
+        }
+        self.three_pane_workspace(
+            ui,
+            [
+                "scene-pane",
+                "left-splitter",
+                "canvas-pane",
+                "right-splitter",
+                "inspector-pane",
+            ],
+            |app, ui, pane| match pane {
+                0 => app.scene_tree(ui, read_only),
+                1 => app.canvas_preview(ui),
+                _ => app.inspector(ui, read_only),
+            },
+        );
+    }
+
+    /// Shows an open theme helper in place of the workspace; returns whether one was open.
+    fn theme_helper_ui(&mut self, ui: &mut egui::Ui) -> bool {
+        if let Some(helper) = self.text_template_helper.take() {
+            self.text_template_helper = self.text_template_helper_ui(ui, helper);
+        } else if self.action_helper.is_some() {
+            self.action_helper_ui(ui);
+        } else if let Some(helper) = self.expression_helper.take() {
+            self.expression_helper = self.expression_helper_ui(ui, helper);
+        } else if self.asset_picker.is_some() {
+            self.asset_picker_ui(ui);
+        } else {
+            return false;
+        }
+        true
+    }
+
+    /// The layers, preview and inspector panes with draggable splitters
+    /// between them. `ids` names the five regions; `pane` draws pane 0, 1 or 2.
+    pub(super) fn three_pane_workspace(
+        &mut self,
+        ui: &mut egui::Ui,
+        ids: [&str; 5],
+        mut pane: impl FnMut(&mut Self, &mut egui::Ui, usize),
+    ) {
+        let row_height = (ui.available_height() - 8.0).max(1.0);
+        let total_width = ui.available_width();
+        const SPLITTER_WIDTH: f32 = 8.0;
+        const MIN_SCENE_WIDTH: f32 = 170.0;
+        const MIN_CANVAS_WIDTH: f32 = 240.0;
+        const MIN_INSPECTOR_WIDTH: f32 = 320.0;
+        let usable = (total_width - SPLITTER_WIDTH * 2.0).max(1.0);
+        let (scene_width, canvas_width) =
+            if usable >= MIN_SCENE_WIDTH + MIN_CANVAS_WIDTH + MIN_INSPECTOR_WIDTH {
+                self.scene_width = self.scene_width.clamp(
+                    MIN_SCENE_WIDTH,
+                    usable - MIN_CANVAS_WIDTH - MIN_INSPECTOR_WIDTH,
+                );
+                self.inspector_width = self.inspector_width.clamp(
+                    MIN_INSPECTOR_WIDTH,
+                    usable - MIN_CANVAS_WIDTH - self.scene_width,
+                );
+                (
+                    self.scene_width,
+                    usable - self.scene_width - self.inspector_width,
+                )
+            } else {
+                // The native minimum normally keeps us above this point, but
+                // proportional fallback guarantees no pane can force overflow.
+                let scene = usable * 0.23;
+                let inspector = usable * 0.39;
+                (scene, usable - scene - inspector)
+            };
+        let mut scene_delta = 0.0;
+        let mut inspector_delta = 0.0;
+        let (workspace_rect, _) =
+            ui.allocate_exact_size(egui::vec2(total_width, row_height), egui::Sense::hover());
+        let scene_rect =
+            egui::Rect::from_min_size(workspace_rect.min, egui::vec2(scene_width, row_height));
+        let left_splitter_rect = egui::Rect::from_min_size(
+            egui::pos2(scene_rect.right(), workspace_rect.top()),
+            egui::vec2(SPLITTER_WIDTH, row_height),
+        );
+        let canvas_rect = egui::Rect::from_min_size(
+            egui::pos2(left_splitter_rect.right(), workspace_rect.top()),
+            egui::vec2(canvas_width, row_height),
+        );
+        let right_splitter_rect = egui::Rect::from_min_size(
+            egui::pos2(canvas_rect.right(), workspace_rect.top()),
+            egui::vec2(SPLITTER_WIDTH, row_height),
+        );
+        let inspector_rect = egui::Rect::from_min_max(
+            egui::pos2(right_splitter_rect.right(), workspace_rect.top()),
+            workspace_rect.right_bottom(),
+        );
+
+        let panes = [
+            (scene_rect, scene_width),
+            (canvas_rect, canvas_width),
+            (inspector_rect, inspector_rect.width()),
+        ];
+        for (index, (rect, width)) in panes.into_iter().enumerate() {
+            let mut pane_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt(ids[index * 2])
+                    .max_rect(rect)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            );
+            pane_ui.set_clip_rect(rect);
+            studio_region(&mut pane_ui, width, row_height, |ui| pane(self, ui, index));
+            if index == 0 {
+                let left_splitter = workspace_splitter(ui, left_splitter_rect, ids[1]);
+                if left_splitter.dragged() {
+                    scene_delta = ui.input(|input| input.pointer.delta().x);
+                }
+            } else if index == 1 {
+                let right_splitter = workspace_splitter(ui, right_splitter_rect, ids[3]);
+                if right_splitter.dragged() {
+                    inspector_delta = -ui.input(|input| input.pointer.delta().x);
+                }
+            }
+        }
+        self.scene_width += scene_delta;
+        self.inspector_width += inspector_delta;
+    }
+
+    fn theme_toolbar(&mut self, ui: &mut egui::Ui) {
         let language = self.language();
-        let themes = available_themes(self.theme_path.as_deref(), &self.theme);
+        let themes = self.themes();
         let mut requested_theme = None;
         let read_only = self.theme_is_read_only();
         let can_delete = !read_only
@@ -46,7 +181,8 @@ impl StudioApp {
                 .show_ui(ui, |ui| {
                     for theme in &themes {
                         let selected = self.theme_path.as_deref() == Some(theme.path.as_path());
-                        if dropdown_selectable_label(ui, selected, &theme.label).clicked() {
+                        if dropdown_selectable_label(ui, selected, theme.label(language)).clicked()
+                        {
                             requested_theme = Some(theme.path.clone());
                         }
                     }
@@ -128,10 +264,13 @@ impl StudioApp {
             }
             if !read_only {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let changed = Toggle::new(&mut self.live_apply)
-                        .labels(language.text("Enabled"), language.text("Disabled"))
-                        .show(ui)
-                        .changed();
+                    let changed = Toggle::new(
+                        &mut self.live_apply,
+                        language.text("Enabled"),
+                        language.text("Disabled"),
+                    )
+                    .show(ui)
+                    .changed();
                     save_after_enabling_live_apply = changed && self.live_apply && self.dirty;
                     ui.label(language.text("Live apply"));
                 });
@@ -143,129 +282,6 @@ impl StudioApp {
         if let Some(path) = requested_theme {
             self.request_activate_theme(path);
         }
-        self.new_theme_dialog(ui.ctx());
-        self.duplicate_theme_dialog(ui.ctx());
-        self.delete_theme_dialog(ui.ctx());
-        let read_only = self.theme_is_read_only();
-        ui.add_space(8.0);
-        ui.separator();
-        ui.add_space(8.0);
-
-        if self.text_template_helper.is_some() {
-            self.text_template_helper_ui(ui);
-            return;
-        }
-        if self.action_helper.is_some() {
-            self.action_helper_ui(ui);
-            return;
-        }
-        if self.expression_helper.is_some() {
-            self.expression_helper_ui(ui);
-            return;
-        }
-        if self.asset_picker.is_some() {
-            self.asset_picker_ui(ui);
-            return;
-        }
-
-        let row_height = (ui.available_height() - 8.0).max(1.0);
-        let total_width = ui.available_width();
-        const SPLITTER_WIDTH: f32 = 8.0;
-        const MIN_SCENE_WIDTH: f32 = 170.0;
-        const MIN_CANVAS_WIDTH: f32 = 240.0;
-        const MIN_INSPECTOR_WIDTH: f32 = 320.0;
-        let usable = (total_width - SPLITTER_WIDTH * 2.0).max(1.0);
-        let (scene_width, canvas_width) =
-            if usable >= MIN_SCENE_WIDTH + MIN_CANVAS_WIDTH + MIN_INSPECTOR_WIDTH {
-                self.scene_width = self.scene_width.clamp(
-                    MIN_SCENE_WIDTH,
-                    usable - MIN_CANVAS_WIDTH - MIN_INSPECTOR_WIDTH,
-                );
-                self.inspector_width = self.inspector_width.clamp(
-                    MIN_INSPECTOR_WIDTH,
-                    usable - MIN_CANVAS_WIDTH - self.scene_width,
-                );
-                (
-                    self.scene_width,
-                    usable - self.scene_width - self.inspector_width,
-                )
-            } else {
-                // The native minimum normally keeps us above this point, but
-                // proportional fallback guarantees no pane can force overflow.
-                let scene = usable * 0.23;
-                let inspector = usable * 0.39;
-                (scene, usable - scene - inspector)
-            };
-        let mut scene_delta = 0.0;
-        let mut inspector_delta = 0.0;
-        let (workspace_rect, _) =
-            ui.allocate_exact_size(egui::vec2(total_width, row_height), egui::Sense::hover());
-        let scene_rect =
-            egui::Rect::from_min_size(workspace_rect.min, egui::vec2(scene_width, row_height));
-        let left_splitter_rect = egui::Rect::from_min_size(
-            egui::pos2(scene_rect.right(), workspace_rect.top()),
-            egui::vec2(SPLITTER_WIDTH, row_height),
-        );
-        let canvas_rect = egui::Rect::from_min_size(
-            egui::pos2(left_splitter_rect.right(), workspace_rect.top()),
-            egui::vec2(canvas_width, row_height),
-        );
-        let right_splitter_rect = egui::Rect::from_min_size(
-            egui::pos2(canvas_rect.right(), workspace_rect.top()),
-            egui::vec2(SPLITTER_WIDTH, row_height),
-        );
-        let inspector_rect = egui::Rect::from_min_max(
-            egui::pos2(right_splitter_rect.right(), workspace_rect.top()),
-            workspace_rect.right_bottom(),
-        );
-
-        let mut scene_ui = ui.new_child(
-            egui::UiBuilder::new()
-                .id_salt("scene-pane")
-                .max_rect(scene_rect)
-                .layout(egui::Layout::top_down(egui::Align::Min)),
-        );
-        scene_ui.set_clip_rect(scene_rect);
-        studio_region(&mut scene_ui, scene_width, row_height, |ui| {
-            self.scene_tree(ui, read_only)
-        });
-
-        let left_splitter = workspace_splitter(ui, left_splitter_rect, "left-splitter");
-        if left_splitter.dragged() {
-            scene_delta = ui.input(|input| input.pointer.delta().x);
-        }
-
-        let mut canvas_ui = ui.new_child(
-            egui::UiBuilder::new()
-                .id_salt("canvas-pane")
-                .max_rect(canvas_rect)
-                .layout(egui::Layout::top_down(egui::Align::Min)),
-        );
-        canvas_ui.set_clip_rect(canvas_rect);
-        studio_region(&mut canvas_ui, canvas_width, row_height, |ui| {
-            self.canvas_preview(ui)
-        });
-
-        let right_splitter = workspace_splitter(ui, right_splitter_rect, "right-splitter");
-        if right_splitter.dragged() {
-            inspector_delta = -ui.input(|input| input.pointer.delta().x);
-        }
-
-        let mut inspector_ui = ui.new_child(
-            egui::UiBuilder::new()
-                .id_salt("inspector-pane")
-                .max_rect(inspector_rect)
-                .layout(egui::Layout::top_down(egui::Align::Min)),
-        );
-        inspector_ui.set_clip_rect(inspector_rect);
-        studio_region(
-            &mut inspector_ui,
-            inspector_rect.width(),
-            row_height,
-            |ui| self.inspector(ui, read_only),
-        );
-        self.scene_width += scene_delta;
-        self.inspector_width += inspector_delta;
     }
 
     pub(super) fn open_asset_picker(&mut self, target: Selection, background: &LayerBackground) {
@@ -274,6 +290,7 @@ impl StudioApp {
             _ => None,
         };
         self.asset_error = None;
+        self.asset_list = None;
         self.asset_picker = Some(AssetPickerState {
             target,
             selected_path,
@@ -304,6 +321,7 @@ impl StudioApp {
         match theme_engine::import_asset(source) {
             Ok(asset) => {
                 self.asset_thumbnails.remove(&asset.relative_path);
+                self.asset_list = None;
                 self.asset_error = None;
                 Some(asset)
             }
@@ -337,17 +355,16 @@ impl StudioApp {
             if self.asset_thumbnails.contains_key(&asset.relative_path) {
                 continue;
             }
-            let Ok(source) = image::open(&asset.absolute_path) else {
-                continue;
-            };
-            let thumbnail = source.thumbnail(320, 200).to_rgba8();
-            let size = [thumbnail.width() as usize, thumbnail.height() as usize];
-            let image = egui::ColorImage::from_rgba_unmultiplied(size, thumbnail.as_raw());
-            let texture = context.load_texture(
-                format!("asset-thumbnail:{}", asset.relative_path),
-                image,
-                egui::TextureOptions::LINEAR,
-            );
+            let texture = image::open(&asset.absolute_path).ok().map(|source| {
+                let thumbnail = source.thumbnail(320, 200).to_rgba8();
+                let size = [thumbnail.width() as usize, thumbnail.height() as usize];
+                let image = egui::ColorImage::from_rgba_unmultiplied(size, thumbnail.as_raw());
+                context.load_texture(
+                    format!("asset-thumbnail:{}", asset.relative_path),
+                    image,
+                    egui::TextureOptions::LINEAR,
+                )
+            });
             self.asset_thumbnails
                 .insert(asset.relative_path.clone(), texture);
         }
@@ -378,13 +395,7 @@ impl StudioApp {
             return;
         };
         let language = self.language();
-        let assets = match theme_engine::list_assets() {
-            Ok(assets) => assets,
-            Err(error) => {
-                self.asset_error = Some(error);
-                Vec::new()
-            }
-        };
+        let assets = self.assets();
         self.ensure_asset_thumbnails(ui.ctx(), &assets);
         let mut close = false;
         let mut add_image = false;
@@ -491,10 +502,12 @@ impl StudioApp {
         }
     }
 
-    pub(super) fn text_template_helper_ui(&mut self, ui: &mut egui::Ui) {
-        let Some(mut helper) = self.text_template_helper.take() else {
-            return;
-        };
+    /// Shows `helper`; returns it while it stays open.
+    pub(super) fn text_template_helper_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        mut helper: TextTemplateHelperState,
+    ) -> Option<TextTemplateHelperState> {
         let language = self.language();
         let context = match &helper.target {
             TextTemplateHelperTarget::Theme(selection) => self.expression_context(*selection),
@@ -564,14 +577,17 @@ impl StudioApp {
                     }
                 }
             },
-            HelperAction::Continue => self.text_template_helper = Some(helper),
+            HelperAction::Continue => return Some(helper),
         }
+        None
     }
 
-    pub(super) fn expression_helper_ui(&mut self, ui: &mut egui::Ui) {
-        let Some(mut helper) = self.expression_helper.take() else {
-            return;
-        };
+    /// Shows `helper`; returns it while it stays open.
+    pub(super) fn expression_helper_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        mut helper: ExpressionHelperState,
+    ) -> Option<ExpressionHelperState> {
         let language = self.language();
         let context = match &helper.target {
             ExpressionHelperTarget::ContextMenu(_) => DataContext::from_usage_with_runtime(
@@ -630,7 +646,7 @@ impl StudioApp {
             HelperAction::Apply => {
                 let expression = Expression(helper.editor.draft);
                 if let ExpressionHelperTarget::ContextMenu(path) = helper.target {
-                    if !self.context_menu.is_builtin() {
+                    if !self.context_menu_read_only() {
                         if let Some(item) =
                             context_menu_item_mut(&mut self.context_menu.items, &path)
                         {
@@ -639,10 +655,10 @@ impl StudioApp {
                             self.context_menu_dirty = true;
                         }
                     }
-                    return;
+                    return None;
                 }
                 let ExpressionHelperTarget::Theme(selection) = helper.target else {
-                    return;
+                    return None;
                 };
                 let applied = match selection {
                     Selection::Surface(surface_index) => self
@@ -688,8 +704,9 @@ impl StudioApp {
                     self.changed();
                 }
             }
-            HelperAction::Continue => self.expression_helper = Some(helper),
+            HelperAction::Continue => return Some(helper),
         }
+        None
     }
 
     pub(super) fn action_helper_ui(&mut self, ui: &mut egui::Ui) {
@@ -706,24 +723,13 @@ impl StudioApp {
         let self_id = self
             .scene_object(helper.selection)
             .map_or_else(|| surface.id.clone(), |object| object.id.clone());
-        let targets = self
-            .theme
-            .surfaces
-            .iter()
-            .flat_map(|root| {
-                std::iter::once((root.id.clone(), root.name.clone())).chain(
-                    root.children
-                        .iter()
-                        .map(|object| (object.id.clone(), object.name.clone())),
-                )
-            })
-            .collect::<Vec<_>>();
+        let targets = self.layer_targets();
         let context = self.expression_context(helper.selection);
         let mut target = helper.target.clone();
         let mut property = helper.property;
         let mut value = helper.value.clone();
         let mut url = helper.url.clone();
-        let context_menus = context_menu::list_context_menus().unwrap_or_default();
+        let context_menus = self.context_menus();
         let mut context_menu_reference = helper.context_menu_reference.clone();
         let action = show_action_helper(
             ui,
@@ -795,18 +801,7 @@ impl StudioApp {
             return;
         };
         let language = self.language();
-        let layer_targets = self
-            .theme
-            .surfaces
-            .iter()
-            .flat_map(|root| {
-                std::iter::once((root.id.clone(), root.name.clone())).chain(
-                    root.children
-                        .iter()
-                        .map(|object| (object.id.clone(), object.name.clone())),
-                )
-            })
-            .collect::<Vec<_>>();
+        let layer_targets = self.layer_targets();
         let action = show_action_helper(
             ui,
             &mut helper.editor,
@@ -846,6 +841,16 @@ impl StudioApp {
             },
             HelperAction::Continue => self.context_menu_action_helper = Some(helper),
         }
+    }
+
+    /// Every layer's id and name, for the action helpers' layer lists.
+    fn layer_targets(&self) -> Vec<(String, String)> {
+        self.theme
+            .surfaces
+            .iter()
+            .flat_map(|root| std::iter::once(root).chain(&root.children))
+            .map(|object| (object.id.clone(), object.name.clone()))
+            .collect()
     }
 
     pub(super) fn expression_context(&self, selection: Selection) -> DataContext {
@@ -932,78 +937,43 @@ impl StudioApp {
                     let id = ui.make_persistent_id(("scene-surface", surface.id.clone()));
                     let selection = Selection::Surface(surface_index);
                     paint_scene_row_background(ui, selected);
-                    if roots.is_empty() {
-                        let responses = scene_row_style(ui, selected, |ui| {
-                            scene_row_contents(
-                                ui,
-                                &mut surface,
-                                selection,
-                                preview_size,
-                                None,
-                                !read_only,
-                                language,
-                            )
-                        });
-                        if responses.name_changed {
-                            self.theme.surfaces[surface_index].name = surface.name.clone();
-                            self.changed();
-                        }
-                        if responses.item.hovered() || responses.drag_handle.hovered() {
-                            self.hovered_scene_item = Some(selection);
-                        }
-                        if responses.item.clicked() || responses.drag_handle.drag_started() {
-                            self.selection = selection;
-                        }
-                        if !read_only && pending_drop.is_none() {
-                            pending_drop = scene_drop_from_response(
-                                ui,
-                                &responses.item,
-                                selection,
-                                surface_index,
-                            );
-                        }
-                    } else {
-                        let body_visuals = ui.visuals().clone();
-                        let state =
-                            egui::collapsing_header::CollapsingState::load_with_default_open(
-                                ui.ctx(),
-                                id,
-                                true,
-                            );
-                        let is_open = state.is_open();
-                        let responses = scene_row_style(ui, selected, |ui| {
-                            scene_row_contents(
-                                ui,
-                                &mut surface,
-                                selection,
-                                preview_size,
-                                Some(is_open),
-                                !read_only,
-                                language,
-                            )
-                        });
-                        if responses.name_changed {
-                            self.theme.surfaces[surface_index].name = surface.name.clone();
-                            self.changed();
-                        }
-                        let row_response = responses.item.clone();
-                        if row_response.hovered() || responses.drag_handle.hovered() {
-                            self.hovered_scene_item = Some(selection);
-                        }
-                        if row_response.clicked() || responses.drag_handle.drag_started() {
-                            self.selection = selection;
-                        }
-                        if responses.expand_button.clicked() {
-                            toggle_scene_node(ui, id, true);
-                        }
-                        if !read_only && pending_drop.is_none() {
-                            pending_drop = scene_drop_from_response(
-                                ui,
-                                &row_response,
-                                selection,
-                                surface_index,
-                            );
-                        }
+                    let body_visuals = ui.visuals().clone();
+                    let is_open = (!roots.is_empty()).then(|| {
+                        egui::collapsing_header::CollapsingState::load_with_default_open(
+                            ui.ctx(),
+                            id,
+                            true,
+                        )
+                        .is_open()
+                    });
+                    let responses = scene_row_style(ui, selected, |ui| {
+                        scene_row_contents(
+                            ui,
+                            &mut surface,
+                            selection,
+                            preview_size,
+                            is_open,
+                            !read_only,
+                            language,
+                        )
+                    });
+                    if responses.name_changed {
+                        self.theme.surfaces[surface_index].name = surface.name.clone();
+                        self.changed();
+                    }
+                    if responses.item.hovered() || responses.drag_handle.hovered() {
+                        self.hovered_scene_item = Some(selection);
+                    }
+                    if responses.item.clicked() || responses.drag_handle.drag_started() {
+                        self.selection = selection;
+                    }
+                    if is_open.is_some() && responses.expand_button.clicked() {
+                        toggle_scene_node(ui, id, true);
+                    }
+                    if !read_only && pending_drop.is_none() {
+                        pending_drop = scene_drop_from_response(ui, &responses.item, selection);
+                    }
+                    if is_open.is_some() {
                         let mut state =
                             egui::collapsing_header::CollapsingState::load_with_default_open(
                                 ui.ctx(),
@@ -1114,48 +1084,49 @@ impl StudioApp {
             .filter(|(_, child)| child.parent.as_deref() == Some(object.id.as_str()))
             .map(|(index, _)| index)
             .collect();
-        if !children.is_empty() {
-            let selected = self.selection == Selection::Object(surface, index);
-            let id = ui.make_persistent_id(("scene-object", surface, object.id.clone()));
-            paint_scene_row_background(ui, selected);
-            let body_visuals = ui.visuals().clone();
-            let state = egui::collapsing_header::CollapsingState::load_with_default_open(
+        let selection = Selection::Object(surface, index);
+        let selected = self.selection == selection;
+        let id = ui.make_persistent_id(("scene-object", surface, object.id.clone()));
+        paint_scene_row_background(ui, selected);
+        let body_visuals = ui.visuals().clone();
+        let is_open = (!children.is_empty()).then(|| {
+            egui::collapsing_header::CollapsingState::load_with_default_open(
                 ui.ctx(),
                 id,
                 depth == 1,
-            );
-            let is_open = state.is_open();
-            let responses = scene_row_style(ui, selected, |ui| {
-                scene_row_contents(
-                    ui,
-                    &mut object,
-                    Selection::Object(surface, index),
-                    preview_size,
-                    Some(is_open),
-                    !read_only,
-                    language,
-                )
-            });
-            let selection = Selection::Object(surface, index);
-            if responses.name_changed {
-                self.theme.surfaces[surface].children[index].name = object.name.clone();
-                self.changed();
-            }
-            let row_response = responses.item.clone();
-            if row_response.hovered() || responses.drag_handle.hovered() {
-                self.hovered_scene_item = Some(selection);
-            }
-            if row_response.clicked() || responses.drag_handle.drag_started() {
-                self.selection = selection;
-            }
-            if responses.expand_button.clicked() {
-                toggle_scene_node(ui, id, depth == 1);
-            }
-            let mut pending_drop = if read_only {
-                None
-            } else {
-                scene_drop_from_response(ui, &row_response, selection, surface)
-            };
+            )
+            .is_open()
+        });
+        let responses = scene_row_style(ui, selected, |ui| {
+            scene_row_contents(
+                ui,
+                &mut object,
+                selection,
+                preview_size,
+                is_open,
+                !read_only,
+                language,
+            )
+        });
+        if responses.name_changed {
+            self.theme.surfaces[surface].children[index].name = object.name.clone();
+            self.changed();
+        }
+        if responses.item.hovered() || responses.drag_handle.hovered() {
+            self.hovered_scene_item = Some(selection);
+        }
+        if responses.item.clicked() || responses.drag_handle.drag_started() {
+            self.selection = selection;
+        }
+        if is_open.is_some() && responses.expand_button.clicked() {
+            toggle_scene_node(ui, id, depth == 1);
+        }
+        let mut pending_drop = if read_only {
+            None
+        } else {
+            scene_drop_from_response(ui, &responses.item, selection)
+        };
+        if is_open.is_some() {
             let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
                 ui.ctx(),
                 id,
@@ -1174,37 +1145,8 @@ impl StudioApp {
                     }
                 });
             }
-            return if read_only { None } else { pending_drop };
         }
-        let selection = Selection::Object(surface, index);
-        let selected = self.selection == selection;
-        paint_scene_row_background(ui, selected);
-        let responses = scene_row_style(ui, selected, |ui| {
-            scene_row_contents(
-                ui,
-                &mut object,
-                selection,
-                preview_size,
-                None,
-                !read_only,
-                language,
-            )
-        });
-        if responses.name_changed {
-            self.theme.surfaces[surface].children[index].name = object.name;
-            self.changed();
-        }
-        if responses.item.hovered() || responses.drag_handle.hovered() {
-            self.hovered_scene_item = Some(selection);
-        }
-        if responses.item.clicked() || responses.drag_handle.drag_started() {
-            self.selection = selection;
-        }
-        if read_only {
-            None
-        } else {
-            scene_drop_from_response(ui, &responses.item, selection, surface)
-        }
+        pending_drop
     }
 
     pub(super) fn canvas_preview(&mut self, ui: &mut egui::Ui) {
@@ -1643,10 +1585,6 @@ impl StudioApp {
             ui.make_persistent_id(("root-object-controls", surface.id.clone()));
         let placement_controls_id =
             ui.make_persistent_id(("placement-expression-controls", surface.id.clone()));
-        let mut requested_expression = None;
-        let mut requested_text_template = false;
-        let mut requested_asset = false;
-        let mut requested_mouse_event = None;
         if editable_name {
             inspector_name_editor(
                 ui,
@@ -1658,57 +1596,14 @@ impl StudioApp {
             ui.add_space(6.0);
         }
 
-        egui::CollapsingHeader::new(language.text("Layer"))
-            .id_salt(object_controls_id.with("layer-section"))
-            .default_open(true)
-            .show(ui, |ui| {
-                if let Some(request) = layer_properties_inspector(
-                    ui,
-                    object_controls_id.with("layer"),
-                    &expression_context,
-                    &mut surface,
-                    language,
-                ) {
-                    match request {
-                        LayerInspectorRequest::Expression(field) => {
-                            requested_expression = Some(field)
-                        }
-                        LayerInspectorRequest::TextTemplate => requested_text_template = true,
-                    }
-                }
-            });
-
-        egui::CollapsingHeader::new(language.text("Appearance"))
-            .id_salt(object_controls_id.with("appearance-section"))
-            .default_open(true)
-            .show(ui, |ui| {
-                if let Some(field) = render_controls(
-                    ui,
-                    render_controls_id,
-                    &mut surface.render,
-                    &mut surface.visibility,
-                    &expression_context,
-                    language,
-                ) {
-                    requested_expression = Some(field);
-                }
-                if let Some(field) = appearance_inspector(
-                    ui,
-                    object_controls_id.with("appearance"),
-                    &expression_context,
-                    &mut surface,
-                    &mut requested_asset,
-                    language,
-                ) {
-                    requested_expression = Some(field);
-                }
-                requested_mouse_event = mouse_events_inspector(
-                    ui,
-                    object_controls_id.with("mouse-events"),
-                    &mut surface,
-                    language,
-                );
-            });
+        let mut request = layer_sections(
+            ui,
+            object_controls_id,
+            render_controls_id,
+            &expression_context,
+            &mut surface,
+            language,
+        );
 
         egui::CollapsingHeader::new(language.text("Positioning"))
             .id_salt(object_controls_id.with("positioning-section"))
@@ -1743,6 +1638,18 @@ impl StudioApp {
                         .color(MUTED),
                     );
                 }
+                // A theme may leave the surface anchor out, meaning the
+                // reference point. Write it only when a picker changes, so
+                // opening such a theme does not mark it changed.
+                let mut surface_horizontal = surface
+                    .placement
+                    .surface_horizontal
+                    .unwrap_or(surface.placement.horizontal);
+                let mut surface_vertical = surface
+                    .placement
+                    .surface_vertical
+                    .unwrap_or(surface.placement.vertical);
+                let mut anchor_changed = false;
                 labeled(ui, language.text("Reference"), |ui| {
                     const REFERENCE_POINT_WIDTH: f32 = 35.0;
                     let reference_width = (inspector_control_width(ui)
@@ -1770,31 +1677,25 @@ impl StudioApp {
                                 }
                             }
                         });
-                    anchor_point_picker(
+                    anchor_changed |= anchor_point_picker(
                         ui,
                         ("reference-point", index),
                         &mut surface.placement.horizontal,
                         &mut surface.placement.vertical,
                     );
                 });
-                let mut surface_horizontal = surface
-                    .placement
-                    .surface_horizontal
-                    .unwrap_or(surface.placement.horizontal);
-                let mut surface_vertical = surface
-                    .placement
-                    .surface_vertical
-                    .unwrap_or(surface.placement.vertical);
                 labeled(ui, language.text("Anchor"), |ui| {
-                    anchor_point_picker(
+                    anchor_changed |= anchor_point_picker(
                         ui,
                         ("surface-point", index),
                         &mut surface_horizontal,
                         &mut surface_vertical,
                     );
                 });
-                surface.placement.surface_horizontal = Some(surface_horizontal);
-                surface.placement.surface_vertical = Some(surface_vertical);
+                if anchor_changed {
+                    surface.placement.surface_horizontal = Some(surface_horizontal);
+                    surface.placement.surface_vertical = Some(surface_vertical);
+                }
                 for (label, field, value) in [
                     (
                         language.text("Height"),
@@ -1813,8 +1714,9 @@ impl StudioApp {
                         label,
                         value,
                         &expression_context,
+                        language,
                     ) {
-                        requested_expression = Some(field);
+                        request = Some(LayerInspectorRequest::Expression(field));
                     }
                 }
                 if optional_expression_control(
@@ -1826,8 +1728,11 @@ impl StudioApp {
                     &mut surface.placement.offset_x_expression,
                     &expression_context,
                     format_number_for_ui,
+                    language,
                 ) {
-                    requested_expression = Some(ExpressionField::PlacementOffsetX);
+                    request = Some(LayerInspectorRequest::Expression(
+                        ExpressionField::PlacementOffsetX,
+                    ));
                 }
                 if optional_expression_control(
                     ui,
@@ -1838,8 +1743,11 @@ impl StudioApp {
                     &mut surface.placement.offset_y_expression,
                     &expression_context,
                     format_number_for_ui,
+                    language,
                 ) {
-                    requested_expression = Some(ExpressionField::PlacementOffsetY);
+                    request = Some(LayerInspectorRequest::Expression(
+                        ExpressionField::PlacementOffsetY,
+                    ));
                 }
                 if numeric_expression_control(
                     ui,
@@ -1847,56 +1755,17 @@ impl StudioApp {
                     language.text("Rotation"),
                     &mut surface.rotation,
                     &expression_context,
+                    language,
                 ) {
-                    requested_expression = Some(ExpressionField::ObjectRotation);
+                    request = Some(LayerInspectorRequest::Expression(
+                        ExpressionField::ObjectRotation,
+                    ));
                 }
             },
         );
 
-        if let Some(field) = requested_expression {
-            let draft = match field {
-                ExpressionField::PlacementOffsetX => surface
-                    .placement
-                    .offset_x_expression
-                    .as_ref()
-                    .map(|expression| expression.0.clone()),
-                ExpressionField::PlacementOffsetY => surface
-                    .placement
-                    .offset_y_expression
-                    .as_ref()
-                    .map(|expression| expression.0.clone()),
-                _ => scene_object_expression(&surface, field),
-            };
-            if let Some(draft) = draft {
-                self.expression_helper = Some(ExpressionHelperState::new(
-                    Selection::Surface(index),
-                    field,
-                    draft,
-                ));
-            }
-        }
-        if let Some(field) = requested_mouse_event {
-            let draft = surface
-                .mouse_events
-                .as_ref()
-                .map(|events| events.handler(field.kind()).to_string())
-                .unwrap_or_default();
-            self.action_helper = Some(ActionHelperState::new(
-                Selection::Surface(index),
-                field,
-                draft,
-            ));
-        }
-        if requested_text_template {
-            if let SceneContent::Text { template, .. } = &surface.content {
-                self.text_template_helper = Some(TextTemplateHelperState::for_theme(
-                    Selection::Surface(index),
-                    template.clone(),
-                ));
-            }
-        }
-        if requested_asset {
-            self.open_asset_picker(Selection::Surface(index), &surface.background);
+        if let Some(request) = request {
+            self.open_inspector_request(Selection::Surface(index), &surface, request);
         }
         let changed = before != serde_json::to_string(&surface).unwrap_or_default();
         if changed {
@@ -1935,10 +1804,6 @@ impl StudioApp {
         );
         let expression_controls_id =
             ui.make_persistent_id(("object-expression-controls", object.id.clone()));
-        let mut requested_expression = None;
-        let mut requested_text_template = false;
-        let mut requested_asset = false;
-        let mut requested_mouse_event = None;
         if editable_name {
             inspector_name_editor(
                 ui,
@@ -1950,57 +1815,14 @@ impl StudioApp {
             ui.add_space(6.0);
         }
 
-        egui::CollapsingHeader::new(language.text("Layer"))
-            .id_salt(expression_controls_id.with("layer-section"))
-            .default_open(true)
-            .show(ui, |ui| {
-                if let Some(request) = layer_properties_inspector(
-                    ui,
-                    expression_controls_id.with("layer"),
-                    &expression_context,
-                    &mut object,
-                    language,
-                ) {
-                    match request {
-                        LayerInspectorRequest::Expression(field) => {
-                            requested_expression = Some(field)
-                        }
-                        LayerInspectorRequest::TextTemplate => requested_text_template = true,
-                    }
-                }
-            });
-
-        egui::CollapsingHeader::new(language.text("Appearance"))
-            .id_salt(expression_controls_id.with("appearance-section"))
-            .default_open(true)
-            .show(ui, |ui| {
-                if let Some(field) = render_controls(
-                    ui,
-                    render_controls_id,
-                    &mut object.render,
-                    &mut object.visibility,
-                    &expression_context,
-                    language,
-                ) {
-                    requested_expression = Some(field);
-                }
-                if let Some(field) = appearance_inspector(
-                    ui,
-                    expression_controls_id.with("appearance"),
-                    &expression_context,
-                    &mut object,
-                    &mut requested_asset,
-                    language,
-                ) {
-                    requested_expression = Some(field);
-                }
-                requested_mouse_event = mouse_events_inspector(
-                    ui,
-                    expression_controls_id.with("mouse-events"),
-                    &mut object,
-                    language,
-                );
-            });
+        let mut request = layer_sections(
+            ui,
+            expression_controls_id,
+            render_controls_id,
+            &expression_context,
+            &mut object,
+            language,
+        );
 
         egui::CollapsingHeader::new(language.text("Positioning"))
             .id_salt(expression_controls_id.with("positioning-section"))
@@ -2033,18 +1855,6 @@ impl StudioApp {
                         ExpressionField::ObjectWidth,
                         &mut object.width,
                     ),
-                ] {
-                    if numeric_expression_control(
-                        ui,
-                        expression_controls_id.with(label),
-                        label,
-                        value,
-                        &expression_context,
-                    ) {
-                        requested_expression = Some(field);
-                    }
-                }
-                for (label, field, value) in [
                     (
                         language.text("X offset"),
                         ExpressionField::ObjectX,
@@ -2067,46 +1877,19 @@ impl StudioApp {
                         label,
                         value,
                         &expression_context,
+                        language,
                     ) {
-                        requested_expression = Some(field);
+                        request = Some(LayerInspectorRequest::Expression(field));
                     }
                 }
             },
         );
 
-        if let Some(field) = requested_expression {
-            if let Some(draft) = scene_object_expression(&object, field) {
-                self.expression_helper = Some(ExpressionHelperState::new(
-                    Selection::Object(surface_index, object_index),
-                    field,
-                    draft,
-                ));
-            }
-        }
-        if let Some(field) = requested_mouse_event {
-            let draft = object
-                .mouse_events
-                .as_ref()
-                .map(|events| events.handler(field.kind()).to_string())
-                .unwrap_or_default();
-            self.action_helper = Some(ActionHelperState::new(
+        if let Some(request) = request {
+            self.open_inspector_request(
                 Selection::Object(surface_index, object_index),
-                field,
-                draft,
-            ));
-        }
-        if requested_text_template {
-            if let SceneContent::Text { template, .. } = &object.content {
-                self.text_template_helper = Some(TextTemplateHelperState::for_theme(
-                    Selection::Object(surface_index, object_index),
-                    template.clone(),
-                ));
-            }
-        }
-        if requested_asset {
-            self.open_asset_picker(
-                Selection::Object(surface_index, object_index),
-                &object.background,
+                &object,
+                request,
             );
         }
         let changed = before != serde_json::to_string(&object).unwrap_or_default();
@@ -2116,8 +1899,49 @@ impl StudioApp {
         changed
     }
 
+    /// Opens the helper or asset picker that an inspector control asked for.
+    fn open_inspector_request(
+        &mut self,
+        selection: Selection,
+        object: &SceneObject,
+        request: LayerInspectorRequest,
+    ) {
+        match request {
+            LayerInspectorRequest::Expression(field) => {
+                if let Some(draft) = scene_object_expression(object, field) {
+                    self.expression_helper =
+                        Some(ExpressionHelperState::new(selection, field, draft));
+                }
+            }
+            LayerInspectorRequest::MouseEvent(field) => {
+                let draft = object
+                    .mouse_events
+                    .as_ref()
+                    .map(|events| events.handler(field.kind()).to_string())
+                    .unwrap_or_default();
+                self.action_helper = Some(ActionHelperState::new(selection, field, draft));
+            }
+            LayerInspectorRequest::TextTemplate => {
+                if let SceneContent::Text { template, .. } = &object.content {
+                    self.text_template_helper = Some(TextTemplateHelperState::for_theme(
+                        selection,
+                        template.clone(),
+                    ));
+                }
+            }
+            LayerInspectorRequest::Asset => self.open_asset_picker(selection, &object.background),
+        }
+    }
+
     pub(super) fn duplicate_selection(&mut self) -> bool {
         let language = self.language();
+        let reserved: std::collections::HashSet<String> = self
+            .theme
+            .surfaces
+            .iter()
+            .flat_map(|surface| std::iter::once(surface).chain(&surface.children))
+            .map(|object| object.id.to_ascii_lowercase())
+            .collect();
         match self.selection {
             Selection::Surface(surface_index) => {
                 let Some(mut root) = self.theme.surfaces.get(surface_index).cloned() else {
@@ -2126,7 +1950,7 @@ impl StudioApp {
                 let descendants = std::mem::take(&mut root.children);
                 let mut moving = vec![root];
                 moving.extend(descendants);
-                remap_scene_ids(&mut moving, &std::collections::HashSet::new(), true);
+                remap_scene_ids(&mut moving, &reserved, true);
                 let mut duplicate = moving.remove(0);
                 duplicate.name = format!("{} ({})", duplicate.name, language.text("copy"));
                 duplicate.children = moving;
@@ -2157,7 +1981,7 @@ impl StudioApp {
                 else {
                     return false;
                 };
-                remap_scene_ids(&mut moving, &std::collections::HashSet::new(), true);
+                remap_scene_ids(&mut moving, &reserved, true);
                 moving[root_position].name =
                     format!("{} ({})", moving[root_position].name, language.text("copy"));
                 let insert_at = scene_subtree_end(&surface.children, &root_id);
@@ -2361,7 +2185,15 @@ impl StudioApp {
         };
         if crosses_surfaces {
             let reserved = reserved_scene_ids(&self.theme.surfaces[adjusted_target_surface]);
-            remap_scene_ids(&mut moving, &reserved, false);
+            let replacements = remap_scene_ids(&mut moving, &reserved, false);
+            // Actions left on the source surface follow the moved layers' new ids.
+            if let Selection::Object(source_surface, _) = source {
+                let surface = &mut self.theme.surfaces[source_surface];
+                remap_mouse_action_targets(surface, &replacements);
+                for object in &mut surface.children {
+                    remap_mouse_action_targets(object, &replacements);
+                }
+            }
         }
 
         let target_object = target_object_id.as_ref().and_then(|id| {

@@ -3,8 +3,8 @@ use super::*;
 impl StudioApp {
     pub(super) fn context_menus_page(&mut self, ui: &mut egui::Ui) {
         let language = self.language();
-        let descriptors = context_menu::list_context_menus().unwrap_or_default();
-        let read_only = self.context_menu.is_builtin();
+        let descriptors = self.context_menus();
+        let read_only = self.context_menu_read_only();
         let mut requested_path = None;
         let mut create_new = false;
         let mut duplicate = false;
@@ -109,41 +109,25 @@ impl StudioApp {
                     self.context_menu = document;
                     self.context_menu_path = Some(path);
                     self.context_menu_dirty = false;
-                    self.context_menu_selection = None;
-                    self.context_menu_action_helper = None;
-                    self.expression_helper = None;
-                    self.text_template_helper = None;
+                    self.reset_context_menu_editor();
                 }
                 Err(error) => self.theme_error = Some(error),
             }
         }
         if create_new {
             self.context_menu = ContextMenuDocument::blank("New Context Menu");
-            self.context_menu_path = None;
-            self.context_menu_dirty = true;
+            self.start_unsaved_context_menu();
+            self.reset_context_menu_editor();
             self.context_menu_selection = Some(vec![0]);
-            self.context_menu_action_helper = None;
-            self.expression_helper = None;
-            self.text_template_helper = None;
         }
         if duplicate {
             let name = format!("{} ({})", self.context_menu.name, language.text("copy"));
             self.context_menu.id = context_menu::unique_document_id(&name);
             self.context_menu.name = name;
-            self.context_menu_path = None;
-            self.context_menu_dirty = true;
+            self.start_unsaved_context_menu();
         }
         if discard {
-            self.context_menu = self
-                .context_menu_path
-                .as_deref()
-                .and_then(|path| context_menu::load_context_menu(path).ok())
-                .unwrap_or_else(context_menu::classic_context_menu);
-            self.context_menu_dirty = false;
-            self.context_menu_selection = None;
-            self.context_menu_action_helper = None;
-            self.expression_helper = None;
-            self.text_template_helper = None;
+            self.discard_context_menu_changes();
         }
         if delete {
             if let Some(path) = self.context_menu_path.clone() {
@@ -156,15 +140,15 @@ impl StudioApp {
         ui.add_space(8.0);
         ui.separator();
         ui.add_space(8.0);
-        if self.text_template_helper.is_some() {
-            self.text_template_helper_ui(ui);
-        } else if self.expression_helper.is_some() {
-            self.expression_helper_ui(ui);
+        if let Some(helper) = self.context_menu_text_template_helper.take() {
+            self.context_menu_text_template_helper = self.text_template_helper_ui(ui, helper);
+        } else if let Some(helper) = self.context_menu_expression_helper.take() {
+            self.context_menu_expression_helper = self.expression_helper_ui(ui, helper);
         } else if self.context_menu_action_helper.is_some() {
             self.context_menu_action_helper_ui(ui);
         } else {
             let editor_identity = self.context_menu.id.clone();
-            let read_only = self.context_menu.is_builtin();
+            let read_only = self.context_menu_read_only();
             ui.push_id(("context-menu-document", editor_identity), |ui| {
                 self.context_menu_workspace(ui, read_only);
             });
@@ -175,136 +159,97 @@ impl StudioApp {
         // the document dirty; saving earlier would immediately re-lock the menu
         // selector even though the user had just saved.
         if save {
-            let duplicate_id = descriptors.iter().any(|descriptor| {
-                descriptor
-                    .id
-                    .eq_ignore_ascii_case(self.context_menu.id.trim())
-                    && self.context_menu_path.as_deref() != Some(descriptor.path.as_path())
-            });
-            if duplicate_id {
-                self.theme_error = Some(format!(
-                    "{} '{}'",
-                    language.text("Another context menu already uses the ID"),
-                    self.context_menu.id
-                ));
-            } else {
-                let previous_path = self.context_menu_path.clone();
-                match context_menu::save_context_menu(&self.context_menu) {
-                    Ok(path) => {
-                        if let Some(previous) = previous_path.as_deref() {
-                            if previous != path {
-                                if let Err(error) = context_menu::delete_context_menu(previous) {
-                                    self.theme_error = Some(format!(
-                                        "{}: {error}",
-                                        language.text(
-                                            "The menu was saved, but its old file could not be removed"
-                                        )
-                                    ));
-                                }
-                            }
-                        }
-                        self.context_menu_path = Some(path);
-                        self.context_menu_dirty = false;
-                        self.notify_owner();
+            self.save_context_menu_document();
+        }
+    }
+
+    /// Marks the open menu as a new document that has no file yet. Discard
+    /// returns to the file it came from.
+    pub(super) fn start_unsaved_context_menu(&mut self) {
+        if let Some(path) = self.context_menu_path.take() {
+            self.context_menu_discard_path = Some(path);
+        }
+        self.context_menu_dirty = true;
+    }
+
+    /// Reloads the open menu from its file, or the file a new copy came from.
+    pub(super) fn discard_context_menu_changes(&mut self) {
+        let path = self
+            .context_menu_path
+            .clone()
+            .or_else(|| self.context_menu_discard_path.clone());
+        match path
+            .as_deref()
+            .and_then(|path| context_menu::load_context_menu(path).ok())
+        {
+            Some(document) => {
+                self.context_menu = document;
+                self.context_menu_path = path;
+            }
+            None => self.context_menu = context_menu::classic_context_menu(),
+        }
+        self.context_menu_dirty = false;
+        self.reset_context_menu_editor();
+    }
+
+    /// Saves the open menu and removes the file it replaced. Returns whether it saved.
+    pub(super) fn save_context_menu_document(&mut self) -> bool {
+        let language = self.language();
+        let descriptors = context_menu::list_context_menus().unwrap_or_default();
+        let duplicate_id = descriptors.iter().any(|descriptor| {
+            descriptor
+                .id
+                .eq_ignore_ascii_case(self.context_menu.id.trim())
+                && self.context_menu_path.as_deref() != Some(descriptor.path.as_path())
+        });
+        if duplicate_id {
+            self.theme_error = Some(format!(
+                "{} '{}'",
+                language.text("Another context menu already uses the ID"),
+                self.context_menu.id
+            ));
+            return false;
+        }
+        let previous_path = self.context_menu_path.clone();
+        match context_menu::save_context_menu(&self.context_menu) {
+            Ok(path) => {
+                if let Some(previous) = previous_path.as_deref() {
+                    if let Err(error) = remove_replaced_context_menu(previous, &path) {
+                        self.theme_error = Some(format!(
+                            "{}: {error}",
+                            language
+                                .text("The menu was saved, but its old file could not be removed")
+                        ));
                     }
-                    Err(error) => self.theme_error = Some(error),
                 }
+                self.context_menu_path = Some(path);
+                self.context_menu_dirty = false;
+                self.refresh_library();
+                self.notify_owner();
+                true
+            }
+            Err(error) => {
+                self.theme_error = Some(error);
+                false
             }
         }
     }
 
     pub(super) fn context_menu_workspace(&mut self, ui: &mut egui::Ui, read_only: bool) {
-        let row_height = (ui.available_height() - 8.0).max(1.0);
-        let total_width = ui.available_width();
-        const SPLITTER_WIDTH: f32 = 8.0;
-        const MIN_LAYERS_WIDTH: f32 = 170.0;
-        const MIN_PREVIEW_WIDTH: f32 = 240.0;
-        const MIN_INSPECTOR_WIDTH: f32 = 320.0;
-        let usable = (total_width - SPLITTER_WIDTH * 2.0).max(1.0);
-        let (layers_width, preview_width) =
-            if usable >= MIN_LAYERS_WIDTH + MIN_PREVIEW_WIDTH + MIN_INSPECTOR_WIDTH {
-                self.scene_width = self.scene_width.clamp(
-                    MIN_LAYERS_WIDTH,
-                    usable - MIN_PREVIEW_WIDTH - MIN_INSPECTOR_WIDTH,
-                );
-                self.inspector_width = self.inspector_width.clamp(
-                    MIN_INSPECTOR_WIDTH,
-                    usable - MIN_PREVIEW_WIDTH - self.scene_width,
-                );
-                (
-                    self.scene_width,
-                    usable - self.scene_width - self.inspector_width,
-                )
-            } else {
-                let layers = usable * 0.23;
-                let inspector = usable * 0.39;
-                (layers, usable - layers - inspector)
-            };
-        let (workspace_rect, _) =
-            ui.allocate_exact_size(egui::vec2(total_width, row_height), egui::Sense::hover());
-        let layers_rect =
-            egui::Rect::from_min_size(workspace_rect.min, egui::vec2(layers_width, row_height));
-        let left_splitter_rect = egui::Rect::from_min_size(
-            egui::pos2(layers_rect.right(), workspace_rect.top()),
-            egui::vec2(SPLITTER_WIDTH, row_height),
-        );
-        let preview_rect = egui::Rect::from_min_size(
-            egui::pos2(left_splitter_rect.right(), workspace_rect.top()),
-            egui::vec2(preview_width, row_height),
-        );
-        let right_splitter_rect = egui::Rect::from_min_size(
-            egui::pos2(preview_rect.right(), workspace_rect.top()),
-            egui::vec2(SPLITTER_WIDTH, row_height),
-        );
-        let inspector_rect = egui::Rect::from_min_max(
-            egui::pos2(right_splitter_rect.right(), workspace_rect.top()),
-            workspace_rect.right_bottom(),
-        );
-
-        let mut layers_ui = ui.new_child(
-            egui::UiBuilder::new()
-                .id_salt("context-menu-layers-pane")
-                .max_rect(layers_rect)
-                .layout(egui::Layout::top_down(egui::Align::Min)),
-        );
-        layers_ui.set_clip_rect(layers_rect);
-        studio_region(&mut layers_ui, layers_width, row_height, |ui| {
-            self.context_menu_layers(ui, read_only)
-        });
-        let left_splitter =
-            workspace_splitter(ui, left_splitter_rect, "context-menu-left-splitter");
-        if left_splitter.dragged() {
-            self.scene_width += ui.input(|input| input.pointer.delta().x);
-        }
-
-        let mut preview_ui = ui.new_child(
-            egui::UiBuilder::new()
-                .id_salt("context-menu-preview-pane")
-                .max_rect(preview_rect)
-                .layout(egui::Layout::top_down(egui::Align::Min)),
-        );
-        preview_ui.set_clip_rect(preview_rect);
-        studio_region(&mut preview_ui, preview_width, row_height, |ui| {
-            self.context_menu_preview(ui)
-        });
-        let right_splitter =
-            workspace_splitter(ui, right_splitter_rect, "context-menu-right-splitter");
-        if right_splitter.dragged() {
-            self.inspector_width -= ui.input(|input| input.pointer.delta().x);
-        }
-
-        let mut inspector_ui = ui.new_child(
-            egui::UiBuilder::new()
-                .id_salt("context-menu-inspector-pane")
-                .max_rect(inspector_rect)
-                .layout(egui::Layout::top_down(egui::Align::Min)),
-        );
-        inspector_ui.set_clip_rect(inspector_rect);
-        studio_region(
-            &mut inspector_ui,
-            inspector_rect.width(),
-            row_height,
-            |ui| self.context_menu_inspector(ui, read_only),
+        self.three_pane_workspace(
+            ui,
+            [
+                "context-menu-layers-pane",
+                "context-menu-left-splitter",
+                "context-menu-preview-pane",
+                "context-menu-right-splitter",
+                "context-menu-inspector-pane",
+            ],
+            |app, ui, pane| match pane {
+                0 => app.context_menu_layers(ui, read_only),
+                1 => app.context_menu_preview(ui),
+                _ => app.context_menu_inspector(ui, read_only),
+            },
         );
     }
 
@@ -627,10 +572,8 @@ impl StudioApp {
                     self.context_menu = context_menu::classic_context_menu();
                     self.context_menu_path = context_menu::ensure_builtin_context_menus().ok();
                     self.context_menu_dirty = false;
-                    self.context_menu_selection = None;
-                    self.context_menu_action_helper = None;
-                    self.expression_helper = None;
-                    self.text_template_helper = None;
+                    self.reset_context_menu_editor();
+                    self.refresh_library();
                 }
                 Err(error) => self.theme_error = Some(error),
             },
@@ -664,74 +607,82 @@ impl StudioApp {
             self.selected_theme_runtime(),
         );
 
-        if read_only {
-            inspector_heading(ui, &format!("ID: {}", item.id));
-        } else {
-            inspector_name_editor(
-                ui,
-                &mut item.id,
-                ui.make_persistent_id(("context-menu-item-id", &path)),
-                "ID: ",
-                language,
-            );
-        }
-        ui.add_space(6.0);
-        egui::CollapsingHeader::new(language.text("Item"))
-            .id_salt(ui.make_persistent_id(("context-menu-item-section", &path)))
-            .default_open(true)
-            .show(ui, |ui| {
-                ui.add_enabled_ui(!read_only, |ui| {
-                    open_expression_helper = expression_control(
-                        ui,
-                        ui.make_persistent_id(("context-menu-render", &path)),
-                        language.text("Render"),
-                        &mut item.render,
-                        ExpressionControlKind::Boolean,
-                        &label_context,
-                        language,
-                    );
-                });
-                if !matches!(&item.kind, ContextMenuItemKind::Separator) {
-                    labeled(ui, language.text("Label"), |ui| {
-                        ui.add_enabled_ui(!read_only, |ui| {
-                            open_label_helper = text_template_editor_control(
-                                ui,
-                                ui.make_persistent_id(("context-menu-label", &path)),
-                                &mut item.label,
-                                &label_context,
-                                inspector_control_width(ui),
-                            );
-                        });
-                    });
-                    if matches!(&item.kind, ContextMenuItemKind::Text) {
-                        ui.label(
-                            egui::RichText::new(
-                                language
-                                    .text("Text items are informational and cannot be clicked."),
-                            )
-                            .small()
-                            .color(MUTED),
+        // Key widget state by the item's id, not its position, so a backup or a
+        // half-typed id does not move to the item that takes this position.
+        let item_identity = item.id.clone();
+        ui.push_id(("context-menu-item", item_identity), |ui| {
+            if read_only {
+                inspector_heading(ui, &format!("ID: {}", item.id));
+            } else {
+                inspector_name_editor(
+                    ui,
+                    &mut item.id,
+                    ui.make_persistent_id("context-menu-item-id"),
+                    "ID: ",
+                    language,
+                );
+            }
+            ui.add_space(6.0);
+            egui::CollapsingHeader::new(language.text("Item"))
+                .id_salt(ui.make_persistent_id("context-menu-item-section"))
+                .default_open(true)
+                .show(ui, |ui| {
+                    ui.add_enabled_ui(!read_only, |ui| {
+                        open_expression_helper = expression_control(
+                            ui,
+                            ui.make_persistent_id("context-menu-render"),
+                            language.text("Render"),
+                            &mut item.render,
+                            ExpressionControlKind::Boolean,
+                            &label_context,
+                            language,
                         );
-                    }
-                }
-                if let ContextMenuItemKind::Action { action } = &item.kind {
-                    let preview = context_menu_action_script(action);
-                    labeled(ui, language.text("Action"), |ui| {
-                        ui.add_enabled_ui(!read_only, |ui| {
-                            let helper_action = helper_preview_field(
-                                ui,
-                                ui.make_persistent_id(("context-menu-action", &path)),
-                                &preview,
-                                inspector_control_width(ui),
-                                true,
-                                language.text("action helper"),
-                                egui::Align::Min,
-                            );
-                            open_action_helper = helper_action.open;
-                        });
                     });
-                }
-            });
+                    if !matches!(&item.kind, ContextMenuItemKind::Separator) {
+                        labeled(ui, language.text("Label"), |ui| {
+                            ui.add_enabled_ui(!read_only, |ui| {
+                                open_label_helper = text_template_editor_control(
+                                    ui,
+                                    ui.make_persistent_id("context-menu-label"),
+                                    &mut item.label,
+                                    &label_context,
+                                    inspector_control_width(ui),
+                                    language,
+                                );
+                            });
+                        });
+                        if matches!(&item.kind, ContextMenuItemKind::Text) {
+                            ui.label(
+                                egui::RichText::new(
+                                    language.text(
+                                        "Text items are informational and cannot be clicked.",
+                                    ),
+                                )
+                                .small()
+                                .color(MUTED),
+                            );
+                        }
+                    }
+                    if let ContextMenuItemKind::Action { action } = &item.kind {
+                        let preview = context_menu_action_script(action);
+                        labeled(ui, language.text("Action"), |ui| {
+                            ui.add_enabled_ui(!read_only, |ui| {
+                                let helper_action = helper_preview_field(
+                                    ui,
+                                    ui.make_persistent_id("context-menu-action"),
+                                    &preview,
+                                    inspector_control_width(ui),
+                                    true,
+                                    language.text("Open action helper"),
+                                    egui::Align::Min,
+                                    language,
+                                );
+                                open_action_helper = helper_action.open;
+                            });
+                        });
+                    }
+                });
+        });
 
         changed |= before != serde_json::to_string(&item).unwrap_or_default();
         if changed {
@@ -741,18 +692,16 @@ impl StudioApp {
         }
         if open_expression_helper {
             if let Some(item) = context_menu_item(&self.context_menu.items, &path) {
-                self.expression_helper = Some(ExpressionHelperState::for_context_menu(
-                    path.clone(),
-                    item.render.0.clone(),
-                ));
+                self.context_menu_expression_helper = Some(
+                    ExpressionHelperState::for_context_menu(path.clone(), item.render.0.clone()),
+                );
             }
         }
         if open_label_helper {
             if let Some(item) = context_menu_item(&self.context_menu.items, &path) {
-                self.text_template_helper = Some(TextTemplateHelperState::for_context_menu(
-                    path.clone(),
-                    item.label.clone(),
-                ));
+                self.context_menu_text_template_helper = Some(
+                    TextTemplateHelperState::for_context_menu(path.clone(), item.label.clone()),
+                );
             }
         }
         if open_action_helper {
@@ -766,5 +715,23 @@ impl StudioApp {
             }
         }
         changed
+    }
+}
+
+/// Deletes a menu's old file after a save wrote `saved`, unless both paths
+/// name the same file: saving `Work.json` writes `work.json`, the same file on
+/// Windows, and deleting it would lose the menu.
+pub(super) fn remove_replaced_context_menu(previous: &Path, saved: &Path) -> Result<(), String> {
+    let same_file = match (
+        std::fs::canonicalize(previous),
+        std::fs::canonicalize(saved),
+    ) {
+        (Ok(previous), Ok(saved)) => previous == saved,
+        _ => previous == saved,
+    };
+    if same_file {
+        Ok(())
+    } else {
+        context_menu::delete_context_menu(previous)
     }
 }

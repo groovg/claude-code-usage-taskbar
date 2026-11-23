@@ -363,7 +363,6 @@ pub(super) fn scene_drop_from_response(
     ui: &mut egui::Ui,
     response: &egui::Response,
     target: Selection,
-    _surface: usize,
 ) -> Option<(Selection, SceneDropTarget)> {
     let source = response.dnd_hover_payload::<Selection>()?;
     if *source == target {
@@ -475,10 +474,19 @@ pub(super) fn format_expression_result(
     }
 }
 
+/// The helper draft for `field`. A plain number that has no expression yet
+/// starts the draft, so opening the helper does not change the theme.
 pub(super) fn scene_object_expression(
     object: &SceneObject,
     field: ExpressionField,
 ) -> Option<String> {
+    let optional = |expression: &Option<Expression>, value: String| {
+        Some(
+            expression
+                .as_ref()
+                .map_or(value, |expression| expression.0.clone()),
+        )
+    };
     let expression = match field {
         ExpressionField::Render => Some(&object.render),
         ExpressionField::Visibility => Some(&object.visibility),
@@ -510,18 +518,34 @@ pub(super) fn scene_object_expression(
             SceneContent::Progress { corner_radius, .. } => Some(corner_radius),
             _ => None,
         },
-        ExpressionField::ProgressSegments => match &object.content {
-            SceneContent::Progress {
-                segments_expression,
-                ..
-            } => segments_expression.as_ref(),
-            _ => None,
-        },
+        ExpressionField::ProgressSegments => {
+            return match &object.content {
+                SceneContent::Progress {
+                    segments,
+                    segments_expression,
+                    ..
+                } => optional(segments_expression, segments.to_string()),
+                _ => None,
+            };
+        }
         ExpressionField::ProgressSegmentGap => match &object.content {
             SceneContent::Progress { segment_gap, .. } => Some(segment_gap),
             _ => None,
         },
-        ExpressionField::PlacementOffsetX | ExpressionField::PlacementOffsetY => None,
+        ExpressionField::PlacementOffsetX => {
+            let placement = &object.placement;
+            return optional(
+                &placement.offset_x_expression,
+                placement.offset_x.to_string(),
+            );
+        }
+        ExpressionField::PlacementOffsetY => {
+            let placement = &object.placement;
+            return optional(
+                &placement.offset_y_expression,
+                placement.offset_y.to_string(),
+            );
+        }
     };
     expression.map(|expression| expression.0.clone())
 }

@@ -26,12 +26,12 @@ pub(crate) fn configure_style(context: &egui::Context, language: LanguageId) {
         "lucide".into(),
         egui::FontData::from_static(LUCIDE_FONT_BYTES).into(),
     );
-    let native_menu_font = load_native_menu_font(&mut fonts);
 
     let mut proportional = Vec::new();
     if load_windows_font(&mut fonts, "segoe-ui", "segoeui.ttf") {
         proportional.push("segoe-ui".into());
     }
+    let native_menu_font = load_native_menu_font(&mut fonts);
     load_language_fonts(&mut fonts, &mut proportional, language);
     proportional.push("ui-fallback".into());
     fonts
@@ -53,10 +53,6 @@ pub(crate) fn configure_style(context: &egui::Context, language: LanguageId) {
     fonts
         .families
         .insert(egui::FontFamily::Monospace, monospace);
-    fonts.families.insert(
-        egui::FontFamily::Name("ui-fallback".into()),
-        vec!["ui-fallback".into()],
-    );
     fonts.families.insert(
         egui::FontFamily::Name("lucide".into()),
         vec!["lucide".into()],
@@ -119,10 +115,9 @@ fn load_native_menu_font(fonts: &mut egui::FontDefinitions) -> Option<String> {
             .position(|character| *character == 0)
             .unwrap_or(metrics.lfMenuFont.lfFaceName.len());
         let face = String::from_utf16_lossy(&metrics.lfMenuFont.lfFaceName[..face_length]);
-        if face.eq_ignore_ascii_case("Segoe UI")
-            && load_windows_font(fonts, "native-menu-face", "segoeui.ttf")
-        {
-            return Some("native-menu-face".into());
+        // Reuse the UI font instead of keeping a second copy of segoeui.ttf.
+        if face.eq_ignore_ascii_case("Segoe UI") && fonts.font_data.contains_key("segoe-ui") {
+            return Some("segoe-ui".into());
         }
         if face.eq_ignore_ascii_case("Segoe UI Variable")
             && load_windows_font(fonts, "native-menu-face", "SegUIVar.ttf")
@@ -140,7 +135,15 @@ fn load_native_menu_font(fonts: &mut egui::FontDefinitions) -> Option<String> {
             return None;
         }
         let previous = SelectObject(hdc, font.into());
-        let size = GetFontData(hdc, 0, 0, None, 0);
+        // A face inside a .ttc collection reports offsets into the whole
+        // collection, so its bytes are no usable font; use the normal fonts.
+        let in_collection =
+            GetFontData(hdc, u32::from_le_bytes(*b"ttcf"), 0, None, 0) != GDI_ERROR as u32;
+        let size = if in_collection {
+            0
+        } else {
+            GetFontData(hdc, 0, 0, None, 0)
+        };
         let mut bytes = if size == GDI_ERROR as u32 || size == 0 {
             None
         } else {

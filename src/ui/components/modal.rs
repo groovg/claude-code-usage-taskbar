@@ -105,8 +105,10 @@ pub(crate) fn theme_name_prompt(
                 .desired_width(ui.available_width())
                 .hint_text(language.text("Theme name")),
         );
-        response.request_focus();
+        // Read Enter before taking focus back: Enter ends the edit, and once the
+        // field has focus again it no longer reports losing it.
         let enter = response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+        response.request_focus();
         ui.add_space(8.0);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
@@ -115,7 +117,7 @@ pub(crate) fn theme_name_prompt(
                     egui::Button::new(language.text(confirm_label)),
                 )
                 .clicked()
-                || enter
+                || (enter && !name.trim().is_empty())
             {
                 decision = Some(true);
             }
@@ -158,5 +160,54 @@ mod tests {
 
         let modal_rect = modal_rect.expect("modal should be visible");
         assert_eq!(modal_rect.width(), 310.0);
+    }
+
+    /// Runs the name prompt for two frames without input, then one with Enter.
+    fn prompt_after_enter(name: &str) -> Option<bool> {
+        let context = egui::Context::default();
+        let mut name = name.to_owned();
+        let mut decision = None;
+        for (time, events) in [
+            (0.0, Vec::new()),
+            (0.5, Vec::new()),
+            (
+                1.0,
+                vec![egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            ),
+        ] {
+            context.begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                time: Some(time),
+                events,
+                ..Default::default()
+            });
+            decision = theme_name_prompt(
+                &context,
+                LanguageId::English,
+                "New theme",
+                "name-prompt-test",
+                "Name the new theme",
+                "Create",
+                &mut name,
+            );
+            let mut output = context.end_pass();
+            output.textures_delta.clear();
+        }
+        decision
+    }
+
+    #[test]
+    fn enter_confirms_a_name_but_not_an_empty_one() {
+        assert_eq!(prompt_after_enter("Mine"), Some(true));
+        assert_eq!(prompt_after_enter("  "), None);
     }
 }

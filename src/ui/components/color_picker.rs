@@ -49,7 +49,7 @@ pub(crate) fn color_button(ui: &mut egui::Ui, color: &mut [u8; 4]) -> egui::Resp
         .width(PICKER_WIDTH)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
-            if rgba_color_picker(ui, color) {
+            if rgba_color_picker(ui, color, popup_id.with("hsva")) {
                 response.mark_changed();
             }
         });
@@ -105,7 +105,25 @@ fn parse_color(value: &str) -> Option<[u8; 4]> {
     }
 }
 
-fn rgba_color_picker(ui: &mut egui::Ui, color: &mut [u8; 4]) -> bool {
+/// The picker's hue, saturation and value for `color`. The remembered ones
+/// are kept while they still give `color`: rebuilt from 8-bit RGB, a grey loses
+/// its hue and a colour at zero alpha would become black.
+fn picker_hsva(remembered: Option<egui::ecolor::Hsva>, color: [u8; 4]) -> egui::ecolor::Hsva {
+    use egui::ecolor::{linear_f32_from_gamma_u8, linear_f32_from_linear_u8};
+    remembered
+        .filter(|hsva| hsva.to_srgba_unmultiplied() == color)
+        .unwrap_or_else(|| {
+            let [red, green, blue, alpha] = color;
+            egui::ecolor::Hsva::from_rgba_unmultiplied(
+                linear_f32_from_gamma_u8(red),
+                linear_f32_from_gamma_u8(green),
+                linear_f32_from_gamma_u8(blue),
+                linear_f32_from_linear_u8(alpha),
+            )
+        })
+}
+
+fn rgba_color_picker(ui: &mut egui::Ui, color: &mut [u8; 4], state_id: egui::Id) -> bool {
     let original = *color;
     ui.set_min_width(PICKER_WIDTH);
     ui.horizontal(|ui| {
@@ -134,9 +152,8 @@ fn rgba_color_picker(ui: &mut egui::Ui, color: &mut [u8; 4]) -> bool {
                 *color = channels;
             }
 
-            let mut hsva = egui::ecolor::Hsva::from(egui::Color32::from_rgba_unmultiplied(
-                color[0], color[1], color[2], color[3],
-            ));
+            let remembered = ui.data_mut(|data| data.get_temp(state_id));
+            let mut hsva = picker_hsva(remembered, *color);
             let control_width = ui.available_width();
             let hue = hsva.h;
             let color_area = color_slider_2d(
@@ -171,8 +188,9 @@ fn rgba_color_picker(ui: &mut egui::Ui, color: &mut [u8; 4]) -> bool {
                 )
             });
             if color_area.changed() || hue_slider.changed() || alpha_slider.changed() {
-                *color = egui::Color32::from(hsva).to_srgba_unmultiplied();
+                *color = hsva.to_srgba_unmultiplied();
             }
+            ui.data_mut(|data| data.insert_temp(state_id, hsva));
         });
     });
     *color != original
@@ -328,6 +346,32 @@ mod tests {
         output.textures_delta.clear();
 
         assert_eq!(size, egui::vec2(240.0, CONTROL_HEIGHT));
+    }
+
+    #[test]
+    fn picker_keeps_colour_through_zero_alpha_and_hue_on_grey() {
+        let red = [255, 0, 0, 128];
+        let mut hsva = picker_hsva(None, red);
+        hsva.a = 0.0;
+        let transparent = hsva.to_srgba_unmultiplied();
+        assert_eq!(transparent, [255, 0, 0, 0]);
+        let mut hsva = picker_hsva(Some(hsva), transparent);
+        hsva.a = 128.0 / 255.0;
+        assert_eq!(hsva.to_srgba_unmultiplied(), red);
+
+        for faint in [
+            [200, 200, 200, 10],
+            [0x12, 0x34, 0x56, 1],
+            [255, 255, 255, 0],
+        ] {
+            assert_eq!(picker_hsva(None, faint).to_srgba_unmultiplied(), faint);
+        }
+
+        let mut grey = picker_hsva(None, [128, 128, 128, 255]);
+        grey.h = 0.5;
+        let shown = grey.to_srgba_unmultiplied();
+        assert_eq!(shown, [128, 128, 128, 255]);
+        assert_eq!(picker_hsva(Some(grey), shown).h, 0.5);
     }
 
     #[test]

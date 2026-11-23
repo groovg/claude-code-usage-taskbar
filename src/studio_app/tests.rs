@@ -46,52 +46,41 @@ fn configured_fonts_render_fallback_text_and_lucide_icons() {
     configure_style(&context, LanguageId::English);
 
     run_test_ui(&context, egui::RawInput::default(), |ui| {
-        let fallback = ui.ctx().fonts_mut(|fonts| {
-            fonts.layout_no_wrap(
-                "Fallback — ‘ready’".into(),
-                egui::FontId::new(14.0, egui::FontFamily::Name("ui-fallback".into())),
-                egui::Color32::WHITE,
-            )
-        });
-        assert!(fallback.size().x > 0.0);
+        // A laid-out replacement glyph also has a width, so check each glyph.
+        // `has_glyphs` cannot: it also says no for glyphs of the face epaint
+        // borrows its replacement glyph from, here a CJK font. A glyph that no
+        // face has measures zero.
+        ui.ctx().fonts_mut(|fonts| {
+            let mut shows = |font_id: &egui::FontId, text: &str| {
+                text.chars().all(|c| fonts.glyph_width(font_id, c) > 0.0)
+            };
+            let proportional = egui::FontId::new(14.0, egui::FontFamily::Proportional);
+            assert!(shows(&proportional, "Fallback — ‘ready’"));
+            assert!(!shows(&proportional, "\u{E000}"));
 
-        for language in LanguageId::ALL {
-            let native_name = language.native_name();
-            assert_eq!(
-                language_name(LanguageId::English, language.code()),
-                native_name
+            for language in LanguageId::ALL {
+                let native_name = language.native_name();
+                assert_eq!(
+                    language_name(LanguageId::English, language.code()),
+                    native_name
+                );
+                assert!(
+                    shows(&proportional, native_name),
+                    "missing glyphs for {native_name}"
+                );
+            }
+
+            let icons = format!(
+                "{}{}",
+                LucideIcon::X.unicode(),
+                LucideIcon::ChevronRight.unicode()
             );
-            let native_label = ui.ctx().fonts_mut(|fonts| {
-                fonts.layout_no_wrap(
-                    native_name.into(),
-                    egui::FontId::new(14.0, egui::FontFamily::Proportional),
-                    egui::Color32::WHITE,
-                )
-            });
-            assert!(native_label.size().x > 0.0);
-        }
+            let lucide = egui::FontId::new(14.0, egui::FontFamily::Name("lucide".into()));
+            assert!(fonts.has_glyphs(&lucide, &icons));
 
-        let icon = ui.ctx().fonts_mut(|fonts| {
-            fonts.layout_no_wrap(
-                format!(
-                    "{}{}",
-                    LucideIcon::X.unicode(),
-                    LucideIcon::ChevronRight.unicode()
-                ),
-                egui::FontId::new(14.0, egui::FontFamily::Name("lucide".into())),
-                egui::Color32::WHITE,
-            )
+            let native_menu = egui::FontId::new(12.0, egui::FontFamily::Name("native-menu".into()));
+            assert!(fonts.has_glyphs(&native_menu, "Native menu"));
         });
-        assert!(icon.size().x > 0.0);
-
-        let native_menu = ui.ctx().fonts_mut(|fonts| {
-            fonts.layout_no_wrap(
-                "Native menu".into(),
-                egui::FontId::new(12.0, egui::FontFamily::Name("native-menu".into())),
-                egui::Color32::BLACK,
-            )
-        });
-        assert!(native_menu.size().x > 0.0);
     });
 }
 
@@ -399,7 +388,17 @@ fn app_with_surfaces(surfaces: Vec<SceneObject>) -> StudioApp {
         context_menu_dirty: false,
         context_menu_selection: None,
         context_menu_action_helper: None,
+        context_menu_expression_helper: None,
+        context_menu_text_template_helper: None,
+        context_menu_discard_path: None,
         delete_context_menu_confirmation: None,
+        theme_list: None,
+        context_menu_list: None,
+        asset_list: None,
+        host_runtimes: Default::default(),
+        live_apply_pending: false,
+        pointer_down: false,
+        history_press: false,
     }
 }
 
@@ -1007,5 +1006,318 @@ fn scene_preview_stretches_the_entire_layer_background() {
     assert_eq!(
         scene_preview_gradient_color(bounds.right_center(), bounds, start, end, 0.0),
         end
+    );
+}
+
+/// A new empty folder under the system temp folder.
+fn temp_directory(name: &str) -> PathBuf {
+    let directory = std::env::temp_dir().join(format!(
+        "studio-{name}-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    directory
+}
+
+#[test]
+fn undo_closes_helpers_that_point_at_layers_by_position() {
+    // [A, X, C] became [A, C]; C's helpers are open at X's old position.
+    let mut surface = root("surface");
+    surface.children = vec![object("a", None), object("c", None)];
+    let mut app = app_with_surfaces(vec![surface]);
+    let mut before_delete = app.theme.clone();
+    before_delete.surfaces[0]
+        .children
+        .insert(1, object("x", None));
+    app.undo_stack.push(before_delete);
+    app.selection = Selection::Object(0, 1);
+    app.expression_helper = Some(ExpressionHelperState::new(
+        app.selection,
+        ExpressionField::ObjectWidth,
+        "42".into(),
+    ));
+    app.action_helper = Some(ActionHelperState::new(
+        app.selection,
+        MouseEventField::Click,
+        String::new(),
+    ));
+    app.text_template_helper = Some(TextTemplateHelperState::for_theme(
+        app.selection,
+        String::new(),
+    ));
+    app.context_menu_text_template_helper = Some(TextTemplateHelperState::for_context_menu(
+        vec![0],
+        String::new(),
+    ));
+
+    app.undo_theme();
+
+    assert_eq!(app.theme.surfaces[0].children[1].id, "x");
+    assert!(app.expression_helper.is_none());
+    assert!(app.action_helper.is_none());
+    assert!(app.text_template_helper.is_none());
+    // A menu helper does not point into the theme.
+    assert!(app.context_menu_text_template_helper.is_some());
+}
+
+#[test]
+fn discarding_changes_reloads_the_saved_theme() {
+    let directory = temp_directory("discard-theme");
+    let mut app = app_with_surfaces(vec![root("main")]);
+    app.theme.name = "Saved".into();
+    let path = directory.join("saved.json");
+    std::fs::write(&path, serde_json::to_string_pretty(&app.theme).unwrap()).unwrap();
+    app.theme_path = Some(path);
+    app.theme.name = "Edited".into();
+    app.changed();
+    assert!(app.dirty);
+
+    app.discard_theme_changes();
+
+    assert_eq!(app.theme.name, "Saved");
+    assert!(!app.dirty);
+    assert!(app.undo_stack.is_empty());
+    std::fs::remove_dir_all(directory).ok();
+}
+
+#[test]
+fn saving_a_menu_over_a_case_variant_file_keeps_it() {
+    let directory = temp_directory("menu-case");
+    let opened = directory.join("Work.json");
+    std::fs::write(&opened, "{}").unwrap();
+    // Saving writes the lower-case name, which Windows opens as the same file.
+    let saved = directory.join("work.json");
+    std::fs::write(&saved, "{\"saved\": true}").unwrap();
+
+    assert_eq!(
+        studio_context_menus::remove_replaced_context_menu(&opened, &saved),
+        Ok(())
+    );
+    assert_eq!(
+        std::fs::read_to_string(&saved).unwrap(),
+        "{\"saved\": true}"
+    );
+    std::fs::remove_dir_all(directory).ok();
+}
+
+#[test]
+fn dragging_into_a_group_that_shares_an_id_keeps_the_item() {
+    // Ids are only made unique on save, so an action and a group can share one.
+    let mut items = vec![
+        ContextMenuItem::action("x", "Action", ContextMenuAction::Refresh),
+        ContextMenuItem::submenu(
+            "x",
+            "Group",
+            vec![ContextMenuItem::action(
+                "inner",
+                "Inner",
+                ContextMenuAction::Exit,
+            )],
+        ),
+        ContextMenuItem::action("y", "Moved", ContextMenuAction::Refresh),
+    ];
+    let mut selection = None;
+    assert!(move_context_menu_item_to(
+        &mut items,
+        &[2],
+        &ContextMenuDropTarget::Into(vec![1]),
+        &mut selection,
+    ));
+    assert_eq!(selection, Some(vec![1, 1]));
+    assert_eq!(items.len(), 2);
+    let ContextMenuItemKind::Submenu { items: children } = &items[1].kind else {
+        panic!("the group should stay second");
+    };
+    let labels: Vec<&str> = children.iter().map(|item| item.label.as_str()).collect();
+    assert_eq!(labels, ["Inner", "Moved"]);
+
+    // A drop that cannot apply leaves every item in place.
+    let before = items.clone();
+    assert!(!move_context_menu_item_to(
+        &mut items,
+        &[1, 1],
+        &ContextMenuDropTarget::Into(vec![1, 0]),
+        &mut selection,
+    ));
+    assert_eq!(items, before);
+}
+
+#[test]
+fn duplicated_actions_follow_ids_written_in_another_case() {
+    let mut label = object("Label", None);
+    label.mouse_events = Some(MouseEvents {
+        click: "toggle(\"label\", render)".into(),
+        ..Default::default()
+    });
+    let mut objects = vec![label];
+
+    let replacements = remap_scene_ids(&mut objects, &std::collections::HashSet::new(), true);
+
+    assert_eq!(
+        objects[0].mouse_events.as_ref().unwrap().click,
+        format!("toggle(\"{}\", render)", replacements["Label"])
+    );
+}
+
+#[test]
+fn moving_a_layer_to_another_surface_updates_actions_left_behind() {
+    let mut button = object("button", None);
+    button.mouse_events = Some(MouseEvents {
+        click: "toggle(\"label\", render)".into(),
+        ..Default::default()
+    });
+    let mut first = root("first");
+    first.children = vec![button, object("label", None)];
+    let mut second = root("second");
+    second.children = vec![object("label", None)];
+    let mut app = app_with_surfaces(vec![first, second]);
+
+    assert!(app.apply_scene_drop(
+        Selection::Object(0, 1),
+        SceneDropTarget::Into(Selection::Surface(1)),
+    ));
+
+    let moved = app.theme.surfaces[1]
+        .children
+        .iter()
+        .find(|object| object.id != "label")
+        .expect("the moved layer gets a new id beside the second label");
+    assert_eq!(
+        app.theme.surfaces[0].children[0]
+            .mouse_events
+            .as_ref()
+            .unwrap()
+            .click,
+        format!("toggle(\"{}\", render)", moved.id)
+    );
+}
+
+#[test]
+fn generated_menu_item_ids_ignore_case() {
+    let items = vec![ContextMenuItem::action(
+        "Action-1",
+        "Action",
+        ContextMenuAction::OpenDashboard,
+    )];
+    assert_eq!(next_context_menu_item_id(&items, "action"), "action-2");
+
+    let mut items = vec![
+        ContextMenuItem::action("x", "X", ContextMenuAction::Refresh),
+        ContextMenuItem::action("X-copy", "Copy", ContextMenuAction::Refresh),
+    ];
+    let path = duplicate_context_menu_item(&mut items, &[0]).unwrap();
+    assert_eq!(context_menu_item(&items, &path).unwrap().id, "x-copy-2");
+}
+
+#[test]
+fn discarding_a_new_menu_copy_returns_to_its_source() {
+    let directory = temp_directory("menu-discard");
+    let path = directory.join("mine.json");
+    let mut mine = context_menu::classic_context_menu();
+    mine.id = "mine".into();
+    mine.name = "Mine".into();
+    std::fs::write(&path, serde_json::to_string_pretty(&mine).unwrap()).unwrap();
+    let mut app = app_with_surfaces(vec![root("main")]);
+    app.context_menu = mine;
+    app.context_menu_path = Some(path.clone());
+
+    // Duplicate makes a copy that has no file yet.
+    app.context_menu.id = "mine-copy".into();
+    app.context_menu.name = "Mine (copy)".into();
+    app.start_unsaved_context_menu();
+    assert!(app.context_menu_path.is_none());
+
+    app.discard_context_menu_changes();
+
+    assert_eq!(app.context_menu.name, "Mine");
+    assert_eq!(app.context_menu_path, Some(path));
+    assert!(!app.context_menu_dirty);
+    std::fs::remove_dir_all(directory).ok();
+}
+
+#[test]
+fn typing_a_built_in_id_does_not_lock_the_menu_editor() {
+    let mut app = app_with_surfaces(vec![root("main")]);
+    let built_in = PathBuf::from("menus").join("classic-v1.json");
+    app.context_menu_list = Some(vec![context_menu::ContextMenuDescriptor {
+        path: built_in.clone(),
+        id: context_menu::CLASSIC_CONTEXT_MENU_ID.into(),
+        name: "Classic".into(),
+        built_in: true,
+    }]);
+    app.context_menu_path = Some(PathBuf::from("menus").join("mine.json"));
+    app.context_menu.id = context_menu::CLASSIC_CONTEXT_MENU_ID.into();
+    assert!(!app.context_menu_read_only());
+
+    app.context_menu_path = Some(built_in);
+    assert!(app.context_menu_read_only());
+}
+
+#[test]
+fn a_drag_adds_one_undo_step() {
+    let mut app = app_with_surfaces(vec![root("main")]);
+    app.pointer_down = true;
+    for width in [210.0, 220.0, 230.0] {
+        app.theme.surfaces[0].width = width.into();
+        app.changed();
+    }
+    assert_eq!(app.undo_stack.len(), 1);
+
+    app.pointer_down = false;
+    app.theme.surfaces[0].width = 240.0.into();
+    app.changed();
+    assert_eq!(app.undo_stack.len(), 2);
+}
+
+#[test]
+fn live_apply_does_not_save_while_a_change_is_in_progress() {
+    // This theme cannot validate, so a save attempt would set an error.
+    let mut app = app_with_surfaces(vec![root("")]);
+    app.live_apply = true;
+    app.pointer_down = true;
+    app.theme.surfaces[0].width = 210.0.into();
+
+    app.changed();
+
+    assert!(app.live_apply_pending);
+    assert!(app.theme_error.is_none());
+}
+
+#[test]
+fn opening_a_surface_without_an_anchor_leaves_the_theme_unchanged() {
+    // As in a hand-written or imported theme that leaves the anchor out.
+    let mut surface = root("main");
+    surface.placement.surface_horizontal = None;
+    surface.placement.surface_vertical = None;
+    let mut app = app_with_surfaces(vec![surface]);
+    let context = egui::Context::default();
+    configure_style(&context, LanguageId::English);
+
+    for _ in 0..2 {
+        let mut changed = true;
+        run_test_ui(&context, egui::RawInput::default(), |ui| {
+            changed = app.surface_inspector(ui, 0, true);
+        });
+        assert!(!changed);
+    }
+    assert!(app.theme.surfaces[0].placement.surface_horizontal.is_none());
+}
+
+#[test]
+fn expression_helper_drafts_start_from_plain_values() {
+    let mut surface = root("main");
+    surface.placement.offset_x = 12;
+    assert_eq!(
+        scene_object_expression(&surface, ExpressionField::PlacementOffsetX).as_deref(),
+        Some("12")
+    );
+    surface.placement.offset_x_expression = Some(Expression("host.width / 2".into()));
+    assert_eq!(
+        scene_object_expression(&surface, ExpressionField::PlacementOffsetX).as_deref(),
+        Some("host.width / 2")
     );
 }

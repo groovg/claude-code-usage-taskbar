@@ -495,8 +495,7 @@ pub(super) fn action_reference_panels(
                         )
                         .clicked()
                     {
-                        let url = url.replace('\\', "\\\\").replace('"', "\\\"");
-                        append_action(draft, &format!("open_url(\"{url}\")"));
+                        append_action(draft, &format!("open_url({})", quote_action_string(url)));
                     }
                     ui.label(
                         egui::RichText::new(language.text("Context menu"))
@@ -523,10 +522,8 @@ pub(super) fn action_reference_panels(
                             }
                         });
                     if ui.button(language.text("Show context menu")).clicked() {
-                        let reference = context_menu_reference
-                            .replace('\\', "\\\\")
-                            .replace('"', "\\\"");
-                        append_action(draft, &format!("show_context_menu(\"{reference}\")"));
+                        let reference = quote_action_string(context_menu_reference);
+                        append_action(draft, &format!("show_context_menu({reference})"));
                     }
                     ui.separator();
                     if let Some(action) =
@@ -553,7 +550,7 @@ pub(super) fn action_reference_panels(
                         let token = if id.eq_ignore_ascii_case(self_id) {
                             "self".to_string()
                         } else {
-                            format!("\"{}\"", id.replace('\\', "\\\\").replace('"', "\\\""))
+                            quote_action_string(id)
                         };
                         let label = if token == "self" {
                             format!("{} ({})", language.text("Self"), name)

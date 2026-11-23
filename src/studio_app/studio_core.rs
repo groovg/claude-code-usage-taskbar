@@ -34,11 +34,25 @@ impl StudioApp {
     }
 
     pub(super) fn theme_runtime_for_surface(&self, surface_index: usize) -> ThemeRuntime {
-        crate::window::query_theme_runtime_for_surface(
-            &self.theme,
-            surface_index,
-            self.theme_runtime(),
-        )
+        let base = self.theme_runtime();
+        let Some(placement) = self
+            .theme
+            .surfaces
+            .get(surface_index)
+            .map(|surface| &surface.placement)
+        else {
+            return base;
+        };
+        // The host lookup enumerates monitors and windows; `ui` clears this each frame.
+        let key = (placement.reference.display, placement.nest, base);
+        let mut cache = self.host_runtimes.borrow_mut();
+        if let Some((_, runtime)) = cache.iter().find(|(cached, _)| *cached == key) {
+            return *runtime;
+        }
+        let runtime =
+            crate::window::query_theme_runtime_for_surface(&self.theme, surface_index, base);
+        cache.push((key, runtime));
+        runtime
     }
 
     pub(super) fn selected_theme_runtime(&self) -> ThemeRuntime {
@@ -48,11 +62,7 @@ impl StudioApp {
         self.theme_runtime_for_surface(surface_index)
     }
 
-    pub(super) fn new(
-        context: &eframe::CreationContext<'_>,
-        owner: isize,
-        initial_page: Page,
-    ) -> Self {
+    pub(super) fn new(context: &eframe::CreationContext<'_>, owner: isize) -> Self {
         let settings = app_settings::load_settings();
         SAVED_SETTINGS.with(|saved| *saved.borrow_mut() = Some(settings.clone()));
         let language = settings_language(&settings);
@@ -105,7 +115,7 @@ impl StudioApp {
             .and_then(|interval| Instant::now().checked_add(clock_refresh_delay(interval)));
         Self {
             owner,
-            page: initial_page,
+            page: Page::Settings,
             synced_poll_interval_ms: settings.poll_interval_ms,
             poll_interval_editor_generation: 0,
             settings,
@@ -157,21 +167,22 @@ impl StudioApp {
             context_menu_dirty: false,
             context_menu_selection: None,
             context_menu_action_helper: None,
+            context_menu_expression_helper: None,
+            context_menu_text_template_helper: None,
+            context_menu_discard_path: None,
             delete_context_menu_confirmation: None,
+            theme_list: None,
+            context_menu_list: None,
+            asset_list: None,
+            host_runtimes: Default::default(),
+            live_apply_pending: false,
+            pointer_down: false,
+            history_press: false,
         }
     }
 
     pub(super) fn notify_owner(&self) {
-        if self.owner != 0 {
-            unsafe {
-                let _ = PostMessageW(
-                    Some(HWND(self.owner as *mut _)),
-                    WM_APP_SETTINGS_UPDATED,
-                    WPARAM(0),
-                    LPARAM(0),
-                );
-            }
-        }
+        self.post_owner(WM_APP_SETTINGS_UPDATED);
     }
 
     pub(super) fn post_owner(&self, message: u32) {
@@ -252,6 +263,13 @@ impl StudioApp {
                 return false;
             }
         };
+        if !self.theme_list.as_ref().is_some_and(|themes| {
+            themes
+                .iter()
+                .any(|theme| theme.path == path && theme.name == self.theme.name)
+        }) {
+            self.refresh_library();
+        }
         self.theme_path = Some(path.clone());
         self.settings.active_theme_path = Some(path.to_string_lossy().into_owned());
         self.dirty = false;
@@ -292,13 +310,8 @@ impl StudioApp {
         self.dirty = false;
         self.theme_error = None;
         self.reset_history();
-        self.expression_helper = None;
-        self.action_helper = None;
-        self.text_template_helper = None;
-        self.asset_picker = None;
-        self.preview_mouse_overrides.clear();
-        self.preview_hover_target = None;
-        self.preview_pending_click = None;
+        self.reset_editor_state();
+        self.refresh_library();
         if let Err(error) = self.write_settings() {
             self.theme_error = Some(format!(
                 "{}: {error}",
@@ -325,8 +338,7 @@ impl StudioApp {
                     self.context_menu = menu;
                     self.context_menu_path = Some(path);
                     self.context_menu_dirty = false;
-                    self.context_menu_selection = None;
-                    self.context_menu_action_helper = None;
+                    self.reset_context_menu_editor();
                 }
                 if imported.imported_assets > 0 {
                     self.asset_thumbnails.clear();
@@ -422,11 +434,15 @@ impl StudioApp {
         if serde_json::to_string(&self.theme).ok()
             != serde_json::to_string(&self.history_snapshot).ok()
         {
-            self.undo_stack.push(self.history_snapshot.clone());
-            if self.undo_stack.len() > 100 {
-                self.undo_stack.remove(0);
+            // One entry per pointer press, so a drag does not flush the history.
+            if !(self.pointer_down && self.history_press) {
+                self.undo_stack.push(self.history_snapshot.clone());
+                if self.undo_stack.len() > 100 {
+                    self.undo_stack.remove(0);
+                }
+                self.redo_stack.clear();
             }
-            self.redo_stack.clear();
+            self.history_press = self.pointer_down;
             self.history_snapshot = self.theme.clone();
         }
         self.preview_mouse_overrides.clear();
@@ -438,9 +454,7 @@ impl StudioApp {
     pub(super) fn mark_theme_changed(&mut self) {
         self.dirty = true;
         self.preview_dirty = true;
-        if self.live_apply {
-            self.save_theme();
-        }
+        self.live_apply_pending = self.live_apply;
     }
 
     pub(super) fn undo_theme(&mut self) {
@@ -454,6 +468,7 @@ impl StudioApp {
         self.theme = previous;
         self.history_snapshot = self.theme.clone();
         self.normalize_selection();
+        self.reset_editor_state();
         self.mark_theme_changed();
     }
 
@@ -468,13 +483,72 @@ impl StudioApp {
         self.theme = next;
         self.history_snapshot = self.theme.clone();
         self.normalize_selection();
+        self.reset_editor_state();
         self.mark_theme_changed();
     }
 
-    pub(super) fn normalize_selection(&mut self) {
-        if self.theme.surfaces.is_empty() {
-            self.theme.prepare_runtime();
+    /// Closes the theme helpers and drops preview state: they point at layers
+    /// by position, so they would hit the wrong layer once the layers change.
+    pub(super) fn reset_editor_state(&mut self) {
+        self.expression_helper = None;
+        self.action_helper = None;
+        self.text_template_helper = None;
+        self.asset_picker = None;
+        self.preview_mouse_overrides.clear();
+        self.preview_hover_target = None;
+        self.preview_pending_click = None;
+    }
+
+    /// Clears the menu selection and the helpers that point into the menu.
+    pub(super) fn reset_context_menu_editor(&mut self) {
+        self.context_menu_selection = None;
+        self.context_menu_action_helper = None;
+        self.context_menu_expression_helper = None;
+        self.context_menu_text_template_helper = None;
+    }
+
+    /// Re-reads the theme, menu and asset lists on next use.
+    pub(super) fn refresh_library(&mut self) {
+        self.theme_list = None;
+        self.context_menu_list = None;
+        self.asset_list = None;
+    }
+
+    pub(super) fn themes(&mut self) -> Vec<AvailableTheme> {
+        let (path, theme) = (self.theme_path.as_deref(), &self.theme);
+        self.theme_list
+            .get_or_insert_with(|| available_themes(path, theme))
+            .clone()
+    }
+
+    pub(super) fn context_menus(&mut self) -> Vec<context_menu::ContextMenuDescriptor> {
+        self.context_menu_list
+            .get_or_insert_with(|| context_menu::list_context_menus().unwrap_or_default())
+            .clone()
+    }
+
+    pub(super) fn assets(&mut self) -> Vec<theme_engine::ManagedAsset> {
+        if self.asset_list.is_none() {
+            self.asset_list = Some(theme_engine::list_assets().unwrap_or_else(|error| {
+                self.asset_error = Some(error);
+                Vec::new()
+            }));
         }
+        self.asset_list.clone().unwrap_or_default()
+    }
+
+    /// Whether the open menu came from a built-in file. The id field cannot
+    /// decide it: typing a built-in id must not lock the editor.
+    pub(super) fn context_menu_read_only(&mut self) -> bool {
+        let Some(path) = self.context_menu_path.clone() else {
+            return false;
+        };
+        self.context_menus()
+            .iter()
+            .any(|menu| menu.built_in && menu.path == path)
+    }
+
+    pub(super) fn normalize_selection(&mut self) {
         let surface = match self.selection {
             Selection::Surface(surface) | Selection::Object(surface, _) => {
                 surface.min(self.theme.surfaces.len().saturating_sub(1))
@@ -510,13 +584,7 @@ impl StudioApp {
         self.selection = Selection::Surface(0);
         self.preview_dirty = true;
         self.dirty = true;
-        self.expression_helper = None;
-        self.action_helper = None;
-        self.text_template_helper = None;
-        self.asset_picker = None;
-        self.preview_mouse_overrides.clear();
-        self.preview_hover_target = None;
-        self.preview_pending_click = None;
+        self.reset_editor_state();
         self.reset_history();
         let _ = self.save_theme();
     }
@@ -531,13 +599,7 @@ impl StudioApp {
         self.selection = Selection::Surface(0);
         self.preview_dirty = true;
         self.dirty = true;
-        self.expression_helper = None;
-        self.action_helper = None;
-        self.text_template_helper = None;
-        self.asset_picker = None;
-        self.preview_mouse_overrides.clear();
-        self.preview_hover_target = None;
-        self.preview_pending_click = None;
+        self.reset_editor_state();
         self.reset_history();
         let _ = self.save_theme();
     }
@@ -563,6 +625,13 @@ impl StudioApp {
             return;
         };
         let language = self.language();
+        // Closing also loses menu edits; switching themes keeps them.
+        let menu_changed = action == PendingUnsavedAction::Close && self.context_menu_dirty;
+        let name = match (self.dirty, menu_changed) {
+            (true, true) => format!("{}, {}", self.theme.name, self.context_menu.name),
+            (false, true) => self.context_menu.name.clone(),
+            _ => self.theme.name.clone(),
+        };
         let mut choice = 0;
         let dialog_height = if self.theme_error.is_some() {
             124.0
@@ -579,7 +648,7 @@ impl StudioApp {
             ui.label(
                 egui::RichText::new(format!(
                     "{} {}",
-                    self.theme.name,
+                    name,
                     language.text("has been changed, what would you like to do?")
                 ))
                 .size(17.0),
@@ -603,16 +672,42 @@ impl StudioApp {
         });
 
         match choice {
-            1 if self.save_theme() => self.continue_unsaved_action(action, context),
+            1 if (!self.dirty || self.save_theme())
+                && (!menu_changed || self.save_context_menu_document()) =>
+            {
+                self.continue_unsaved_action(action, context)
+            }
             1 => self.pending_unsaved_action = Some(action),
             2 => {
-                self.dirty = false;
+                if self.dirty {
+                    self.discard_theme_changes();
+                }
+                if menu_changed {
+                    self.discard_context_menu_changes();
+                }
                 self.theme_error = None;
                 self.continue_unsaved_action(action, context);
             }
             3 => {}
             _ => self.pending_unsaved_action = Some(action),
         }
+    }
+
+    /// Reloads the theme from its file, dropping the unsaved edits and their history.
+    pub(super) fn discard_theme_changes(&mut self) {
+        if let Some(theme) = self
+            .theme_path
+            .as_deref()
+            .and_then(|path| theme_engine::load_theme(path).ok())
+        {
+            self.theme = theme;
+        }
+        self.dirty = false;
+        self.live_apply_pending = false;
+        self.preview_dirty = true;
+        self.normalize_selection();
+        self.reset_history();
+        self.reset_editor_state();
     }
 
     pub(super) fn new_theme_dialog(&mut self, context: &egui::Context) {
@@ -661,17 +756,21 @@ impl StudioApp {
             return;
         }
 
-        let fallback_path = match theme_engine::ensure_starter_theme() {
-            Ok(path) => path,
-            Err(_) => return,
+        let deleted = theme_engine::ensure_starter_theme().and_then(|fallback_path| {
+            let fallback_theme = theme_engine::load_theme(&fallback_path)?;
+            theme_engine::delete_theme(&deletion.path)?;
+            Ok((fallback_path, fallback_theme))
+        });
+        let (fallback_path, fallback_theme) = match deleted {
+            Ok(fallback) => fallback,
+            Err(error) => {
+                self.theme_error = Some(format!(
+                    "{}: {error}",
+                    self.language().text("Unable to delete theme")
+                ));
+                return;
+            }
         };
-        let fallback_theme = match theme_engine::load_theme(&fallback_path) {
-            Ok(theme) => theme,
-            Err(_) => return,
-        };
-        if theme_engine::delete_theme(&deletion.path).is_err() {
-            return;
-        }
 
         self.theme = fallback_theme;
         self.theme_path = Some(fallback_path.clone());
@@ -679,13 +778,8 @@ impl StudioApp {
         self.selection = Selection::Surface(0);
         self.preview_dirty = true;
         self.dirty = false;
-        self.expression_helper = None;
-        self.action_helper = None;
-        self.text_template_helper = None;
-        self.asset_picker = None;
-        self.preview_mouse_overrides.clear();
-        self.preview_hover_target = None;
-        self.preview_pending_click = None;
+        self.reset_editor_state();
+        self.refresh_library();
         self.reset_history();
         if let Err(error) = self.write_settings() {
             self.theme_error = Some(format!(
@@ -805,6 +899,8 @@ impl StudioApp {
                                 .clicked()
                                 {
                                     self.page = page;
+                                    // Pick up files added to the library by hand.
+                                    self.refresh_library();
                                 }
                             }
                             ui.allocate_ui_with_layout(

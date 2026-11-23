@@ -1,12 +1,13 @@
 use super::*;
 
-/// Adds the ids of `items` and all nested submenu items to `ids`.
+/// Adds the lowercased ids of `items` and all nested submenu items to `ids`;
+/// menu validation compares ids ignoring case.
 fn collect_context_menu_ids(
     items: &[ContextMenuItem],
     ids: &mut std::collections::HashSet<String>,
 ) {
     for item in items {
-        ids.insert(item.id.clone());
+        ids.insert(item.id.to_ascii_lowercase());
         if let ContextMenuItemKind::Submenu { items } = &item.kind {
             collect_context_menu_ids(items, ids);
         }
@@ -89,28 +90,6 @@ pub(super) fn remove_context_menu_item(
     (index < siblings.len()).then(|| siblings.remove(index))
 }
 
-pub(super) fn find_context_menu_item_path(
-    items: &[ContextMenuItem],
-    id: &str,
-) -> Option<Vec<usize>> {
-    fn visit(items: &[ContextMenuItem], id: &str, parent: &[usize]) -> Option<Vec<usize>> {
-        for (index, item) in items.iter().enumerate() {
-            let mut path = parent.to_vec();
-            path.push(index);
-            if item.id == id {
-                return Some(path);
-            }
-            if let ContextMenuItemKind::Submenu { items } = &item.kind {
-                if let Some(found) = visit(items, id, &path) {
-                    return Some(found);
-                }
-            }
-        }
-        None
-    }
-    visit(items, id, &[])
-}
-
 pub(super) fn move_context_menu_item_to(
     items: &mut Vec<ContextMenuItem>,
     source: &[usize],
@@ -125,20 +104,25 @@ pub(super) fn move_context_menu_item_to(
     if source == target_path || target_path.starts_with(source) {
         return false;
     }
-    let Some(target_id) = context_menu_item(items, target_path).map(|item| item.id.clone()) else {
+    // Work on a copy so a failed drop cannot lose the item it removed.
+    let mut moved = items.clone();
+    let Some(moving) = remove_context_menu_item(&mut moved, source) else {
         return false;
     };
-    let Some(moving) = remove_context_menu_item(items, source) else {
-        return false;
-    };
-    let moving_id = moving.id.clone();
-    let Some(adjusted_target) = find_context_menu_item_path(items, &target_id) else {
-        return false;
-    };
+    // Ids are not unique until the menu is saved, so find the target by path:
+    // removing the source shifts its later siblings up by one.
+    let mut adjusted_target = target_path.clone();
+    let level = source.len() - 1;
+    if adjusted_target.len() > level
+        && adjusted_target[..level] == source[..level]
+        && adjusted_target[level] > source[level]
+    {
+        adjusted_target[level] -= 1;
+    }
     let new_path = match target {
         ContextMenuDropTarget::Into(_) => {
             let Some(ContextMenuItemKind::Submenu { items: children }) =
-                context_menu_item_mut(items, &adjusted_target).map(|item| &mut item.kind)
+                context_menu_item_mut(&mut moved, &adjusted_target).map(|item| &mut item.kind)
             else {
                 return false;
             };
@@ -148,8 +132,10 @@ pub(super) fn move_context_menu_item_to(
             path
         }
         ContextMenuDropTarget::Before(_) | ContextMenuDropTarget::After(_) => {
-            let (&target_index, parent_path) = adjusted_target.split_last().unwrap();
-            let Some(siblings) = context_menu_items_mut(items, parent_path) else {
+            let Some((&target_index, parent_path)) = adjusted_target.split_last() else {
+                return false;
+            };
+            let Some(siblings) = context_menu_items_mut(&mut moved, parent_path) else {
                 return false;
             };
             let insert_at = if matches!(target, ContextMenuDropTarget::After(_)) {
@@ -164,8 +150,9 @@ pub(super) fn move_context_menu_item_to(
             path
         }
     };
+    *items = moved;
     *selection = Some(new_path);
-    find_context_menu_item_path(items, &moving_id).is_some()
+    true
 }
 
 pub(super) fn duplicate_context_menu_item(
@@ -185,9 +172,9 @@ pub(super) fn duplicate_context_menu_item(
                     format!("{base}-{suffix}")
                 }
             })
-            .find(|candidate| !existing.contains(candidate))
+            .find(|candidate| !existing.contains(&candidate.to_ascii_lowercase()))
             .unwrap_or_else(|| format!("{base}-new"));
-        existing.insert(id.clone());
+        existing.insert(id.to_ascii_lowercase());
         item.id = id;
         if let ContextMenuItemKind::Submenu { items } = &mut item.kind {
             for child in items {
@@ -210,7 +197,7 @@ pub(super) fn next_context_menu_item_id(items: &[ContextMenuItem], prefix: &str)
     collect_context_menu_ids(items, &mut existing);
     (1..)
         .map(|suffix| format!("{prefix}-{suffix}"))
-        .find(|candidate| !existing.contains(candidate))
+        .find(|candidate| !existing.contains(&candidate.to_ascii_lowercase()))
         .unwrap_or_else(|| format!("{prefix}-new"))
 }
 
@@ -405,10 +392,7 @@ pub(super) fn context_menu_action_reference_panels(
                         *target = "self".into();
                     }
                     for (id, name) in layer_targets {
-                        let token = format!(
-                            "\"{}\"",
-                            id.replace('\\', "\\\\").replace('"', "\\\"")
-                        );
+                        let token = quote_action_string(id);
                         if ui
                             .selectable_label(*target == token, format!("{name}  ·  {id}"))
                             .clicked()

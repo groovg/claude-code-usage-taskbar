@@ -101,7 +101,9 @@ pub(crate) fn name_editor(
         if ui.data_mut(|data| data.remove_temp::<bool>(focus_id).is_some()) {
             response.request_focus();
         }
-        let enter_pressed = ui.input(|input| input.key_pressed(egui::Key::Enter));
+        // Enter in another field must not save this draft.
+        let enter_pressed =
+            response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
         if save_clicked || enter_pressed {
             *name = draft;
             ui.data_mut(|data| {
@@ -258,4 +260,52 @@ fn name_label(ui: &mut egui::Ui, name: &str, width: f32, sense: egui::Sense) -> 
         ui.style().interact(&response).text_color(),
     );
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn enter() -> egui::Event {
+        egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    /// Edits `name` with a typed draft for a frame without input, then a
+    /// frame with Enter. `focused` puts the caret in the name field.
+    fn name_after_enter(focused: bool) -> String {
+        let context = egui::Context::default();
+        crate::ui::theme::configure_style(&context, LanguageId::English);
+        let id = egui::Id::new("name-editor-test");
+        context.data_mut(|data| {
+            data.insert_temp(id.with("active"), true);
+            data.insert_temp(id.with("draft"), "typed".to_owned());
+            if focused {
+                data.insert_temp(id.with("focus"), true);
+            }
+        });
+        let mut name = "saved".to_owned();
+        for events in [Vec::new(), vec![enter()]] {
+            let input = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            let mut output = context.run_ui(input, |ui| {
+                name_editor(ui, &mut name, id, "", LanguageId::English);
+            });
+            output.textures_delta.clear();
+        }
+        name
+    }
+
+    #[test]
+    fn only_enter_in_the_name_field_saves_the_draft() {
+        assert_eq!(name_after_enter(true), "typed");
+        assert_eq!(name_after_enter(false), "saved");
+    }
 }

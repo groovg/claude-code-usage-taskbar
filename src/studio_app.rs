@@ -118,11 +118,6 @@ pub fn handle_cli_mode(args: &[String]) -> bool {
             return true;
         }
     };
-    let initial_page = if args.iter().any(|argument| argument == "--theme-studio") {
-        Page::Studio
-    } else {
-        Page::Settings
-    };
     let settings = app_settings::load_settings();
     let dashboard_width = settings.dashboard_width.unwrap_or(DEFAULT_DASHBOARD_WIDTH);
     let dashboard_height = settings
@@ -142,7 +137,7 @@ pub fn handle_cli_mode(args: &[String]) -> bool {
     if let Err(error) = eframe::run_native(
         "ClaudeCodeUsageTaskbar.Studio",
         options,
-        Box::new(move |context| Ok(Box::new(StudioApp::new(context, owner, initial_page)))),
+        Box::new(move |context| Ok(Box::new(StudioApp::new(context, owner)))),
     ) {
         let language = settings_language(&app_settings::load_settings());
         crate::dashboard::report_launch_failure(
@@ -303,6 +298,8 @@ enum ExpressionField {
 enum LayerInspectorRequest {
     Expression(ExpressionField),
     TextTemplate,
+    Asset,
+    MouseEvent(MouseEventField),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -659,7 +656,8 @@ struct StudioApp {
     preview_hover_target: Option<(usize, String)>,
     preview_pending_click: Option<(Instant, usize, String)>,
     asset_picker: Option<AssetPickerState>,
-    asset_thumbnails: HashMap<String, egui::TextureHandle>,
+    /// `None` marks an image that could not be decoded, so it is not retried every frame.
+    asset_thumbnails: HashMap<String, Option<egui::TextureHandle>>,
     asset_page_filter: String,
     asset_page_selected: Option<String>,
     asset_error: Option<String>,
@@ -675,8 +673,24 @@ struct StudioApp {
     context_menu_dirty: bool,
     context_menu_selection: Option<Vec<usize>>,
     context_menu_action_helper: Option<ContextMenuActionHelperState>,
+    context_menu_expression_helper: Option<ExpressionHelperState>,
+    context_menu_text_template_helper: Option<TextTemplateHelperState>,
+    /// The menu Discard returns to after New or Duplicate cleared `context_menu_path`.
+    context_menu_discard_path: Option<PathBuf>,
     delete_context_menu_confirmation: Option<(PathBuf, String)>,
+    /// Library lists read from disk; `None` reads them again on next use.
+    theme_list: Option<Vec<AvailableTheme>>,
+    context_menu_list: Option<Vec<context_menu::ContextMenuDescriptor>>,
+    asset_list: Option<Vec<theme_engine::ManagedAsset>>,
+    /// This frame's host lookups, keyed by display, host kind and base runtime.
+    host_runtimes: std::cell::RefCell<Vec<HostRuntime>>,
+    live_apply_pending: bool,
+    pointer_down: bool,
+    /// An undo entry already covers the current pointer press.
+    history_press: bool,
 }
+
+type HostRuntime = ((usize, SurfaceNest, ThemeRuntime), ThemeRuntime);
 
 mod studio_assets;
 mod studio_context_menus;
@@ -729,13 +743,15 @@ fn scene_subtree_end(objects: &[SceneObject], root_id: &str) -> usize {
         .unwrap_or(objects.len())
 }
 
+/// Gives `objects` new ids where needed and updates their parents and mouse
+/// actions to match. Returns the replaced ids, old to new.
 fn remap_scene_ids(
     objects: &mut [SceneObject],
     reserved: &std::collections::HashSet<String>,
     remap_every_id: bool,
-) {
+) -> HashMap<String, String> {
     let mut used = reserved.clone();
-    let mut replacements = std::collections::HashMap::new();
+    let mut replacements = HashMap::new();
     for object in objects.iter() {
         let old_key = object.id.to_ascii_lowercase();
         if remap_every_id || used.contains(&old_key) {
@@ -758,23 +774,46 @@ fn remap_scene_ids(
                 *parent = replacement.clone();
             }
         }
-        if let Some(events) = &mut object.mouse_events {
-            for event in [
-                MouseEventKind::Click,
-                MouseEventKind::DoubleClick,
-                MouseEventKind::RightClick,
-                MouseEventKind::MouseEnter,
-                MouseEventKind::MouseLeave,
-            ] {
-                let handler = events.handler_mut(event);
-                for (old, new) in &replacements {
-                    let old = format!("\"{}\"", old.replace('\\', "\\\\").replace('"', "\\\""));
-                    let new = format!("\"{}\"", new.replace('\\', "\\\\").replace('"', "\\\""));
-                    *handler = handler.replace(&old, &new);
-                }
+        remap_mouse_action_targets(object, &replacements);
+    }
+    replacements
+}
+
+/// Points the quoted layer ids in `object`'s mouse actions at their
+/// replacements. Ids match ignoring ASCII case, as the engine looks them up.
+fn remap_mouse_action_targets(object: &mut SceneObject, replacements: &HashMap<String, String>) {
+    let Some(events) = &mut object.mouse_events else {
+        return;
+    };
+    for event in [
+        MouseEventKind::Click,
+        MouseEventKind::DoubleClick,
+        MouseEventKind::RightClick,
+        MouseEventKind::MouseEnter,
+        MouseEventKind::MouseLeave,
+    ] {
+        let handler = events.handler_mut(event);
+        for (old, new) in replacements {
+            let old = quote_action_string(old).to_ascii_lowercase();
+            let new = quote_action_string(new);
+            // ASCII lowercasing keeps every byte offset, so matches index `handler` too.
+            let lower = handler.to_ascii_lowercase();
+            let mut replaced = String::with_capacity(handler.len());
+            let mut copied = 0;
+            for (start, _) in lower.match_indices(&old) {
+                replaced.push_str(&handler[copied..start]);
+                replaced.push_str(&new);
+                copied = start + old.len();
             }
+            replaced.push_str(&handler[copied..]);
+            *handler = replaced;
         }
     }
+}
+
+/// `value` as a double-quoted mouse-action string argument.
+fn quote_action_string(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 fn reserved_scene_ids(surface: &SceneObject) -> std::collections::HashSet<String> {
@@ -786,6 +825,9 @@ fn reserved_scene_ids(surface: &SceneObject) -> std::collections::HashSet<String
 
 impl eframe::App for StudioApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.host_runtimes.get_mut().clear();
+        self.pointer_down = ui.ctx().input(|input| input.pointer.any_down());
+        self.history_press &= self.pointer_down;
         self.handle_dropped_files(ui.ctx());
         if let Some(size) = ui
             .ctx()
@@ -795,7 +837,9 @@ impl eframe::App for StudioApp {
             self.settings.dashboard_height = Some(size.y);
         }
         let close_requested = ui.ctx().input(|input| input.viewport().close_requested());
-        if close_requested && (self.dirty || self.pending_unsaved_action.is_some()) {
+        if close_requested
+            && (self.dirty || self.context_menu_dirty || self.pending_unsaved_action.is_some())
+        {
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::CancelClose);
             if self.pending_unsaved_action.is_none() {
@@ -821,6 +865,11 @@ impl eframe::App for StudioApp {
                 bottom: 10,
             })
             .show(ui, |ui| self.shell(ui));
+        // Live apply writes once the pointer is released, not on every drag frame.
+        if self.live_apply_pending && !self.pointer_down {
+            self.live_apply_pending = false;
+            let _ = self.save_theme();
+        }
         self.unsaved_changes_dialog(ui.ctx());
         ui.ctx().request_repaint_after(Duration::from_millis(500));
     }
