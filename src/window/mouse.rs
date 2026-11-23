@@ -112,7 +112,7 @@ pub(super) fn execute_mouse_action_source(
                     MouseActionEffect::ShowDashboard => crate::dashboard::show(owner),
                     MouseActionEffect::ToggleDashboard => crate::dashboard::toggle(owner),
                     MouseActionEffect::OpenUrl(url) => {
-                        open_web_url(owner, &url, "mouse action URL could not be opened")
+                        open_web_url(&url, "mouse action URL could not be opened")
                     }
                     MouseActionEffect::ShowContextMenu(menu) => show_context_menu_document(
                         owner,

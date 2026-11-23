@@ -284,7 +284,7 @@ pub(super) fn execute_context_menu_action(
             let _ = execute_mouse_action_source(surface_index, &self_id, &actions);
         }
         ContextMenuAction::OpenUrl { url } => {
-            open_web_url(hwnd, &url, "context menu URL could not be opened")
+            open_web_url(&url, "context menu URL could not be opened")
         }
         _ => {}
     }

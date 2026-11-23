@@ -152,22 +152,24 @@ fn fetch_antigravity_usage_from_endpoint(
         Some(project) => serde_json::json!({ "project": project }),
         None => serde_json::json!({}),
     };
-    let response: AntigravityModelsResponse =
-        post_json(base_url, "fetchAvailableModels", token, body)?;
-    let session =
-        best_antigravity_section(response.models.into_iter().filter_map(|(model, info)| {
-            let quota = info.quota_info?;
-            if !is_antigravity_display_model(&model) {
-                return None;
-            }
-            section_from_remaining(quota.remaining_fraction, quota.reset_time.as_deref())
-        }))
+    let session = section_from_models(post_json(base_url, "fetchAvailableModels", token, body)?)
         .ok_or(PollError::RequestFailed)?;
 
     Ok(UsageData {
         session,
         ..Default::default()
     })
+}
+
+/// The fullest Antigravity model quota, for accounts without a summary.
+fn section_from_models(response: AntigravityModelsResponse) -> Option<UsageSection> {
+    best_antigravity_section(response.models.into_iter().filter_map(|(model, info)| {
+        let quota = info.quota_info?;
+        if !is_antigravity_display_model(&model) {
+            return None;
+        }
+        section_from_remaining(quota.remaining_fraction, quota.reset_time.as_deref())
+    }))
 }
 
 /// POST one `v1internal` method and read its JSON reply.
@@ -209,7 +211,11 @@ pub(super) fn section_from_remaining(
     remaining_fraction: Option<f64>,
     reset_time: Option<&str>,
 ) -> Option<UsageSection> {
-    let remaining = remaining_fraction?.clamp(0.0, 1.0);
+    // JSON from protobuf leaves zero values out, so a spent quota can arrive
+    // with only its reset time.
+    let remaining = remaining_fraction
+        .or(reset_time.map(|_| 0.0))?
+        .clamp(0.0, 1.0);
     Some(UsageSection {
         available: true,
         percentage: (1.0 - remaining) * 100.0,
@@ -323,16 +329,41 @@ where
     })
 }
 
+/// Antigravity's own models. Claude and GPT draw on the third-party pool,
+/// which the summary path refuses for the same reason.
 fn is_antigravity_display_model(model: &str) -> bool {
-    model.starts_with("gemini")
-        || model.starts_with("claude")
-        || model.starts_with("gpt")
-        || model.starts_with("image")
-        || model.starts_with("imagen")
+    model.starts_with("gemini") || model.starts_with("image") || model.starts_with("imagen")
 }
 
 fn read_antigravity_credentials() -> Option<AntigravityTokenData> {
     let content = super::read_generic_credential(ANTIGRAVITY_CREDENTIAL_TARGET)?;
     let auth: AntigravityAuthFile = serde_json::from_str(&content).ok()?;
     (!auth.token.access_token.is_empty()).then_some(auth.token)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_model_fallback_ignores_the_claude_and_gpt_pool() {
+        let response: AntigravityModelsResponse = serde_json::from_str(
+            r#"{"models": {
+                "claude-sonnet-4-5": {"quotaInfo": {"remainingFraction": 0}},
+                "gpt-oss-120b": {"quotaInfo": {"remainingFraction": 0.2}},
+                "gemini-3-pro": {"quotaInfo": {"remainingFraction": 0.9}}
+            }}"#,
+        )
+        .unwrap();
+        let section = section_from_models(response).unwrap();
+        assert!((section.percentage - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_quota_with_only_a_reset_time_is_spent() {
+        let section = section_from_remaining(None, Some("2026-06-20T18:32:02Z")).unwrap();
+        assert_eq!(section.percentage, 100.0);
+        assert!(section.resets_at.is_some());
+        assert!(section_from_remaining(None, None).is_none());
+    }
 }

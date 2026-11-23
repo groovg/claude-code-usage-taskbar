@@ -260,7 +260,7 @@ pub(super) fn fetch_usage_with_fallback(token: &str) -> Result<UsageData, PollEr
 
 fn fetch_remote_usage(token: &str) -> Result<UsageData, PollError> {
     // Try the dedicated usage endpoint first
-    if let Some(data) = try_usage_endpoint(token)? {
+    if let Some(data) = try_usage_endpoint(USAGE_URL, token)? {
         // Fill a missing reset time from the Messages API, but only for a
         // window the usage endpoint reported. A plan without a five-hour
         // allowance says so by leaving it out, and the rate-limit headers
@@ -290,9 +290,9 @@ fn fetch_remote_usage(token: &str) -> Result<UsageData, PollError> {
     result
 }
 
-pub(super) fn try_usage_endpoint(token: &str) -> Result<Option<UsageData>, PollError> {
+pub(super) fn try_usage_endpoint(url: &str, token: &str) -> Result<Option<UsageData>, PollError> {
     let mut resp = match HTTP_AGENT
-        .get(USAGE_URL)
+        .get(url)
         .header("Authorization", &format!("Bearer {token}"))
         .header("anthropic-beta", "oauth-2025-04-20")
         .call()
@@ -318,9 +318,14 @@ pub(super) fn try_usage_endpoint(token: &str) -> Result<Option<UsageData>, PollE
         },
     };
 
+    // Not `Ok(None)`: the Messages API fallback would spend quota on every
+    // poll for as long as the reply format stays changed.
     let response: UsageResponse = match resp.body_mut().read_json() {
         Ok(response) => response,
-        Err(_) => return Ok(None),
+        Err(error) => {
+            diagnose::log(format!("usage endpoint reply could not be read ({error})"));
+            return Err(PollError::RequestFailed);
+        }
     };
     Ok(Some(usage_from_response(response)))
 }
@@ -559,8 +564,10 @@ fn refresh_credentials(credentials: Credentials) -> Result<Credentials, PollErro
     // desktop app is the exception, and only for the default CLI file it
     // takes over: it leaves that file behind with a token it no longer
     // refreshes, so a live desktop token is the same account, not another.
+    // Any token that has not expired yet will do now: a CLI that renews later
+    // than we ask must not produce a false sign-in error.
     read_credentials_from_source(&source)
-        .filter(|credentials| !is_token_expired(credentials.expires_at))
+        .filter(|credentials| !expires_within(credentials.expires_at, 0))
         .or_else(|| fresh_fallback_credentials(&source))
         .ok_or(PollError::TokenExpired)
 }
@@ -570,7 +577,7 @@ fn fresh_fallback_credentials(stale: &CredentialSource) -> Option<Credentials> {
     let CredentialSource::Windows(path) = stale else {
         return None;
     };
-    fallback_credentials(path).filter(|credentials| !is_token_expired(credentials.expires_at))
+    fallback_credentials(path).filter(|credentials| !expires_within(credentials.expires_at, 0))
 }
 
 fn cli_refresh_token(source: &CredentialSource) {
@@ -606,6 +613,10 @@ fn cli_refresh_token(source: &CredentialSource) {
 /// for no persistence; older builds reject the option, hence the plain retry.
 const NO_SESSION: &str = "--no-session-persistence";
 
+/// `-p .` is a real prompt. On the user's default model (often Opus) each
+/// refresh spends the very limits the widget shows; Haiku costs next to nothing.
+const REFRESH_MODEL: &str = "--model haiku";
+
 /// Run the CLI once so it refreshes its stored login. `directory` becomes its
 /// CLAUDE_CONFIG_DIR; `None` leaves the variable unset, which a Credential
 /// Manager login needs, because setting it renames the entry the CLI uses.
@@ -619,6 +630,7 @@ fn cli_refresh_windows_token(directory: Option<&Path>) {
         let mut command = cli_command(&claude_path);
         command
             .args(["-p", "."])
+            .args(REFRESH_MODEL.split(' '))
             .args(extra)
             .env_remove("CLAUDECODE")
             .env_remove("CLAUDE_CODE_ENTRYPOINT");
@@ -646,7 +658,7 @@ fn cli_refresh_wsl_token(distro: &str) {
             .arg("bash")
             .arg("-lic")
             .arg(format!(
-                "export CLAUDE_CONFIG_DIR=\"$HOME/.claude\"; if command -v claude >/dev/null 2>&1; then claude -p .{extra}; elif [ -x \"$HOME/.local/bin/claude\" ]; then \"$HOME/.local/bin/claude\" -p .{extra}; else exit 127; fi"
+                "export CLAUDE_CONFIG_DIR=\"$HOME/.claude\"; if command -v claude >/dev/null 2>&1; then claude -p . {REFRESH_MODEL}{extra}; elif [ -x \"$HOME/.local/bin/claude\" ]; then \"$HOME/.local/bin/claude\" -p . {REFRESH_MODEL}{extra}; else exit 127; fi"
             ))
             .env_remove("CLAUDECODE")
             .env_remove("CLAUDE_CODE_ENTRYPOINT");
@@ -965,22 +977,49 @@ fn looks_like_utf16le(bytes: &[u8]) -> bool {
             >= units
 }
 
+/// Renew this early: a slow PC clock or a long request would otherwise turn
+/// the token into a 401, which pauses polling until the login file changes.
+const RENEW_BEFORE_EXPIRY_MS: i64 = 5 * 60 * 1000;
+
 fn is_token_expired(expires_at: Option<i64>) -> bool {
+    expires_within(expires_at, RENEW_BEFORE_EXPIRY_MS)
+}
+
+fn expires_within(expires_at: Option<i64>, margin_ms: i64) -> bool {
     expires_at.is_some_and(|expires_at| {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64;
-        now >= expires_at
+        now.saturating_add(margin_ms) >= expires_at
     })
 }
 
+/// Run `command` with a time limit and collect its stdout. Callers discard
+/// stderr, so it is not collected.
 fn run_with_timeout(command: &mut Command, timeout: Duration) -> Option<std::process::Output> {
     let mut child = command.spawn().ok()?;
+    // Read while waiting: a child blocks once the 64 KB pipe is full and would
+    // never exit before the timeout.
+    let stdout = child.stdout.take().map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut pipe, &mut bytes);
+            bytes
+        })
+    });
     let start = std::time::Instant::now();
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(Some(status)) => {
+                return Some(std::process::Output {
+                    status,
+                    stdout: stdout
+                        .and_then(|reader| reader.join().ok())
+                        .unwrap_or_default(),
+                    stderr: Vec::new(),
+                })
+            }
             Ok(None) if start.elapsed() > timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -1358,5 +1397,57 @@ mod tests {
                                  "limit": {"amount_minor": 5000, "exponent": 2},
                                  "enabled": true}}"#;
         assert!(usage_from_json(json).credits.is_none());
+    }
+
+    #[test]
+    fn a_token_about_to_expire_is_renewed_first() {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        assert!(is_token_expired(Some(now_ms + 30_000)));
+        assert!(!is_token_expired(Some(now_ms + 3_600_000)));
+        assert!(!is_token_expired(None));
+        // After a renewal attempt, a token that is still live is used.
+        assert!(!expires_within(Some(now_ms + 30_000), 0));
+    }
+
+    #[test]
+    fn output_beyond_the_pipe_buffer_does_not_time_out() {
+        let path = std::env::temp_dir().join(format!(
+            "claude-run-with-timeout-{}-{}.txt",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, "x".repeat(70_000)).unwrap();
+        let output = run_with_timeout(
+            Command::new("cmd.exe")
+                .arg("/c")
+                .arg("type")
+                .arg(&path)
+                .creation_flags(CREATE_NO_WINDOW.0)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null()),
+            Duration::from_secs(10),
+        );
+        std::fs::remove_file(&path).unwrap();
+        let output = output.expect("the command must finish before the timeout");
+        assert!(output.status.success());
+        assert_eq!(output.stdout.len(), 70_000);
+    }
+
+    #[test]
+    fn an_unreadable_usage_reply_is_a_failed_request_not_a_fallback() {
+        let (url, server) = super::super::serve_once(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 36\r\nConnection: close\r\n\r\n{\"five_hour\": {\"utilization\": null}}",
+        );
+        assert_eq!(
+            try_usage_endpoint(&url, "fixture-token").err(),
+            Some(PollError::RequestFailed)
+        );
+        server.join().unwrap();
     }
 }

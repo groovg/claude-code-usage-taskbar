@@ -506,17 +506,24 @@ fn is_leap(y: u64) -> bool {
 pub fn time_until_display_change(resets_at: Option<SystemTime>) -> Option<Duration> {
     let reset = resets_at?;
     let remaining = reset.duration_since(SystemTime::now()).ok()?;
-    Some(time_until_display_change_from_secs(remaining.as_secs()))
+    // The labels round the remaining seconds, so count them the same way.
+    Some(time_until_display_change_from_secs(
+        remaining.as_secs_f64().round() as u64,
+    ))
 }
 
-/// The text counts whole days, hours or minutes: it changes one second after
-/// the next boundary of the largest unit that fits.
+/// When the next countdown label can change. `duration` ("2d 3h", "4h 15m")
+/// truncates, `duration_short` ("5h") rounds within its unit, so beyond a day
+/// both change on the hour, beyond an hour on the minute, and under an hour
+/// also at the half minute, where `duration_short` rounds to the next minute.
 fn time_until_display_change_from_secs(total_secs: u64) -> Duration {
-    let unit = [86_400, 3_600, 60]
-        .into_iter()
-        .find(|unit| total_secs >= *unit)
-        .unwrap_or(1);
-    Duration::from_secs(total_secs % unit + 1)
+    let period = match total_secs {
+        86_400.. => 3_600,
+        3_600.. => 60,
+        60.. => 30,
+        _ => 1,
+    };
+    Duration::from_secs(total_secs % period + 1)
 }
 
 /// Returns true if either section has reached "now" (reset time has passed).
@@ -540,6 +547,33 @@ pub fn app_is_past_reset(data: &AppUsageData) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+/// A local HTTP server for tests that answers one request with `response`,
+/// then hands back its listener so a test can see whether more arrived.
+#[cfg(test)]
+pub(crate) fn serve_once(
+    response: &'static [u8],
+) -> (String, std::thread::JoinHandle<std::net::TcpListener>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/test", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0; 1024];
+        while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+            let count = stream.read(&mut buffer).unwrap();
+            assert_ne!(count, 0);
+            request.extend_from_slice(&buffer[..count]);
+        }
+        stream.write_all(response).unwrap();
+        listener
+    });
+    (url, server)
+}
 
 /// The UTF-8 text stored in a generic Windows credential, or `None` when the
 /// target does not exist or is not text.

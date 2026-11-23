@@ -462,20 +462,48 @@ fn display_changes_at_the_next_unit_boundary() {
         (59, 1),
         (60, 1),
         (61, 2),
-        (119, 60),
-        (3_599, 60),
+        (119, 30),
+        (3_599, 30),
         (3_600, 1),
-        (3_661, 62),
-        (86_399, 3_600),
+        (3_661, 2),
+        (86_399, 60),
         (86_400, 1),
-        (90_061, 3_662),
-        (172_799, 86_400),
+        (90_061, 62),
+        (172_799, 3_600),
     ] {
         assert_eq!(
             time_until_display_change_from_secs(remaining),
             Duration::from_secs(expected),
             "{remaining} s"
         );
+    }
+}
+
+#[test]
+fn no_countdown_label_changes_before_the_scheduled_redraw() {
+    let label = |format: &str, seconds: u64| {
+        let mut context = crate::theme_engine::DataContext::default();
+        context.insert("reset", seconds as f64);
+        crate::theme_engine::format_template(&format!("{{reset:{format}}}"), &context)
+    };
+    for format in ["duration_short", "duration"] {
+        // Seconds since the last label change, counting down from 27 hours.
+        let mut unchanged_for = 0;
+        let mut previous = label(format, 0);
+        for seconds in 1..97_200 {
+            let current = label(format, seconds);
+            unchanged_for = if current == previous {
+                unchanged_for + 1
+            } else {
+                1
+            };
+            previous = current;
+            let wait = time_until_display_change_from_secs(seconds).as_secs();
+            assert!(
+                wait <= unchanged_for,
+                "{format}: at {seconds} s the label changes after {unchanged_for} s, the redraw comes after {wait} s"
+            );
+        }
     }
 }
 
@@ -507,6 +535,23 @@ fn retry_after_is_read_in_seconds_and_capped() {
         retry_after(&response_with_retry_after("Wed, 21 Oct 2026 07:28:00 GMT")),
         None
     );
+}
+
+#[test]
+fn a_429_with_retry_after_holds_back_the_next_call_to_that_target() {
+    let (url, server) = serve_once(
+        b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 60\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    );
+    let status = |result: Result<HttpResponse, ureq::Error>| match result {
+        Err(ureq::Error::StatusCode(status)) => status,
+        other => panic!("expected a status error, got {other:?}"),
+    };
+    assert_eq!(status(HTTP_AGENT.get(&url).call()), 429);
+    let listener = server.join().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    assert_eq!(status(HTTP_AGENT.get(&url).call()), 429);
+    // The second answer came from the cooldown: nothing reached the server.
+    assert!(listener.accept().is_err());
 }
 
 #[test]

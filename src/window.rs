@@ -170,14 +170,15 @@ fn language_from_menu_command_id(command: u16) -> Option<LanguageId> {
         .and_then(|index| LanguageId::from_index(index.into()))
 }
 
-fn open_web_url(hwnd: HWND, url: &str, failure_message: &'static str) {
+fn open_web_url(url: &str, failure_message: &'static str) {
     if !context_menu::supported_url(url) {
         return;
     }
     unsafe {
         let url = native_interop::wide_str(url.trim());
+        // No owner: an error box would disable the taskbar hosting the widget.
         let result = ShellExecuteW(
-            Some(hwnd),
+            None,
             w!("open"),
             PCWSTR::from_raw(url.as_ptr()),
             PCWSTR::null(),
@@ -198,15 +199,7 @@ static POLL_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 static POLL_PENDING: AtomicBool = AtomicBool::new(false);
 
 fn display_scale(display_index: usize) -> f64 {
-    let displays = native_interop::find_monitors();
-    let Some(display) = displays
-        .get(display_index)
-        .copied()
-        .or_else(|| displays.first().copied())
-    else {
-        return 1.0;
-    };
-    monitor_scale(display)
+    native_interop::find_monitor(display_index).map_or(1.0, monitor_scale)
 }
 
 fn monitor_scale(display: native_interop::DisplayMonitor) -> f64 {
@@ -245,42 +238,6 @@ fn logical_host_dimension(physical: i32, scale: f64) -> u32 {
     (physical.max(1) as f64 / scale)
         .round()
         .clamp(1.0, u32::MAX as f64) as u32
-}
-
-// The studio runs in a separate process without the monitor's layout cache.
-pub(crate) fn query_theme_runtime_for_surface(
-    theme: &ThemeDocument,
-    surface_index: usize,
-    runtime: ThemeRuntime,
-) -> ThemeRuntime {
-    let Some(surface) = theme.surfaces.get(surface_index) else {
-        return runtime;
-    };
-    let displays = native_interop::find_monitors();
-    let Some(display) = displays
-        .get(surface.placement.reference.display)
-        .copied()
-        .or_else(|| displays.first().copied())
-    else {
-        return runtime;
-    };
-    let nest = surface.placement.nest;
-    let host_rect = if matches!(nest, SurfaceNest::Taskbar | SurfaceNest::TrayIcon) {
-        native_interop::find_taskbars()
-            .into_iter()
-            .find(|taskbar| unsafe {
-                MonitorFromWindow(taskbar.hwnd, MONITOR_DEFAULTTOPRIMARY) == display.handle
-            })
-            .map(|taskbar| taskbar.rect)
-            .unwrap_or(display.rect)
-    } else {
-        display.rect
-    };
-    let scale = monitor_scale(display);
-    runtime.with_host_dimensions(
-        logical_host_dimension(host_rect.right - host_rect.left, scale),
-        logical_host_dimension(host_rect.bottom - host_rect.top, scale),
-    )
 }
 
 fn scaled_theme_dimension(logical: u32, scale: f64) -> i32 {
@@ -671,8 +628,10 @@ fn sync_tray_icon(hwnd: HWND) {
                     })
                 })
                 .collect::<Vec<_>>();
-            tray_icon::sync_themed(hwnd, &icons);
-            return;
+            // With no themed icon to show, keep the app icon so the menu stays reachable.
+            if tray_icon::sync_themed(hwnd, &icons) {
+                return;
+            }
         }
     }
     tray_icon::sync(hwnd, &tray_icon_tooltip_from_state());
@@ -746,27 +705,24 @@ fn set_window_title(hwnd: HWND, strings: Strings) {
     }
 }
 
-fn message_box(
-    hwnd: HWND,
-    title: &str,
-    message: &str,
-    style: MESSAGEBOX_STYLE,
-) -> MESSAGEBOX_RESULT {
+/// Ownerless: a modal box disables its owner's top-level window, and the
+/// widget's top-level window is usually the taskbar itself.
+fn message_box(title: &str, message: &str, style: MESSAGEBOX_STYLE) -> MESSAGEBOX_RESULT {
     let title = native_interop::wide_str(title);
     let message = native_interop::wide_str(message);
     unsafe {
         MessageBoxW(
-            Some(hwnd),
+            None,
             PCWSTR::from_raw(message.as_ptr()),
             PCWSTR::from_raw(title.as_ptr()),
-            style,
+            style | MB_SETFOREGROUND | MB_TOPMOST,
         )
     }
 }
 
-fn show_update_failure(hwnd: HWND, strings: Strings, error: &str) {
+fn show_update_failure(strings: Strings, error: &str) {
     let message = format!("{}.\n\n{}", strings.update_failed, error);
-    message_box(hwnd, strings.updates, &message, MB_OK | MB_ICONERROR);
+    message_box(strings.updates, &message, MB_OK | MB_ICONERROR);
 }
 
 fn apply_language_to_state(state: &mut AppState, language_override: Option<LanguageId>) {
@@ -819,7 +775,6 @@ fn begin_update_check(hwnd: HWND, interactive: bool) {
     if busy {
         if interactive {
             message_box(
-                hwnd,
                 strings.updates,
                 strings.update_in_progress,
                 MB_OK | MB_ICONINFORMATION,
@@ -846,7 +801,6 @@ fn begin_update_check(hwnd: HWND, interactive: bool) {
             match result {
                 Ok(UpdateCheckResult::UpToDate) => {
                     message_box(
-                        hwnd,
                         strings.updates,
                         strings.up_to_date,
                         MB_OK | MB_ICONINFORMATION,
@@ -857,7 +811,6 @@ fn begin_update_check(hwnd: HWND, interactive: bool) {
                         .update_prompt_now
                         .replace("{version}", &release.latest_version);
                     if message_box(
-                        hwnd,
                         strings.update_available,
                         &prompt,
                         MB_YESNO | MB_ICONQUESTION,
@@ -869,7 +822,7 @@ fn begin_update_check(hwnd: HWND, interactive: bool) {
                         }
                     }
                 }
-                Err(error) => show_update_failure(hwnd, strings, &error),
+                Err(error) => show_update_failure(strings, &error),
             }
         }
         unsafe {
@@ -902,7 +855,6 @@ fn begin_update_apply(hwnd: HWND, release: ReleaseDescriptor) {
     // Outside the lock: the message box's modal loop re-enters wnd_proc.
     if busy {
         message_box(
-            hwnd,
             strings.updates,
             strings.update_in_progress,
             MB_OK | MB_ICONINFORMATION,
@@ -923,7 +875,7 @@ fn begin_update_apply(hwnd: HWND, release: ReleaseDescriptor) {
                         s.update_status = UpdateStatus::Available(release);
                     }
                 }
-                show_update_failure(hwnd, strings, &error);
+                show_update_failure(strings, &error);
                 unsafe {
                     let _ = PostMessageW(
                         Some(hwnd),
@@ -948,7 +900,7 @@ fn begin_winget_update(hwnd: HWND) {
         Ok(()) => unsafe {
             let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
         },
-        Err(error) => show_update_failure(hwnd, strings, &error),
+        Err(error) => show_update_failure(strings, &error),
     }
 }
 
@@ -1143,20 +1095,7 @@ fn sync_custom_mirrors() {
         let Some(state) = state.as_mut() else {
             return;
         };
-        state.desktop_hwnds.resize_with(desired_total, || None);
-        let removed = state.desktop_hwnds.split_off(desired_total);
-        let mut stale = removed.into_iter().flatten().collect::<Vec<_>>();
-        for (surface_index, window) in state.desktop_hwnds.iter_mut().enumerate() {
-            let wanted = desktop_surfaces.get(surface_index) == Some(&true);
-            let valid =
-                window.is_some_and(|window| unsafe { IsWindow(Some(window.to_hwnd())).as_bool() });
-            if !wanted || !valid {
-                if let Some(window) = window.take() {
-                    stale.push(window);
-                }
-            }
-        }
-        stale
+        take_stale_desktop_windows(&mut state.desktop_hwnds, desired_total, &desktop_surfaces)
     };
     for window in stale_desktop_windows {
         unsafe {
@@ -1192,6 +1131,29 @@ fn sync_custom_mirrors() {
             }
         }
     }
+}
+
+/// Fit the desktop window slots to the theme's surfaces and take out every
+/// window that is past the end, no longer wanted or no longer exists.
+fn take_stale_desktop_windows(
+    windows: &mut Vec<Option<SendHwnd>>,
+    desired_total: usize,
+    desktop_surfaces: &[bool],
+) -> Vec<SendHwnd> {
+    let removed = windows.split_off(desired_total.min(windows.len()));
+    windows.resize_with(desired_total, || None);
+    let mut stale = removed.into_iter().flatten().collect::<Vec<_>>();
+    for (surface_index, window) in windows.iter_mut().enumerate() {
+        let wanted = desktop_surfaces.get(surface_index) == Some(&true);
+        let valid =
+            window.is_some_and(|window| unsafe { IsWindow(Some(window.to_hwnd())).as_bool() });
+        if !wanted || !valid {
+            if let Some(window) = window.take() {
+                stale.push(window);
+            }
+        }
+    }
+    stale
 }
 
 unsafe fn create_desktop_surface_window() -> HWND {
@@ -1615,6 +1577,9 @@ pub fn run() {
 /// Render every theme surface, then dispatch it to the presenter selected by
 /// its nest: DirectComposition for desktop and layered windows elsewhere.
 fn render_layered() {
+    // A surface inside the taskbar is a child window, which never receives the
+    // display and settings broadcasts that otherwise refresh this cache.
+    refresh_theme_host_geometry();
     sync_custom_mirrors();
     let (hwnd_val, theme, usage_data, runtime, mirror_hwnds, desktop_hwnds) = {
         let state = lock_state();
@@ -2086,6 +2051,7 @@ fn reload_external_settings(hwnd: HWND) {
     let language_override = settings.language.as_deref().and_then(LanguageId::from_code);
     let theme_path = settings.active_theme_path.as_ref().map(PathBuf::from);
     let providers_changed;
+    let interval_changed;
     {
         let mut state = lock_state();
         let Some(state) = state.as_mut() else {
@@ -2093,6 +2059,7 @@ fn reload_external_settings(hwnd: HWND) {
         };
         providers_changed =
             state.providers != settings.enabled_providers() || state.accounts != settings.accounts;
+        interval_changed = state.poll_interval_ms != settings.poll_interval_ms;
         state.accounts = settings.accounts.clone();
         if let Some(data) = state.data.as_mut() {
             data.select_accounts(&settings.accounts);
@@ -2103,8 +2070,11 @@ fn reload_external_settings(hwnd: HWND) {
         state.widget_position = settings.widget_position;
         apply_language_to_state(state, language_override);
     }
-    unsafe {
-        SetTimer(Some(hwnd), TIMER_POLL, settings.poll_interval_ms, None);
+    // Re-arming on every save would push the next poll back and drop a retry.
+    if interval_changed {
+        unsafe {
+            SetTimer(Some(hwnd), TIMER_POLL, settings.poll_interval_ms, None);
+        }
     }
     let _ = apply_custom_theme(hwnd, theme_path, None);
     if providers_changed {
@@ -2117,6 +2087,7 @@ fn reload_external_settings(hwnd: HWND) {
 
 mod host_geometry;
 mod message_loop;
+pub(crate) use host_geometry::query_theme_runtime_for_surface;
 use host_geometry::*;
 use message_loop::wnd_proc;
 mod positioning;
