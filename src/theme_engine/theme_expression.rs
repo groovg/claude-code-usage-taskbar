@@ -27,6 +27,8 @@ pub(super) fn evaluate_value(
         source: source.as_bytes(),
         index: 0,
         context,
+        depth: 0,
+        skip: false,
     };
     let value = parser.parse_expression()?;
     parser.skip_space();
@@ -64,10 +66,19 @@ pub(super) fn split_template_token(token: &str) -> (&str, &str) {
     })
 }
 
+/// Brackets, prefix operators and calls nest the parser's recursion; a theme
+/// past this depth would otherwise overflow the stack.
+const MAX_EXPRESSION_DEPTH: usize = 64;
+
 pub(super) struct Parser<'a> {
     source: &'a [u8],
     index: usize,
     context: &'a DataContext,
+    depth: usize,
+    /// Inside a branch that `if`, `&&` or `||` does not take: it is checked
+    /// for syntax and names, but yields a neutral number, so a guard such as
+    /// `if(x > 0, 100 / x, 0)` cannot fail on the side it skips.
+    skip: bool,
 }
 
 impl Parser<'_> {
@@ -77,22 +88,31 @@ impl Parser<'_> {
     fn parse_or(&mut self) -> Result<ExpressionValue, String> {
         let mut value = self.parse_and()?;
         while self.consume(b"||") {
-            let rhs = self.parse_and()?;
-            value = ExpressionValue::Number(
-                ((value.number()? != 0.0) || (rhs.number()? != 0.0)) as u8 as f64,
-            );
+            let lhs = value.number()? != 0.0;
+            let rhs = self.parse_skipping(lhs, Self::parse_and)?;
+            value = ExpressionValue::Number((lhs || rhs.number()? != 0.0) as u8 as f64);
         }
         Ok(value)
     }
     fn parse_and(&mut self) -> Result<ExpressionValue, String> {
         let mut value = self.parse_comparison()?;
         while self.consume(b"&&") {
-            let rhs = self.parse_comparison()?;
-            value = ExpressionValue::Number(
-                ((value.number()? != 0.0) && (rhs.number()? != 0.0)) as u8 as f64,
-            );
+            let lhs = value.number()? != 0.0;
+            let rhs = self.parse_skipping(!lhs, Self::parse_comparison)?;
+            value = ExpressionValue::Number((lhs && rhs.number()? != 0.0) as u8 as f64);
         }
         Ok(value)
+    }
+    fn parse_skipping(
+        &mut self,
+        skip: bool,
+        parse: fn(&mut Self) -> Result<ExpressionValue, String>,
+    ) -> Result<ExpressionValue, String> {
+        let outer = self.skip;
+        self.skip |= skip;
+        let value = parse(self);
+        self.skip = outer;
+        value
     }
     fn parse_comparison(&mut self) -> Result<ExpressionValue, String> {
         let mut value = self.parse_sum()?;
@@ -167,7 +187,7 @@ impl Parser<'_> {
                 Some(b'/') => {
                     self.index += 1;
                     let rhs = self.parse_unary()?.number()?;
-                    if rhs == 0.0 {
+                    if rhs == 0.0 && !self.skip {
                         return Err("Division by zero".into());
                     }
                     value = ExpressionValue::Number(value.number()? / rhs);
@@ -175,7 +195,7 @@ impl Parser<'_> {
                 Some(b'%') => {
                     self.index += 1;
                     let rhs = self.parse_unary()?.number()?;
-                    if rhs == 0.0 {
+                    if rhs == 0.0 && !self.skip {
                         return Err("Division by zero".into());
                     }
                     value = ExpressionValue::Number(value.number()? % rhs);
@@ -185,26 +205,40 @@ impl Parser<'_> {
         }
     }
     fn parse_unary(&mut self) -> Result<ExpressionValue, String> {
+        // Every recursion (brackets, call arguments, prefix operators) passes
+        // through here. An error abandons the parse, so only success unwinds.
+        if self.depth == MAX_EXPRESSION_DEPTH {
+            return Err("Expression is nested too deeply".into());
+        }
+        self.depth += 1;
         self.skip_space();
-        match self.peek() {
+        let value = match self.peek() {
             Some(b'+') => {
                 self.index += 1;
-                self.parse_unary()
+                self.parse_unary()?
             }
             Some(b'-') => {
                 self.index += 1;
-                Ok(ExpressionValue::Number(-self.parse_unary()?.number()?))
+                ExpressionValue::Number(-self.parse_unary()?.number()?)
             }
             Some(b'!') => {
                 self.index += 1;
-                Ok(ExpressionValue::Number(
-                    (self.parse_unary()?.number()? == 0.0) as u8 as f64,
-                ))
+                ExpressionValue::Number((self.parse_unary()?.number()? == 0.0) as u8 as f64)
             }
-            _ => self.parse_primary(),
-        }
+            _ => self.parse_primary()?,
+        };
+        self.depth -= 1;
+        Ok(value)
     }
     fn parse_primary(&mut self) -> Result<ExpressionValue, String> {
+        let value = self.parse_value()?;
+        Ok(if self.skip {
+            ExpressionValue::Number(0.0)
+        } else {
+            value
+        })
+    }
+    fn parse_value(&mut self) -> Result<ExpressionValue, String> {
         self.skip_space();
         if self.peek() == Some(b'(') {
             self.index += 1;
@@ -229,11 +263,22 @@ impl Parser<'_> {
             if identifier.eq_ignore_ascii_case("get") {
                 return self.parse_get();
             }
-            let mut arguments = Vec::new();
+            let mut arguments: Vec<ExpressionValue> = Vec::new();
+            let is_if = identifier.eq_ignore_ascii_case("if");
             self.skip_space();
             if self.peek() != Some(b')') {
                 loop {
-                    arguments.push(self.parse_expression()?);
+                    // `if` evaluates only the branch its condition picks.
+                    let skip = is_if
+                        && arguments.first().is_some_and(|condition| {
+                            let taken = if condition.number().unwrap_or(1.0) != 0.0 {
+                                1
+                            } else {
+                                2
+                            };
+                            arguments.len() != taken
+                        });
+                    arguments.push(self.parse_skipping(skip, Self::parse_expression)?);
                     self.skip_space();
                     if self.peek() == Some(b',') {
                         self.index += 1;
@@ -246,6 +291,10 @@ impl Parser<'_> {
                 return Err(format!("Missing closing parenthesis after {identifier}"));
             }
             self.index += 1;
+            if self.skip {
+                // Arity and names are still checked; values are not.
+                arguments.fill(ExpressionValue::Number(0.0));
+            }
             return call_function(&identifier, &arguments);
         }
         if let Some(value) = self.context.get(&identifier) {
@@ -416,7 +465,8 @@ pub(super) fn call_function(
             let value = args[0].number()?;
             let minimum = args[1].number()?;
             let maximum = args[2].number()?;
-            if minimum > maximum {
+            // f64::clamp panics on a NaN bound as well.
+            if minimum.is_nan() || maximum.is_nan() || minimum > maximum {
                 return Err("clamp minimum cannot exceed maximum".into());
             }
             Ok(ExpressionValue::Number(value.clamp(minimum, maximum)))
@@ -469,6 +519,10 @@ pub(super) fn call_function(
 
 pub fn parse_color(source: &str) -> Option<Rgba> {
     let hex = source.trim().strip_prefix('#')?;
+    // Byte slicing below would panic inside a multi-byte character.
+    if !hex.is_ascii() {
+        return None;
+    }
     let pair = |start| u8::from_str_radix(&hex[start..start + 2], 16).ok();
     match hex.len() {
         6 => Some(Rgba {
@@ -628,7 +682,12 @@ pub(super) fn format_value(value: f64, format: &str, context: &DataContext) -> S
         .nth(1)
         .map(|part| part.chars().filter(|c| matches!(c, '0' | '#')).count())
         .unwrap_or(0);
-    let fixed = format.contains('.') && format.contains('0');
+    // `0` after the point keeps trailing zeros, `#` drops them: `0.##` on 5
+    // gives "5".
+    let fixed = format
+        .split('.')
+        .nth(1)
+        .is_some_and(|part| part.contains('0'));
     let mut result = format!("{value:.decimals$}");
     if !fixed && decimals > 0 {
         while result.ends_with('0') {

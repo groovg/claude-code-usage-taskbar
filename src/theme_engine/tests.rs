@@ -400,9 +400,7 @@ fn layer_width_can_get_its_own_resolved_gap() {
     let (layers, warnings) = resolve_objects_for(
         surface,
         &canvas,
-        &surface.children,
-        None,
-        ThemeRuntime::default(),
+        &DataContext::from_usage_with_runtime(None, &canvas, ThemeRuntime::default()),
     );
 
     assert!(warnings.is_empty(), "{warnings:?}");
@@ -1066,9 +1064,7 @@ fn child_objects_resolve_against_parent_anchors_and_clip() {
     let (layers, warnings) = resolve_objects_for(
         surface,
         &canvas,
-        &surface.children,
-        None,
-        ThemeRuntime::default(),
+        &DataContext::from_usage_with_runtime(None, &canvas, ThemeRuntime::default()),
     );
     assert!(warnings.is_empty());
     assert_eq!(layers.len(), 2);
@@ -2609,4 +2605,340 @@ fn built_in_themes_drop_the_claude_five_hour_row_when_the_plan_has_none() {
             );
         }
     }
+}
+
+fn text_content(template: &str) -> SceneContent {
+    SceneContent::Text {
+        template: template.into(),
+        font_family: default_font_family(),
+        font_size: default_font_size(),
+        weight: FontWeight::default(),
+        rendering: FontRendering::default(),
+        contrast: default_font_contrast(),
+        align: TextAlign::default(),
+        color: default_text_paint(),
+    }
+}
+
+#[test]
+fn network_image_paths_are_rejected_and_never_opened() {
+    for path in [
+        r"\\host\share\x.png",
+        "//host/share/x.png",
+        r"\/host/share/x.png",
+        r"\\?\UNC\host\share\x.png",
+        r"\\.\pipe\x",
+        r"  \\host\share\x.png",
+    ] {
+        assert!(is_network_path(path), "{path}");
+    }
+    for path in [
+        r"C:\Users\me\x.png",
+        "C:/x.png",
+        r"\\?\C:\x.png",
+        r"%APPDATA%\ClaudeCodeUsageTaskbar\assets\x.png",
+        "assets/x.png",
+        r"\x.png",
+    ] {
+        assert!(!is_network_path(path), "{path}");
+    }
+
+    let mut theme = ThemeDocument::starter();
+    theme.surfaces[0].background = LayerBackground::Image {
+        path: r"%APPDATA%\ClaudeCodeUsageTaskbar\assets\x.png".into(),
+        fit: ImageFit::Stretch,
+    };
+    assert!(theme.validate().is_empty(), "{:?}", theme.validate());
+    theme.surfaces[0].background = LayerBackground::Image {
+        path: r"\\theme-test.invalid\share\x.png".into(),
+        fit: ImageFit::Stretch,
+    };
+    assert!(theme
+        .validate()
+        .iter()
+        .any(|error| error.contains("network paths")));
+    // A theme saved before validation refused it must not open it either.
+    let rendered = render_theme_surface_with_runtime_at_scale(
+        &theme,
+        0,
+        None,
+        ThemeRuntime::new(true, true, true),
+        1.0,
+    );
+    assert!(
+        rendered
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("is not allowed")),
+        "{:?}",
+        rendered.warnings
+    );
+}
+
+#[test]
+fn colors_with_non_ascii_text_are_rejected_without_panicking() {
+    for source in ["#1é234", "#FéAé", "#ééé", "#12345é"] {
+        assert_eq!(parse_color(source), None, "{source}");
+    }
+    let mut theme = ThemeDocument::starter();
+    theme.surfaces[0].background = LayerBackground::Colour {
+        colour: Paint::new("#FéAé"),
+    };
+    assert!(theme.validate().iter().any(|error| error.contains("#FéAé")));
+}
+
+#[test]
+fn clamp_rejects_a_nan_bound_instead_of_panicking() {
+    let number = ExpressionValue::Number;
+    assert!(call_function("clamp", &[number(1.0), number(f64::NAN), number(2.0)]).is_err());
+    assert!(call_function("clamp", &[number(1.0), number(0.0), number(f64::NAN)]).is_err());
+    let context = DataContext::default();
+    assert!(evaluate("clamp(1, 0, sqrt(-1))", &context).is_err());
+    assert_eq!(evaluate("clamp(5, 0, 2)", &context).unwrap(), 2.0);
+}
+
+#[test]
+fn deeply_nested_expressions_fail_instead_of_overflowing_the_stack() {
+    let context = DataContext::default();
+    let nested = |depth: usize| format!("{}1{}", "(".repeat(depth), ")".repeat(depth));
+    assert_eq!(evaluate(&nested(30), &context).unwrap(), 1.0);
+    assert!(evaluate(&nested(100_000), &context)
+        .unwrap_err()
+        .contains("nested too deeply"));
+    assert!(evaluate(&format!("{}1", "-".repeat(100_000)), &context).is_err());
+    assert!(evaluate(
+        &format!("{}1{}", "abs(".repeat(100_000), ")".repeat(100_000)),
+        &context
+    )
+    .is_err());
+}
+
+#[test]
+fn automatic_number_format_drops_trailing_zeros() {
+    let context = DataContext::default();
+    assert_eq!(format_value(5.0, "0.##", &context), "5");
+    assert_eq!(format_value(42.5, "0.##", &context), "42.5");
+    assert_eq!(format_value(1234.5, "#,##0.##", &context), "1,234.5");
+    assert_eq!(format_value(5.0, "0.00", &context), "5.00");
+    assert_eq!(format_value(5.0, "0", &context), "5");
+    assert_eq!(format_template("{2 + 3}", &context), "5");
+}
+
+#[test]
+fn if_and_logical_operators_skip_the_branch_they_do_not_take() {
+    let mut context = DataContext::default();
+    context.insert("x", 0.0);
+    assert_eq!(evaluate("if(0, 1/0, 2)", &context).unwrap(), 2.0);
+    assert_eq!(evaluate("if(x > 0, 100 / x, 0)", &context).unwrap(), 0.0);
+    assert_eq!(evaluate("if(1, 2, 1 % 0)", &context).unwrap(), 2.0);
+    assert_eq!(evaluate("x != 0 && 10 / x > 1", &context).unwrap(), 0.0);
+    assert_eq!(evaluate("x == 0 || 10 / x > 1", &context).unwrap(), 1.0);
+    assert_eq!(
+        evaluate(r#"if(0, "a" + clamp(1, 2, 0), 3)"#, &context).unwrap(),
+        3.0
+    );
+    // The branch taken still fails, and a skipped one still needs real names
+    // and the right number of arguments.
+    assert!(evaluate("if(1, 1/0, 2)", &context).is_err());
+    assert!(evaluate("x == 0 && 10 / x > 1", &context).is_err());
+    assert!(evaluate("if(0, missing_value, 2)", &context)
+        .unwrap_err()
+        .contains("missing_value"));
+    assert!(evaluate("if(0, 1)", &context)
+        .unwrap_err()
+        .contains("3 argument"));
+    assert!(evaluate("if(0, max(1), 2)", &context)
+        .unwrap_err()
+        .contains("2 argument"));
+}
+
+#[test]
+fn values_that_are_not_finite_fail_validation_and_warn_when_rendered() {
+    let mut theme = ThemeDocument::starter();
+    theme.surfaces[0].rotation = Expression("sqrt(-1)".into());
+    theme.surfaces[0].corner_radius = Expression("sqrt(-1)".into());
+    let errors = theme.validate();
+    for property in ["rotation", "corner_radius"] {
+        assert!(
+            errors
+                .iter()
+                .any(|error| error
+                    .ends_with(&format!(".{property}: did not produce a finite value"))),
+            "{property}: {errors:?}"
+        );
+    }
+    // A theme saved before then is told about it instead of going blank.
+    let rendered = render_theme_surface_with_runtime_at_scale(
+        &theme,
+        0,
+        None,
+        ThemeRuntime::new(true, true, true),
+        1.0,
+    );
+    for property in ["rotation", "corner_radius"] {
+        let message = format!(".{property} did not produce a finite value");
+        assert_eq!(
+            rendered
+                .warnings
+                .iter()
+                .filter(|warning| warning.ends_with(&message))
+                .count(),
+            1,
+            "{:?}",
+            rendered.warnings
+        );
+    }
+    assert!(rendered.pixels.iter().any(|pixel| *pixel != 0));
+}
+
+#[test]
+fn validation_accepts_the_bindings_the_renderer_provides() {
+    let mut theme = ThemeDocument::starter();
+    let object = &mut theme.surfaces[0].children[0];
+    object.x = Expression("parent.gap".into());
+    object.corner_radius =
+        Expression("this.height / 2 + object.width * 0 + this.x + this.y".into());
+    object.content = text_content("{this.width}x{object.height} at {object.x},{object.y}");
+    assert!(theme.validate().is_empty(), "{:?}", theme.validate());
+    // Layout cannot read the box it is still computing.
+    theme.surfaces[0].children[0].width = Expression("this.width".into());
+    assert!(theme
+        .validate()
+        .iter()
+        .any(|error| error.contains("this.width")));
+}
+
+#[test]
+fn action_scripts_accept_single_quotes() {
+    let actions = parse_mouse_actions(
+        "open_url('https://example.com/a,b;c'); toggle('a;b', render)\n\
+         set(\"x\", width, if(1, 'a,b', 2)); reset('it\\'s'.width)",
+    )
+    .unwrap();
+    assert_eq!(
+        actions,
+        vec![
+            MouseAction::OpenUrl {
+                url: "https://example.com/a,b;c".into()
+            },
+            MouseAction::Toggle {
+                target: MouseActionTarget::Object("a;b".into()),
+                property: MouseActionProperty::Render,
+            },
+            MouseAction::Set {
+                target: MouseActionTarget::Object("x".into()),
+                property: MouseActionProperty::Width,
+                value: Expression("if(1, 'a,b', 2)".into()),
+            },
+            MouseAction::Reset {
+                target: MouseActionTarget::Object("it's".into()),
+                property: MouseActionProperty::Width,
+            },
+        ]
+    );
+    assert!(parse_mouse_actions("open_url('https://x/a")
+        .unwrap_err()
+        .contains("Unterminated"));
+}
+
+#[test]
+fn minute_only_datetime_clocks_refresh_once_a_minute() {
+    let mut theme = ThemeDocument::starter();
+    theme.surfaces[0].content = text_content("{time.now.unix:datetime}");
+    assert_eq!(
+        theme.current_time_refresh_interval(),
+        Some(std::time::Duration::from_secs(60))
+    );
+}
+
+#[test]
+fn original_image_fit_crops_instead_of_squashing() {
+    // 400x100, blue with a red band at x 150..200.
+    let source = image::DynamicImage::ImageRgba8(image::RgbaImage::from_fn(400, 100, |x, _| {
+        if (150..200).contains(&x) {
+            image::Rgba([255, 0, 0, 255])
+        } else {
+            image::Rgba([0, 0, 255, 255])
+        }
+    }));
+    let mut pixels = vec![0u32; 100 * 100];
+    render_image(&mut pixels, 100, 100, &source, ImageFit::Original);
+    // Native size, centred: source x 150..250 fills the box.
+    assert_eq!(pixels[50 * 100 + 10], 0xFFFF_0000);
+    assert_eq!(pixels[50 * 100 + 60], 0xFF00_00FF);
+}
+
+#[test]
+fn cover_fit_scales_only_the_visible_part_of_the_source() {
+    // Scaling all of it to cover 100x24 would need a 100x10000000 image.
+    let source = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+        1,
+        100_000,
+        image::Rgba([0, 255, 0, 255]),
+    ));
+    let mut pixels = vec![0u32; 100 * 24];
+    render_image(&mut pixels, 100, 24, &source, ImageFit::Cover);
+    assert!(pixels.iter().all(|pixel| *pixel == 0xFF00_FF00));
+}
+
+#[test]
+fn oversized_objects_are_skipped_with_a_warning() {
+    let mut theme = ThemeDocument::starter();
+    let surface = &mut theme.surfaces[0];
+    surface.width = 100.0.into();
+    surface.height = 40.0.into();
+    surface.children.clear();
+    for (id, width, height) in [("huge", 5000.0, 5000.0), ("wide", 4000.0, 10.0)] {
+        let mut object = SceneObject::object(id, id);
+        object.parent = Some(surface.id.clone());
+        object.width = width.into();
+        object.height = height.into();
+        surface.children.push(object);
+    }
+    let rendered = render_theme_surface_with_runtime_at_scale(
+        &theme,
+        0,
+        None,
+        ThemeRuntime::new(true, true, true),
+        1.0,
+    );
+    assert_eq!(rendered.warnings, ["huge is too large to render"]);
+}
+
+#[test]
+fn image_cache_keeps_recent_images_within_its_budget() {
+    let image = || Arc::new(image::DynamicImage::new_rgba8(10, 1));
+    let mut cache: ImageCache = ["new", "middle", "old"]
+        .into_iter()
+        .map(|path| (PathBuf::from(path), None, image()))
+        .collect();
+    trim_image_cache(&mut cache, 80);
+    let paths = |cache: &ImageCache| {
+        cache
+            .iter()
+            .map(|(path, ..)| path.display().to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(paths(&cache), ["new", "middle"]);
+    // The image just loaded stays even when it alone is over budget.
+    trim_image_cache(&mut cache, 0);
+    assert_eq!(paths(&cache), ["new"]);
+}
+
+#[test]
+fn a_failing_action_script_changes_no_overrides() {
+    let theme = ThemeDocument::starter();
+    let self_id = theme.surfaces[0].children[0].id.clone();
+    let mut overrides = HashMap::new();
+    assert!(execute_mouse_actions(
+        &theme,
+        0,
+        &self_id,
+        "toggle(self.render); increase(\"missing\", width, 1)",
+        None,
+        ThemeRuntime::default(),
+        &mut overrides,
+    )
+    .is_err());
+    assert!(overrides.is_empty());
 }
