@@ -1556,6 +1556,7 @@ fn bundled_minecraft_install_preserves_user_edits() {
 
 #[test]
 fn theme_deletion_is_limited_to_managed_writable_themes() {
+    let _app_data = crate::app_settings::TestAppData::new();
     let managed = themes_directory().join("deletable-theme.json");
     assert!(is_managed_theme_path(&managed));
     assert!(!is_managed_theme_path(Path::new("external-theme.json")));

@@ -109,12 +109,11 @@ pub fn handle_cli_mode(args: &[String]) -> bool {
         .and_then(|index| args.get(index + 1))
         .and_then(|value| value.parse::<isize>().ok())
         .unwrap_or(0);
-    let owner_hwnd = HWND(owner as *mut _);
     let _dashboard_instance = match crate::dashboard::claim_instance() {
         Ok(Some(instance)) => instance,
         Ok(None) => return true,
         Err(error) => {
-            crate::dashboard::report_launch_failure(owner_hwnd, &error);
+            crate::dashboard::report_launch_failure(&error);
             return true;
         }
     };
@@ -140,13 +139,10 @@ pub fn handle_cli_mode(args: &[String]) -> bool {
         Box::new(move |context| Ok(Box::new(StudioApp::new(context, owner)))),
     ) {
         let language = settings_language(&app_settings::load_settings());
-        crate::dashboard::report_launch_failure(
-            owner_hwnd,
-            &format!(
-                "{}: {error}",
-                language.text("The dashboard could not initialize")
-            ),
-        );
+        crate::dashboard::report_launch_failure(&format!(
+            "{}: {error}",
+            language.text("The dashboard could not initialize")
+        ));
     }
     true
 }
@@ -597,25 +593,6 @@ fn preview_render_scale(
     let width = (logical_width.max(1) as f64 * scale).round().max(1.0) as u32;
     let height = (logical_height.max(1) as f64 * scale).round().max(1.0) as u32;
     (scale, width, height)
-}
-
-fn preview_countdown_refresh_delay(data: Option<&AppUsageData>) -> Option<Duration> {
-    let now = std::time::SystemTime::now();
-    data?
-        .all_usage()
-        .flat_map(|usage| [&usage.session, &usage.weekly])
-        .filter_map(|section| section.resets_at?.duration_since(now).ok())
-        .map(preview_countdown_delay)
-        .min()
-}
-
-fn preview_countdown_delay(remaining: Duration) -> Duration {
-    let seconds = remaining.as_secs();
-    if seconds >= 60 {
-        Duration::from_secs(seconds % 60 + 1)
-    } else {
-        Duration::from_secs(1)
-    }
 }
 
 struct StudioApp {

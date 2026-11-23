@@ -1331,7 +1331,7 @@ pub fn run() {
                     } else {
                         if open_dashboard_on_start {
                             if let Err(error) = crate::dashboard::request_from_existing_monitor() {
-                                crate::dashboard::report_launch_failure(HWND::default(), &error);
+                                crate::dashboard::report_launch_failure(&error);
                             }
                         }
                         diagnose::log("startup aborted: another instance is already running");
@@ -1971,16 +1971,7 @@ fn schedule_countdown_timer() {
         }
     }
 
-    let min_delay = s.data.as_ref().and_then(|data| {
-        data.all_usage()
-            .flat_map(|usage| {
-                [usage.session.resets_at, usage.weekly.resets_at]
-                    .into_iter()
-                    .chain(usage.scoped.iter().map(|limit| limit.resets_at))
-            })
-            .filter_map(poller::time_until_display_change)
-            .min()
-    });
+    let min_delay = s.data.as_ref().and_then(poller::next_countdown_change);
 
     let ms = min_delay
         .unwrap_or(Duration::from_secs(60))

@@ -522,22 +522,6 @@ fn unchanged_usage_cache_does_not_invalidate_the_preview() {
 }
 
 #[test]
-fn preview_countdowns_refresh_on_minute_boundaries_until_the_final_minute() {
-    assert_eq!(
-        preview_countdown_delay(Duration::from_secs(125)),
-        Duration::from_secs(6)
-    );
-    assert_eq!(
-        preview_countdown_delay(Duration::from_secs(119)),
-        Duration::from_secs(60)
-    );
-    assert_eq!(
-        preview_countdown_delay(Duration::from_secs(59)),
-        Duration::from_secs(1)
-    );
-}
-
-#[test]
 fn inspector_controls_use_a_consistent_maximum_width() {
     assert_eq!(crate::ui::components::layout::control_width(180.0), 180.0);
     assert_eq!(crate::ui::components::layout::control_width(500.0), 180.0);

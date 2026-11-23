@@ -740,6 +740,7 @@ mod tests {
 
     #[test]
     fn duplicate_item_ids_are_rejected_across_submenus() {
+        let _app_data = crate::app_settings::TestAppData::new();
         let mut menu = ContextMenuDocument::blank("Test");
         menu.items.push(ContextMenuItem::submenu(
             "submenu",
@@ -758,6 +759,7 @@ mod tests {
 
     #[test]
     fn informational_text_accepts_usage_and_version_templates() {
+        let _app_data = crate::app_settings::TestAppData::new();
         let mut menu = ContextMenuDocument::blank("Test");
         menu.items.insert(
             0,

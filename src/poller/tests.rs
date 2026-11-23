@@ -480,6 +480,37 @@ fn display_changes_at_the_next_unit_boundary() {
 }
 
 #[test]
+fn countdown_redraw_follows_monthly_and_scoped_resets() {
+    let section = |seconds| UsageSection {
+        available: true,
+        percentage: 0.0,
+        resets_at: Some(SystemTime::now() + Duration::from_secs(seconds)),
+    };
+    let base = UsageData {
+        session: section(10 * 86_400 + 1_800),
+        weekly: section(10 * 86_400 + 1_800),
+        ..Default::default()
+    };
+    let next = |usage: UsageData| {
+        next_countdown_change(&AppUsageData::from_iter([(ProviderId::Claude, usage)]))
+    };
+    assert!(next(base.clone()).unwrap() > Duration::from_secs(1));
+    let monthly = UsageData {
+        monthly: Some(section(30)),
+        ..base.clone()
+    };
+    assert_eq!(next(monthly), Some(Duration::from_secs(1)));
+    let scoped = UsageData {
+        scoped: vec![crate::models::ScopedLimit {
+            resets_at: section(30).resets_at,
+            ..Default::default()
+        }],
+        ..base
+    };
+    assert_eq!(next(scoped), Some(Duration::from_secs(1)));
+}
+
+#[test]
 fn no_countdown_label_changes_before_the_scheduled_redraw() {
     let label = |format: &str, seconds: u64| {
         let mut context = crate::theme_engine::DataContext::default();

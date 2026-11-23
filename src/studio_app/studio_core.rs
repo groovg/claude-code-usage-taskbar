@@ -108,7 +108,7 @@ impl StudioApp {
                         .any(|account| account.error.is_some()))
         });
         let usage = usage_cache.map(|cache| cache.data);
-        let next_preview_countdown_refresh = preview_countdown_refresh_delay(usage.as_ref())
+        let next_preview_countdown_refresh = usage.as_ref().and_then(crate::poller::next_countdown_change)
             .and_then(|delay| Instant::now().checked_add(delay));
         let next_preview_clock_refresh = theme
             .current_time_refresh_interval()
@@ -850,7 +850,9 @@ impl StudioApp {
         if usage_changed || countdown_due || clock_due {
             self.preview_dirty = true;
             self.next_preview_countdown_refresh =
-                preview_countdown_refresh_delay(self.usage.as_ref())
+                self.usage
+                    .as_ref()
+                    .and_then(crate::poller::next_countdown_change)
                     .and_then(|delay| now.checked_add(delay));
         }
         if clock_interval.is_none() {
