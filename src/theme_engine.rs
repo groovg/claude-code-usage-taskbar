@@ -352,11 +352,9 @@ pub struct MouseEvents {
 
 impl MouseEvents {
     pub fn is_empty(&self) -> bool {
-        self.click.trim().is_empty()
-            && self.double_click.trim().is_empty()
-            && self.right_click.trim().is_empty()
-            && self.mouse_enter.trim().is_empty()
-            && self.mouse_leave.trim().is_empty()
+        MouseEventKind::ALL
+            .into_iter()
+            .all(|event| self.handler(event).trim().is_empty())
     }
 
     pub fn handler(&self, event: MouseEventKind) -> &str {
@@ -387,6 +385,29 @@ pub enum MouseEventKind {
     RightClick,
     MouseEnter,
     MouseLeave,
+}
+
+impl MouseEventKind {
+    /// Every event, so a new one cannot be missed by emptiness checks or
+    /// validation.
+    pub const ALL: [Self; 5] = [
+        Self::Click,
+        Self::DoubleClick,
+        Self::RightClick,
+        Self::MouseEnter,
+        Self::MouseLeave,
+    ];
+
+    /// The saved field name.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Click => "click",
+            Self::DoubleClick => "double_click",
+            Self::RightClick => "right_click",
+            Self::MouseEnter => "mouse_enter",
+            Self::MouseLeave => "mouse_leave",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -612,93 +633,44 @@ pub fn parse_mouse_actions(source: &str) -> Result<Vec<MouseAction>, String> {
 }
 
 fn split_action_statements(source: &str) -> Result<Vec<String>, String> {
-    let mut result = Vec::new();
-    let mut current = String::new();
-    let mut depth = 0usize;
-    let mut quoted = false;
-    let mut escaped = false;
-    for character in source.chars() {
-        if escaped {
-            current.push(character);
-            escaped = false;
-            continue;
-        }
-        if quoted && character == '\\' {
-            current.push(character);
-            escaped = true;
-            continue;
-        }
-        if character == '"' {
-            quoted = !quoted;
-            current.push(character);
-            continue;
-        }
-        if !quoted {
-            match character {
-                '(' => depth += 1,
-                ')' => {
-                    depth = depth
-                        .checked_sub(1)
-                        .ok_or_else(|| "Unexpected ')' in action script".to_string())?
-                }
-                ';' | '\n' | '\r' if depth == 0 => {
-                    if !current.trim().is_empty() {
-                        result.push(current.trim().to_string());
-                    }
-                    current.clear();
-                    continue;
-                }
-                _ => {}
-            }
-        }
-        current.push(character);
-    }
-    if quoted {
-        return Err("Unterminated quoted layer id in action script".into());
-    }
-    if depth != 0 {
-        return Err("Unclosed '(' in action script".into());
-    }
-    if !current.trim().is_empty() {
-        result.push(current.trim().to_string());
-    }
-    Ok(result)
+    let mut statements = split_action_list(source, &[';', '\n', '\r'], "action script")?;
+    statements.retain(|statement| !statement.is_empty());
+    Ok(statements)
 }
 
 fn split_action_arguments(source: &str) -> Result<Vec<String>, String> {
     if source.trim().is_empty() {
         return Ok(Vec::new());
     }
+    split_action_list(source, &[','], "action arguments")
+}
+
+/// Split at `separators` outside brackets and `"` or `'` quotes, trimming
+/// each piece.
+fn split_action_list(source: &str, separators: &[char], what: &str) -> Result<Vec<String>, String> {
     let mut result = Vec::new();
     let mut current = String::new();
     let mut depth = 0usize;
-    let mut quoted = false;
+    let mut quote = None;
     let mut escaped = false;
     for character in source.chars() {
         if escaped {
-            current.push(character);
             escaped = false;
-            continue;
-        }
-        if quoted && character == '\\' {
-            current.push(character);
+        } else if quote.is_some() && character == '\\' {
             escaped = true;
-            continue;
-        }
-        if character == '"' {
-            quoted = !quoted;
-            current.push(character);
-            continue;
-        }
-        if !quoted {
+        } else if quote == Some(character) {
+            quote = None;
+        } else if quote.is_none() && matches!(character, '"' | '\'') {
+            quote = Some(character);
+        } else if quote.is_none() {
             match character {
                 '(' => depth += 1,
                 ')' => {
                     depth = depth
                         .checked_sub(1)
-                        .ok_or_else(|| "Unexpected ')' in action arguments".to_string())?
+                        .ok_or_else(|| format!("Unexpected ')' in {what}"))?
                 }
-                ',' if depth == 0 => {
+                _ if depth == 0 && separators.contains(&character) => {
                     result.push(current.trim().to_string());
                     current.clear();
                     continue;
@@ -708,8 +680,11 @@ fn split_action_arguments(source: &str) -> Result<Vec<String>, String> {
         }
         current.push(character);
     }
-    if quoted || depth != 0 {
-        return Err("Unclosed quote or parenthesis in action arguments".into());
+    if quote.is_some() {
+        return Err(format!("Unterminated quoted layer id in {what}"));
+    }
+    if depth != 0 {
+        return Err(format!("Unclosed '(' in {what}"));
     }
     result.push(current.trim().to_string());
     Ok(result)
@@ -730,10 +705,7 @@ fn parse_action_target(source: &str) -> Result<MouseActionTarget, String> {
     if source.eq_ignore_ascii_case("self") {
         return Ok(MouseActionTarget::SelfObject);
     }
-    if source.len() >= 2 && source.starts_with('"') && source.ends_with('"') {
-        let value = source[1..source.len() - 1]
-            .replace("\\\"", "\"")
-            .replace("\\\\", "\\");
+    if let Some(value) = unquote_action_string(source) {
         if value.trim().is_empty() {
             return Err("Layer id cannot be empty".into());
         }
@@ -743,16 +715,21 @@ fn parse_action_target(source: &str) -> Result<MouseActionTarget, String> {
 }
 
 fn parse_quoted_action_string(source: &str, label: &str) -> Result<String, String> {
+    unquote_action_string(source)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("Use a non-empty quoted {label}, got: {}", source.trim()))
+}
+
+/// The text inside a `"` or `'` quoted action argument.
+fn unquote_action_string(source: &str) -> Option<String> {
     let source = source.trim();
-    if source.len() >= 2 && source.starts_with('"') && source.ends_with('"') {
-        let value = source[1..source.len() - 1]
-            .replace("\\\"", "\"")
-            .replace("\\\\", "\\");
-        if !value.trim().is_empty() {
-            return Ok(value);
-        }
-    }
-    Err(format!("Use a non-empty quoted {label}, got: {source}"))
+    let quote = source.chars().next().filter(|c| matches!(c, '"' | '\''))?;
+    let value = source.strip_prefix(quote)?.strip_suffix(quote)?;
+    Some(
+        value
+            .replace(&format!("\\{quote}"), &quote.to_string())
+            .replace("\\\\", "\\"),
+    )
 }
 
 fn parse_action_property(source: &str) -> Result<MouseActionProperty, String> {
@@ -965,6 +942,8 @@ pub struct ResolvedObject<'a> {
     pub opacity: f64,
     pub rotation: f64,
     pub clip: Vec<ClipRegion>,
+    /// `clip` plus this object's own box: what its children are clipped to.
+    child_clip: Vec<ClipRegion>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1006,6 +985,9 @@ pub struct ThemeRuntime {
     pub countdown: bool,
     host_width: u32,
     host_height: u32,
+    /// `system.dark`, read once here rather than from the registry for
+    /// every context a render or hit test builds.
+    dark: bool,
 }
 
 impl Default for ThemeRuntime {
@@ -1018,6 +1000,7 @@ impl Default for ThemeRuntime {
             countdown: false,
             host_width: default_canvas_width(),
             host_height: default_canvas_height(),
+            dark: crate::theme::is_dark_mode(),
         }
     }
 }
@@ -1040,12 +1023,7 @@ impl ThemeRuntime {
     pub fn from_providers(providers: ProviderSet) -> Self {
         Self {
             providers,
-            poll_ok: true,
-            has_error: false,
-            language: LanguageId::English,
-            countdown: false,
-            host_width: default_canvas_width(),
-            host_height: default_canvas_height(),
+            ..Self::default()
         }
     }
 
@@ -1111,7 +1089,7 @@ impl DataContext {
         context.insert("app.version.major", version_parts.next().unwrap_or(0.0));
         context.insert("app.version.minor", version_parts.next().unwrap_or(0.0));
         context.insert("app.version.patch", version_parts.next().unwrap_or(0.0));
-        context.insert("system.dark", crate::theme::is_dark_mode() as u8 as f64);
+        context.insert("system.dark", runtime.dark as u8 as f64);
         context.insert("data.poll_ok", runtime.poll_ok as u8 as f64);
         context.insert("data.has_error", runtime.has_error as u8 as f64);
         context.insert(
@@ -1676,16 +1654,12 @@ pub fn validate_mouse_action_script(
                     continue;
                 }
             };
-        let target_is_root = theme
-            .surfaces
-            .get(target_surface_index)
-            .is_some_and(|surface| surface.id.eq_ignore_ascii_case(&target_object.id));
-        if target_is_root && matches!(property, MouseActionProperty::X | MouseActionProperty::Y) {
-            errors.push(format!(
-                "{}.{} cannot be changed because root layers use screen placement",
-                target_object.name,
-                property.name()
-            ));
+        if let Err(error) = check_root_placement(
+            &theme.surfaces[target_surface_index],
+            target_object,
+            property,
+        ) {
+            errors.push(error);
         }
         if let Some(value) = value {
             if let Err(error) = evaluate(&value.0, context) {
@@ -1724,12 +1698,8 @@ pub fn apply_mouse_action_overrides(
         let Some(surface) = effective.surfaces.get_mut(key.surface_index) else {
             continue;
         };
-        let is_root = surface.id.eq_ignore_ascii_case(&key.object_id);
-        if is_root
-            && matches!(
-                key.property,
-                MouseActionProperty::X | MouseActionProperty::Y
-            )
+        if surface_object_by_id(surface, &key.object_id)
+            .is_some_and(|object| check_root_placement(surface, object, key.property).is_err())
         {
             continue;
         }
@@ -1758,71 +1728,29 @@ fn mouse_action_object_context(
     if surface.id.eq_ignore_ascii_case(object_id) {
         return Ok(context);
     }
-    let (resolved, _) = resolve_objects_for(surface, &canvas, &surface.children, data, runtime);
+    let (resolved, _) = resolve_objects_for(surface, &canvas, &context);
     Ok(resolved
         .iter()
         .find(|object| object.source.id.eq_ignore_ascii_case(object_id))
         .map_or(context.clone(), |object| context.with_object(object)))
 }
 
-struct MouseActionExecutionContext<'a> {
-    theme: &'a ThemeDocument,
-    surface_index: usize,
-    self_id: &'a str,
-    data: Option<&'a AppUsageData>,
-    runtime: ThemeRuntime,
-}
-
-impl MouseActionExecutionContext<'_> {
-    fn adjust_property(
-        &self,
-        target: &MouseActionTarget,
-        property: MouseActionProperty,
-        amount: &Expression,
-        direction: f64,
-        overrides: &mut HashMap<MouseActionOverrideKey, Expression>,
-    ) -> Result<(), String> {
-        let effective = apply_mouse_action_overrides(self.theme, overrides);
-        let (target_surface_index, object) =
-            mouse_action_target(&effective, self.surface_index, self.self_id, target)?;
-        let surface = &effective.surfaces[target_surface_index];
-        let object_id = object.id.clone();
-        if object.id == surface.id
-            && matches!(property, MouseActionProperty::X | MouseActionProperty::Y)
-        {
-            return Err(format!(
-                "{}.{} cannot be changed because root layers use screen placement",
-                object.name,
-                property.name()
-            ));
-        }
-        let context = mouse_action_object_context(
-            &effective,
-            target_surface_index,
-            &object_id,
-            self.data,
-            self.runtime,
-        )?;
-        let current = evaluate(&mouse_property_expression(object, property).0, &context)?;
-        let amount = evaluate(&amount.0, &context)?;
-        let adjusted = current + amount * direction;
-        if !adjusted.is_finite() {
-            return Err(format!(
-                "{}.{} adjustment did not produce a finite value",
-                object.name,
-                property.name()
-            ));
-        }
-        overrides.insert(
-            MouseActionOverrideKey {
-                surface_index: target_surface_index,
-                object_id,
-                property,
-            },
-            Expression(format_number(adjusted)),
-        );
-        Ok(())
+/// Root layers keep their screen placement, so actions cannot move them.
+fn check_root_placement(
+    surface: &SceneObject,
+    object: &SceneObject,
+    property: MouseActionProperty,
+) -> Result<(), String> {
+    if surface.id.eq_ignore_ascii_case(&object.id)
+        && matches!(property, MouseActionProperty::X | MouseActionProperty::Y)
+    {
+        return Err(format!(
+            "{}.{} cannot be changed because root layers use screen placement",
+            object.name,
+            property.name()
+        ));
     }
+    Ok(())
 }
 
 pub fn execute_mouse_actions(
@@ -1835,12 +1763,45 @@ pub fn execute_mouse_actions(
     overrides: &mut HashMap<MouseActionOverrideKey, Expression>,
 ) -> Result<Vec<MouseActionEffect>, String> {
     let actions = parse_mouse_actions(source)?;
-    let execution = MouseActionExecutionContext {
-        theme,
-        surface_index,
-        self_id,
-        data,
-        runtime,
+    // Kept only if every action succeeds: a failing script changes nothing.
+    let mut pending = overrides.clone();
+    let adjust = |target: &MouseActionTarget,
+                  property: MouseActionProperty,
+                  amount: &Expression,
+                  direction: f64,
+                  pending: &mut HashMap<MouseActionOverrideKey, Expression>|
+     -> Result<(), String> {
+        let effective = apply_mouse_action_overrides(theme, pending);
+        let (target_surface_index, object) =
+            mouse_action_target(&effective, surface_index, self_id, target)?;
+        check_root_placement(&effective.surfaces[target_surface_index], object, property)?;
+        let object_id = object.id.clone();
+        let context = mouse_action_object_context(
+            &effective,
+            target_surface_index,
+            &object_id,
+            data,
+            runtime,
+        )?;
+        let current = evaluate(&mouse_property_expression(object, property).0, &context)?;
+        let amount = evaluate(&amount.0, &context)?;
+        let adjusted = current + amount * direction;
+        if !adjusted.is_finite() {
+            return Err(format!(
+                "{}.{} adjustment did not produce a finite value",
+                object.name,
+                property.name()
+            ));
+        }
+        pending.insert(
+            MouseActionOverrideKey {
+                surface_index: target_surface_index,
+                object_id,
+                property,
+            },
+            Expression(format_number(adjusted)),
+        );
+        Ok(())
     };
     let mut effects = Vec::new();
     for action in actions {
@@ -1858,21 +1819,11 @@ pub fn execute_mouse_actions(
             } => {
                 let (target_surface_index, object) =
                     mouse_action_target(theme, surface_index, self_id, &target)?;
-                let surface = &theme.surfaces[target_surface_index];
-                let object_id = object.id.clone();
-                if object.id == surface.id
-                    && matches!(property, MouseActionProperty::X | MouseActionProperty::Y)
-                {
-                    return Err(format!(
-                        "{}.{} cannot be changed because root layers use screen placement",
-                        object.name,
-                        property.name()
-                    ));
-                }
-                overrides.insert(
+                check_root_placement(&theme.surfaces[target_surface_index], object, property)?;
+                pending.insert(
                     MouseActionOverrideKey {
                         surface_index: target_surface_index,
-                        object_id,
+                        object_id: object.id.clone(),
                         property,
                     },
                     value,
@@ -1881,7 +1832,7 @@ pub fn execute_mouse_actions(
             MouseAction::Reset { target, property } => {
                 let (target_surface_index, object) =
                     mouse_action_target(theme, surface_index, self_id, &target)?;
-                overrides.remove(&MouseActionOverrideKey {
+                pending.remove(&MouseActionOverrideKey {
                     surface_index: target_surface_index,
                     object_id: object.id.clone(),
                     property,
@@ -1891,14 +1842,14 @@ pub fn execute_mouse_actions(
                 target,
                 property,
                 amount,
-            } => execution.adjust_property(&target, property, &amount, 1.0, overrides)?,
+            } => adjust(&target, property, &amount, 1.0, &mut pending)?,
             MouseAction::Decrease {
                 target,
                 property,
                 amount,
-            } => execution.adjust_property(&target, property, &amount, -1.0, overrides)?,
+            } => adjust(&target, property, &amount, -1.0, &mut pending)?,
             MouseAction::Toggle { target, property } => {
-                let effective = apply_mouse_action_overrides(theme, overrides);
+                let effective = apply_mouse_action_overrides(theme, &pending);
                 let (target_surface_index, object) =
                     mouse_action_target(&effective, surface_index, self_id, &target)?;
                 let object_id = object.id.clone();
@@ -1908,7 +1859,7 @@ pub fn execute_mouse_actions(
                 let context = DataContext::from_usage_with_runtime(data, &canvas, runtime);
                 let current = evaluate(&mouse_property_expression(object, property).0, &context)
                     .unwrap_or(0.0);
-                overrides.insert(
+                pending.insert(
                     MouseActionOverrideKey {
                         surface_index: target_surface_index,
                         object_id,
@@ -1919,6 +1870,7 @@ pub fn execute_mouse_actions(
             }
         }
     }
+    *overrides = pending;
     Ok(effects)
 }
 
@@ -1995,6 +1947,7 @@ impl ThemeDocument {
             return errors;
         }
         let mut root_ids = std::collections::HashSet::new();
+        let runtime = ThemeRuntime::default();
         for (surface_index, root) in self.surfaces.iter().enumerate() {
             if root.parent.is_some() {
                 errors.push(format!(
@@ -2011,10 +1964,9 @@ impl ThemeDocument {
                     root.name
                 ));
             }
-            let (width, height) =
-                resolve_object_size(root, None, ThemeRuntime::default(), &mut errors);
+            let (width, height) = resolve_object_size(root, None, runtime, &mut errors);
             let canvas = Canvas { width, height };
-            let context = DataContext::from_usage(None, &canvas);
+            let context = DataContext::from_usage_with_runtime(None, &canvas, runtime);
             validate_scene_object(&mut errors, &context, root);
             validate_scene_mouse_events(&mut errors, &context, self, surface_index, root);
 
@@ -2128,6 +2080,7 @@ fn is_minute_or_slower_clock_format(format: &str) -> bool {
             | "time_24"
             | "time_12"
             | "am_pm"
+            | "datetime"
             | "datetime_short"
             | "iso_date"
     )
@@ -2143,49 +2096,64 @@ fn validate_scene_mouse_events(
     let Some(events) = &object.mouse_events else {
         return;
     };
-    for (name, source) in [
-        ("click", &events.click),
-        ("double_click", &events.double_click),
-        ("right_click", &events.right_click),
-        ("mouse_enter", &events.mouse_enter),
-        ("mouse_leave", &events.mouse_leave),
-    ] {
+    for event in MouseEventKind::ALL {
+        let source = events.handler(event);
         if source.trim().is_empty() {
             continue;
         }
         for error in validate_mouse_action_script(source, theme, surface_index, &object.id, context)
         {
-            errors.push(format!("{}.mouse_events.{name}: {error}", object.name));
+            errors.push(format!(
+                "{}.mouse_events.{}: {error}",
+                object.name,
+                event.name()
+            ));
         }
     }
 }
 
 fn validate_scene_object(errors: &mut Vec<String>, context: &DataContext, object: &SceneObject) {
-    let mut object_context = context.clone();
-    let gap = evaluate(&object.gap.0, context)
+    // The renderer's two contexts: layout sees the parent's gap, paint and
+    // content see the object's resolved box, which the canvas stands in for.
+    let mut gap_context = context.clone();
+    gap_context.insert("parent.gap", 0.0);
+    let gap = evaluate(&object.gap.0, &gap_context)
         .ok()
         .filter(|value| value.is_finite())
         .unwrap_or(0.0)
         .max(0.0);
+    let mut object_context = gap_context.clone();
     object_context.insert("this.gap", gap);
-    for (property, expression) in [
-        ("render", &object.render),
-        ("visibility", &object.visibility),
-        ("x", &object.x),
-        ("y", &object.y),
-        ("width", &object.width),
-        ("height", &object.height),
-        ("rotation", &object.rotation),
-        ("corner_radius", &object.corner_radius),
-        ("gap", &object.gap),
+    let canvas_width = context.get("canvas.width").unwrap_or(0.0);
+    let canvas_height = context.get("canvas.height").unwrap_or(0.0);
+    let paint_context = context.clone().with_object(&ResolvedObject {
+        source: object,
+        x: 0.0,
+        y: 0.0,
+        width: canvas_width,
+        height: canvas_height,
+        parent_width: canvas_width,
+        parent_height: canvas_height,
+        gap,
+        opacity: 1.0,
+        rotation: 0.0,
+        clip: Vec::new(),
+        child_clip: Vec::new(),
+    });
+    for (property, expression, context) in [
+        ("render", &object.render, &object_context),
+        ("visibility", &object.visibility, &object_context),
+        ("x", &object.x, &object_context),
+        ("y", &object.y, &object_context),
+        ("width", &object.width, &object_context),
+        ("height", &object.height, &object_context),
+        ("rotation", &object.rotation, &object_context),
+        ("corner_radius", &object.corner_radius, &paint_context),
+        ("gap", &object.gap, &gap_context),
     ] {
         validate_expression(
             errors,
-            if property == "gap" {
-                context
-            } else {
-                &object_context
-            },
+            context,
             &format!("{}.{}", object.name, property),
             expression,
         );
@@ -2194,26 +2162,26 @@ fn validate_scene_object(errors: &mut Vec<String>, context: &DataContext, object
         LayerBackground::None => {}
         LayerBackground::Colour { colour } => validate_paint(
             errors,
-            &object_context,
+            &paint_context,
             &format!("{}.background.colour", object.name),
             colour,
         ),
         LayerBackground::Gradient { start, end, angle } => {
             validate_paint(
                 errors,
-                &object_context,
+                &paint_context,
                 &format!("{}.background.gradient.start", object.name),
                 start,
             );
             validate_paint(
                 errors,
-                &object_context,
+                &paint_context,
                 &format!("{}.background.gradient.end", object.name),
                 end,
             );
             validate_expression(
                 errors,
-                &object_context,
+                &paint_context,
                 &format!("{}.background.gradient.angle", object.name),
                 angle,
             );
@@ -2221,19 +2189,24 @@ fn validate_scene_object(errors: &mut Vec<String>, context: &DataContext, object
         LayerBackground::Image { path, .. } => {
             if path.trim().is_empty() {
                 errors.push(format!("{}.background.image: choose an image", object.name));
+            } else if is_network_path(path) {
+                errors.push(format!(
+                    "{}.background.image: network paths such as {path} are not allowed",
+                    object.name
+                ));
             }
         }
     }
     if let Some(border) = &object.border {
         validate_paint(
             errors,
-            &object_context,
+            &paint_context,
             &format!("{}.border", object.name),
             &border.color,
         );
         validate_expression(
             errors,
-            &object_context,
+            &paint_context,
             &format!("{}.border.width", object.name),
             &border.width,
         );
@@ -2249,23 +2222,23 @@ fn validate_scene_object(errors: &mut Vec<String>, context: &DataContext, object
         } => {
             validate_expression(
                 errors,
-                &object_context,
+                &paint_context,
                 &format!("{}.font_size", object.name),
                 font_size,
             );
             validate_expression(
                 errors,
-                &object_context,
+                &paint_context,
                 &format!("{}.contrast", object.name),
                 contrast,
             );
             validate_paint(
                 errors,
-                &object_context,
+                &paint_context,
                 &format!("{}.color", object.name),
                 color,
             );
-            for error in validate_template(template, &object_context) {
+            for error in validate_template(template, &paint_context) {
                 errors.push(format!("{}.template: {error}", object.name));
             }
         }
@@ -2285,7 +2258,7 @@ fn validate_scene_object(errors: &mut Vec<String>, context: &DataContext, object
             ] {
                 validate_expression(
                     errors,
-                    &object_context,
+                    &paint_context,
                     &format!("{}.{}", object.name, name),
                     expression,
                 );
@@ -2293,20 +2266,20 @@ fn validate_scene_object(errors: &mut Vec<String>, context: &DataContext, object
             if let Some(expression) = segments_expression {
                 validate_expression(
                     errors,
-                    &object_context,
+                    &paint_context,
                     &format!("{}.segments", object.name),
                     expression,
                 );
             }
             validate_paint(
                 errors,
-                &object_context,
+                &paint_context,
                 &format!("{}.fill", object.name),
                 fill,
             );
             validate_paint(
                 errors,
-                &object_context,
+                &paint_context,
                 &format!("{}.track", object.name),
                 track,
             );
@@ -2320,8 +2293,13 @@ fn validate_expression(
     label: &str,
     expression: &Expression,
 ) {
-    if let Err(error) = evaluate(&expression.0, context) {
-        errors.push(format!("{label}: {error}"));
+    match evaluate(&expression.0, context) {
+        // `sqrt(-1)` would otherwise save fine and hide its layer.
+        Ok(value) if !value.is_finite() => {
+            errors.push(format!("{label}: did not produce a finite value"))
+        }
+        Err(error) => errors.push(format!("{label}: {error}")),
+        Ok(_) => {}
     }
 }
 

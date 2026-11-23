@@ -140,71 +140,58 @@ fn date_default(
     flags: ENUM_DATE_FORMATS_FLAGS,
     locale: &str,
 ) -> Option<String> {
-    format_date(value, flags, None, locale)
+    format_system_time(value, true, flags.0, None, locale)
 }
 
 fn date_pattern(value: &SYSTEMTIME, pattern: &str, locale: &str) -> Option<String> {
-    format_date(value, ENUM_DATE_FORMATS_FLAGS(0), Some(pattern), locale)
-}
-
-fn format_date(
-    value: &SYSTEMTIME,
-    flags: ENUM_DATE_FORMATS_FLAGS,
-    pattern: Option<&str>,
-    locale: &str,
-) -> Option<String> {
-    let locale = wide_str(locale);
-    let pattern = pattern.map(wide_str);
-    let mut output = [0_u16; 128];
-    let count = unsafe {
-        GetDateFormatEx(
-            PCWSTR(locale.as_ptr()),
-            flags,
-            Some(value),
-            pattern
-                .as_ref()
-                .map_or(PCWSTR::null(), |value| PCWSTR(value.as_ptr())),
-            Some(&mut output),
-            PCWSTR::null(),
-        )
-    };
-    wide_result(&output, count)
+    format_system_time(value, true, 0, Some(pattern), locale)
 }
 
 fn time_default(value: &SYSTEMTIME, flags: TIME_FORMAT_FLAGS, locale: &str) -> Option<String> {
-    format_time(value, flags, None, locale)
+    format_system_time(value, false, flags.0, None, locale)
 }
 
 fn time_pattern(value: &SYSTEMTIME, pattern: &str, locale: &str) -> Option<String> {
-    format_time(value, TIME_FORMAT_FLAGS(0), Some(pattern), locale)
+    format_system_time(value, false, 0, Some(pattern), locale)
 }
 
-fn format_time(
+/// `GetDateFormatEx` when `date`, else `GetTimeFormatEx`.
+fn format_system_time(
     value: &SYSTEMTIME,
-    flags: TIME_FORMAT_FLAGS,
+    date: bool,
+    flags: u32,
     pattern: Option<&str>,
     locale: &str,
 ) -> Option<String> {
-    let locale = wide_str(locale);
-    let pattern = pattern.map(wide_str);
+    let locale_wide = wide_str(locale);
+    let pattern_wide = pattern.map(wide_str);
+    let locale = PCWSTR(locale_wide.as_ptr());
+    let pattern = pattern_wide
+        .as_ref()
+        .map_or(PCWSTR::null(), |value| PCWSTR(value.as_ptr()));
     let mut output = [0_u16; 128];
     let count = unsafe {
-        GetTimeFormatEx(
-            PCWSTR(locale.as_ptr()),
-            flags,
-            Some(value),
-            pattern
-                .as_ref()
-                .map_or(PCWSTR::null(), |value| PCWSTR(value.as_ptr())),
-            Some(&mut output),
-        )
+        if date {
+            GetDateFormatEx(
+                locale,
+                ENUM_DATE_FORMATS_FLAGS(flags),
+                Some(value),
+                pattern,
+                Some(&mut output),
+                PCWSTR::null(),
+            )
+        } else {
+            GetTimeFormatEx(
+                locale,
+                TIME_FORMAT_FLAGS(flags),
+                Some(value),
+                pattern,
+                Some(&mut output),
+            )
+        }
     };
-    wide_result(&output, count)
-}
-
-fn wide_result(value: &[u16], count: i32) -> Option<String> {
     let count = usize::try_from(count).ok()?.checked_sub(1)?;
-    Some(String::from_utf16_lossy(value.get(..count)?))
+    Some(String::from_utf16_lossy(output.get(..count)?))
 }
 
 fn combine(first: Option<String>, second: Option<String>) -> Option<String> {

@@ -14,12 +14,8 @@ const FIRST_WINDOWS_11_BUILD: u32 = 22000;
 
 /// Check if the system is in dark mode by reading the registry
 pub fn is_dark_mode() -> bool {
-    !is_light_theme()
-}
-
-fn is_light_theme() -> bool {
     // Default to dark mode when the value cannot be read.
-    read_dword(HKEY_CURRENT_USER, PERSONALIZE_PATH, LIGHT_THEME_KEY) == Some(1)
+    read_dword(HKEY_CURRENT_USER, PERSONALIZE_PATH, LIGHT_THEME_KEY) != Some(1)
 }
 
 /// Whether the taskbar buttons sit in the middle of the bar, leaving its left

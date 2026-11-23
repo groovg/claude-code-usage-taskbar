@@ -86,8 +86,16 @@ pub fn render_theme_surface_with_runtime_at_scale(
         parent_height: logical_height as f64,
         gap: evaluate(&surface.gap.0, &context).unwrap_or(0.0).max(0.0),
         opacity: 1.0,
-        rotation: evaluate(&surface.rotation.0, &context).unwrap_or(0.0),
+        rotation: finite_or_warn(
+            &surface.rotation,
+            &context,
+            &surface.name,
+            "rotation",
+            &mut warnings,
+        )
+        .unwrap_or(0.0),
         clip: Vec::new(),
+        child_clip: Vec::new(),
     };
     render_resolved_object(
         &mut pixels,
@@ -99,8 +107,7 @@ pub fn render_theme_surface_with_runtime_at_scale(
         &mut warnings,
     );
 
-    let (resolved, layer_warnings) =
-        resolve_objects_for(surface, &resolved_canvas, &surface.children, data, runtime);
+    let (resolved, layer_warnings) = resolve_objects_for(surface, &resolved_canvas, &context);
     warnings.extend(layer_warnings);
     for object in resolved {
         render_resolved_object(
@@ -192,7 +199,13 @@ pub(super) fn render_resolved_object(
 ) {
     let object_width = (object.width * scale).round().max(1.0) as u32;
     let object_height = (object.height * scale).round().max(1.0) as u32;
-    if object_width > 8192 || object_height > 8192 {
+    // Every pass allocates the whole object, but only the canvas shows: a
+    // 5000x5000 typo must not cost hundreds of megabytes per render.
+    let area_limit = (4 * u64::from(target_width) * u64::from(target_height)).max(1 << 20);
+    if object_width > 8192
+        || object_height > 8192
+        || u64::from(object_width) * u64::from(object_height) > area_limit
+    {
         warnings.push(format!("{} is too large to render", object.source.name));
         return;
     }
@@ -223,6 +236,7 @@ pub(super) fn render_resolved_object(
         &mut local,
         object_width,
         object_height,
+        warnings,
     );
     composite_object(
         target,
@@ -240,44 +254,27 @@ pub(super) fn render_resolved_object(
     );
 }
 
+/// Resolve `root`'s children. `context` is the root's, built for `canvas`.
 pub(super) fn resolve_objects_for<'a>(
-    root: &SceneObject,
+    root: &'a SceneObject,
     canvas: &Canvas,
-    layers: &'a [SceneObject],
-    data: Option<&AppUsageData>,
-    runtime: ThemeRuntime,
+    context: &DataContext,
 ) -> (Vec<ResolvedObject<'a>>, Vec<String>) {
-    let context = DataContext::from_usage_with_runtime(data, canvas, runtime);
+    let layers = &root.children;
     let mut resolved = Vec::new();
     let mut warnings = Vec::new();
     let mut cache = vec![None; layers.len()];
     for index in 0..layers.len() {
-        let Some(geometry) = resolve_geometry(
+        resolved.extend(resolve_geometry(
             index,
             root,
             canvas,
             layers,
-            &context,
+            context,
             &mut cache,
             &mut Vec::new(),
             &mut warnings,
-        ) else {
-            continue;
-        };
-        let object = &layers[index];
-        resolved.push(ResolvedObject {
-            source: object,
-            x: geometry.x,
-            y: geometry.y,
-            width: geometry.width,
-            height: geometry.height,
-            parent_width: geometry.parent_width,
-            parent_height: geometry.parent_height,
-            gap: geometry.gap,
-            opacity: geometry.opacity,
-            rotation: geometry.rotation,
-            clip: geometry.clip,
-        });
+        ));
     }
     (resolved, warnings)
 }
@@ -294,12 +291,14 @@ pub fn hit_test_mouse_event(
     runtime: ThemeRuntime,
 ) -> Option<String> {
     let surface = theme.surfaces.get(surface_index)?;
-    if !surface_should_render(theme, surface_index, data, runtime) {
-        return None;
-    }
     let (width, height) = resolve_object_size(surface, data, runtime, &mut Vec::new());
     let canvas = Canvas { width, height };
-    let (resolved, _) = resolve_objects_for(surface, &canvas, &surface.children, data, runtime);
+    // One context serves the whole hit test, `surface_should_render` included.
+    let context = DataContext::from_usage_with_runtime(data, &canvas, runtime);
+    if !evaluate(&surface.render.0, &context).is_ok_and(|value| value.is_finite() && value != 0.0) {
+        return None;
+    }
+    let (resolved, _) = resolve_objects_for(surface, &canvas, &context);
     for object in resolved.into_iter().rev() {
         if object.opacity <= 0.0
             || object.width <= 0.0
@@ -329,8 +328,7 @@ pub fn hit_test_mouse_event(
         }
     }
 
-    let root_is_visible = DataContext::from_usage_with_runtime(data, &canvas, runtime);
-    let root_is_visible = evaluate(&surface.visibility.0, &root_is_visible)
+    let root_is_visible = evaluate(&surface.visibility.0, &context)
         .is_ok_and(|value| value.is_finite() && value > 0.0);
     if root_is_visible
         && surface
@@ -344,11 +342,7 @@ pub fn hit_test_mouse_event(
                 y: 0.0,
                 width: width as f64,
                 height: height as f64,
-                rotation: evaluate(
-                    &surface.rotation.0,
-                    &DataContext::from_usage_with_runtime(data, &canvas, runtime),
-                )
-                .unwrap_or(0.0),
+                rotation: evaluate(&surface.rotation.0, &context).unwrap_or(0.0),
             },
         )
     {
@@ -479,32 +473,17 @@ pub fn surface_should_render(
     evaluate(&surface.render.0, &context).is_ok_and(|value| value.is_finite() && value != 0.0)
 }
 
-#[derive(Clone, Debug)]
-pub(super) struct ObjectGeometry {
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-    parent_width: f64,
-    parent_height: f64,
-    gap: f64,
-    opacity: f64,
-    rotation: f64,
-    clip: Vec<ClipRegion>,
-    child_clip: Vec<ClipRegion>,
-}
-
 #[allow(clippy::too_many_arguments)]
-pub(super) fn resolve_geometry(
+pub(super) fn resolve_geometry<'a>(
     index: usize,
-    root: &SceneObject,
+    root: &'a SceneObject,
     canvas: &Canvas,
-    layers: &[SceneObject],
+    layers: &'a [SceneObject],
     context: &DataContext,
-    cache: &mut [Option<ObjectGeometry>],
+    cache: &mut [Option<ResolvedObject<'a>>],
     stack: &mut Vec<usize>,
     warnings: &mut Vec<String>,
-) -> Option<ObjectGeometry> {
+) -> Option<ResolvedObject<'a>> {
     if let Some(value) = &cache[index] {
         return Some(value.clone());
     }
@@ -528,7 +507,8 @@ pub(super) fn resolve_geometry(
         .as_ref()
         .filter(|parent_id| **parent_id != root.id)
     {
-        None => ObjectGeometry {
+        None => ResolvedObject {
+            source: root,
             x: 0.0,
             y: 0.0,
             width: canvas.width as f64,
@@ -537,7 +517,11 @@ pub(super) fn resolve_geometry(
             parent_height: canvas.height as f64,
             gap: evaluate(&root.gap.0, context).unwrap_or(0.0).max(0.0),
             opacity: 1.0,
-            rotation: evaluate(&root.rotation.0, context).unwrap_or(0.0),
+            // The surface render warns about a bad root rotation once.
+            rotation: evaluate(&root.rotation.0, context)
+                .ok()
+                .filter(|value| value.is_finite())
+                .unwrap_or(0.0),
             clip: Vec::new(),
             child_clip: Vec::new(),
         },
@@ -678,7 +662,8 @@ pub(super) fn resolve_geometry(
         height,
         rotation,
     });
-    let geometry = ObjectGeometry {
+    let geometry = ResolvedObject {
+        source: object,
         x,
         y,
         width,
@@ -705,7 +690,15 @@ pub(super) fn render_object_background(
     height: u32,
     warnings: &mut Vec<String>,
 ) {
-    let radius = evaluate(&object.source.corner_radius.0, context).unwrap_or(0.0) * scale;
+    let radius = finite_or_warn(
+        &object.source.corner_radius,
+        context,
+        &object.source.name,
+        "corner_radius",
+        warnings,
+    )
+    .unwrap_or(0.0)
+        * scale;
     match &object.source.background {
         LayerBackground::None => {}
         LayerBackground::Colour { colour } => {
@@ -730,6 +723,11 @@ pub(super) fn render_object_background(
             );
             clip_to_rounded_rectangle(pixels, width, height, radius);
         }
+        // Checked here too: themes saved before validation refused them.
+        LayerBackground::Image { path, .. } if is_network_path(path) => warnings.push(format!(
+            "{}: network image path {path} is not allowed",
+            object.source.name
+        )),
         LayerBackground::Image { path, fit } => {
             let path = resolve_asset_path(path);
             match load_image_cached(&path) {
@@ -754,10 +752,25 @@ pub(super) fn render_object_border(
     pixels: &mut [u32],
     width: u32,
     height: u32,
+    warnings: &mut Vec<String>,
 ) {
     if let Some(border) = &object.source.border {
-        let radius = evaluate(&object.source.corner_radius.0, context).unwrap_or(0.0) * scale;
-        let border_width = (evaluate(&border.width.0, context).unwrap_or(1.0) * scale).max(1.0);
+        // The background already warned about a bad radius.
+        let radius = evaluate(&object.source.corner_radius.0, context)
+            .ok()
+            .filter(|value| value.is_finite())
+            .unwrap_or(0.0)
+            * scale;
+        let border_width = (finite_or_warn(
+            &border.width,
+            context,
+            &object.source.name,
+            "border.width",
+            warnings,
+        )
+        .unwrap_or(1.0)
+            * scale)
+            .max(1.0);
         stroke_rounded_rectangle(
             pixels,
             width,
@@ -790,7 +803,15 @@ pub(super) fn render_object_content(
             segments_expression,
             segment_gap,
         } => {
-            let radius = evaluate(&corner_radius.0, context).unwrap_or(0.0) * scale;
+            let radius = finite_or_warn(
+                corner_radius,
+                context,
+                &object.source.name,
+                "content.corner_radius",
+                warnings,
+            )
+            .unwrap_or(0.0)
+                * scale;
             let gap = evaluate(&segment_gap.0, context).unwrap_or(2.0) * scale;
             let segments = match segments_expression {
                 Some(expression) => finite_or_warn(
@@ -818,7 +839,10 @@ pub(super) fn render_object_content(
             } else {
                 fill_rounded(pixels, width, height, track.resolve(context), radius);
             }
-            let amount = (evaluate(&value.0, context).unwrap_or(0.0) / 100.0).clamp(0.0, 1.0);
+            let amount = (finite_or_warn(value, context, &object.source.name, "value", warnings)
+                .unwrap_or(0.0)
+                / 100.0)
+                .clamp(0.0, 1.0);
             draw_progress(
                 pixels,
                 width,
@@ -842,8 +866,12 @@ pub(super) fn render_object_content(
             color,
         } => {
             let text = format_template(template, context);
-            let size = (evaluate(&font_size.0, context).unwrap_or(13.0) * scale).max(1.0);
-            let contrast = evaluate(&contrast.0, context)
+            let name = &object.source.name;
+            let size = (finite_or_warn(font_size, context, name, "font_size", warnings)
+                .unwrap_or(13.0)
+                * scale)
+                .max(1.0);
+            let contrast = finite_or_warn(contrast, context, name, "contrast", warnings)
                 .unwrap_or(1.4)
                 .clamp(0.25, 4.0);
             render_text_mask(
@@ -863,6 +891,18 @@ pub(super) fn render_object_content(
     }
 }
 
+/// A UNC or device path such as `\\host\share\x.png`: opening one makes
+/// Windows contact the host, offer it the user's NTLM hash, and can block
+/// the render for many seconds. Drive and `%APPDATA%` paths stay local.
+pub(super) fn is_network_path(path: &str) -> bool {
+    use std::path::{Component, Prefix};
+    matches!(
+        Path::new(path.trim()).components().next(),
+        Some(Component::Prefix(prefix))
+            if !matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+    )
+}
+
 pub(super) fn resolve_asset_path(path: &str) -> PathBuf {
     let expanded = if let Some(rest) = path.strip_prefix("%APPDATA%") {
         std::env::var("APPDATA")
@@ -878,30 +918,51 @@ pub(super) fn resolve_asset_path(path: &str) -> PathBuf {
     }
 }
 
+/// Decoded images, most recently used first.
+pub(super) type ImageCache = Vec<(
+    PathBuf,
+    Option<std::time::SystemTime>,
+    Arc<image::DynamicImage>,
+)>;
+
+/// Decoded bytes the image cache keeps once older images are dropped.
+const IMAGE_CACHE_BUDGET: usize = 256 << 20;
+
 pub(super) fn load_image_cached(
     path: &Path,
 ) -> Result<Arc<image::DynamicImage>, image::ImageError> {
-    type ImageCache = HashMap<PathBuf, (Option<std::time::SystemTime>, Arc<image::DynamicImage>)>;
-    static CACHE: OnceLock<Mutex<ImageCache>> = OnceLock::new();
+    static CACHE: Mutex<ImageCache> = Mutex::new(Vec::new());
     let modified = std::fs::metadata(path)
         .ok()
         .and_then(|metadata| metadata.modified().ok());
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some((cached_modified, image)) = cache
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .get(path)
     {
-        if *cached_modified == modified {
-            return Ok(image.clone());
+        let mut cache = CACHE.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(index) = cache.iter().position(|(cached, ..)| cached == path) {
+            let entry = cache.remove(index);
+            if entry.1 == modified {
+                let image = entry.2.clone();
+                cache.insert(0, entry);
+                return Ok(image);
+            }
         }
     }
     let image = Arc::new(image::open(path)?);
-    cache
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .insert(path.to_path_buf(), (modified, image.clone()));
+    let mut cache = CACHE.lock().unwrap_or_else(|error| error.into_inner());
+    cache.retain(|(cached, ..)| cached != path);
+    cache.insert(0, (path.to_path_buf(), modified, image.clone()));
+    trim_image_cache(&mut cache, IMAGE_CACHE_BUDGET);
     Ok(image)
+}
+
+/// Drop the least recently used images past `budget` bytes, always keeping
+/// the newest, so trying backgrounds in Studio does not pile them up.
+pub(super) fn trim_image_cache(cache: &mut ImageCache, budget: usize) {
+    let mut total = 0;
+    let mut newest = true;
+    cache.retain(|(.., image)| {
+        total += image.as_bytes().len();
+        std::mem::take(&mut newest) || total <= budget
+    });
 }
 
 pub(super) fn render_image(
@@ -916,30 +977,62 @@ pub(super) fn render_image(
     if source_width == 0 || source_height == 0 {
         return;
     }
-    let (draw_width, draw_height) = match fit {
-        ImageFit::Stretch => (width, height),
-        ImageFit::Original => (source_width.min(width), source_height.min(height)),
-        ImageFit::Contain | ImageFit::Cover => {
-            let sx = width as f64 / source_width as f64;
-            let sy = height as f64 / source_height as f64;
-            let factor = if matches!(fit, ImageFit::Contain) {
-                sx.min(sy)
-            } else {
-                sx.max(sy)
-            };
+    let sx = width as f64 / source_width as f64;
+    let sy = height as f64 / source_height as f64;
+    // Only the visible part of the source is scaled: covering a box with a
+    // 1x100000 image must not build a 100x10000000 one first.
+    let (crop_width, crop_height, draw_width, draw_height) = match fit {
+        ImageFit::Stretch => (source_width, source_height, width, height),
+        ImageFit::Original => {
+            let (crop_width, crop_height) = (source_width.min(width), source_height.min(height));
+            (crop_width, crop_height, crop_width, crop_height)
+        }
+        ImageFit::Contain => {
+            let factor = sx.min(sy);
             (
+                source_width,
+                source_height,
                 (source_width as f64 * factor).round().max(1.0) as u32,
                 (source_height as f64 * factor).round().max(1.0) as u32,
             )
         }
+        ImageFit::Cover => {
+            let factor = sx.max(sy);
+            (
+                (width as f64 / factor)
+                    .round()
+                    .clamp(1.0, source_width as f64) as u32,
+                (height as f64 / factor)
+                    .round()
+                    .clamp(1.0, source_height as f64) as u32,
+                width,
+                height,
+            )
+        }
     };
-    let resized = source
-        .resize_exact(
-            draw_width,
-            draw_height,
-            image::imageops::FilterType::Lanczos3,
-        )
-        .to_rgba8();
+    let cropped;
+    let visible = if (crop_width, crop_height) == (source_width, source_height) {
+        source
+    } else {
+        cropped = source.crop_imm(
+            (source_width - crop_width) / 2,
+            (source_height - crop_height) / 2,
+            crop_width,
+            crop_height,
+        );
+        &cropped
+    };
+    let resized = if fit == ImageFit::Original {
+        visible.to_rgba8()
+    } else {
+        visible
+            .resize_exact(
+                draw_width,
+                draw_height,
+                image::imageops::FilterType::Lanczos3,
+            )
+            .to_rgba8()
+    };
     let offset_x = (width as i64 - draw_width as i64) / 2;
     let offset_y = (height as i64 - draw_height as i64) / 2;
     for y in 0..height {
