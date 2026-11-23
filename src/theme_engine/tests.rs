@@ -2546,3 +2546,67 @@ fn segments_are_uniform_whole_pixels_at_fractional_display_scales() {
         );
     }
 }
+
+#[test]
+fn built_in_themes_drop_the_claude_five_hour_row_when_the_plan_has_none() {
+    use crate::models::{UsageData, UsageSection};
+
+    let window = UsageSection {
+        available: true,
+        percentage: 40.0,
+        resets_at: None,
+    };
+    let claude = |session: bool| UsageData {
+        session: if session {
+            window.clone()
+        } else {
+            UsageSection::default()
+        },
+        weekly: window.clone(),
+        ..Default::default()
+    };
+    let codex = UsageData {
+        session: window.clone(),
+        weekly: window.clone(),
+        ..Default::default()
+    };
+    for (theme_id, source) in BUILTIN_THEME_SOURCES {
+        let theme: ThemeDocument = serde_json::from_str(source).unwrap();
+        let children = &theme.surfaces[0].children;
+        let layer = |id: &str| children.iter().find(|object| object.id == id).unwrap();
+        let weekly = "claude-weekly-segments-dark";
+        let mut base = None;
+        // (Claude has a five-hour window, Codex enabled, row shown, weekly row raised)
+        for (session, with_codex, session_row, raised) in [
+            (true, false, true, false),
+            (false, false, false, true),
+            (false, true, false, false),
+        ] {
+            let mut providers = vec![(ProviderId::Claude, claude(session))];
+            if with_codex {
+                providers.push((ProviderId::Codex, codex.clone()));
+            }
+            let enabled: Vec<ProviderId> = providers.iter().map(|(id, _)| *id).collect();
+            let usage = AppUsageData::from_iter(providers);
+            let context = DataContext::from_usage_with_runtime(
+                Some(&usage),
+                &Canvas::default(),
+                ThemeRuntime::from_providers(ProviderSet::from_enabled(enabled)),
+            );
+            let shown = |id: &str| evaluate(&layer(id).render.0, &context).unwrap() != 0.0;
+            assert_eq!(
+                shown("claude-session-value-dark") || shown("claude-session-value-light"),
+                session_row,
+                "{theme_id}: session {session}, codex {with_codex}"
+            );
+            let y = evaluate(&layer(weekly).y.0, &context).unwrap();
+            // The first case has the five-hour window, so it sets the usual row.
+            let base = *base.get_or_insert(y);
+            assert_eq!(
+                y < base,
+                raised,
+                "{theme_id}: session {session}, codex {with_codex}"
+            );
+        }
+    }
+}

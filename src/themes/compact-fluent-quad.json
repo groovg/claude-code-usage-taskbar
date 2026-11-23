@@ -240,7 +240,7 @@
         {
           "id": "claude-session-segments-dark",
           "name": "dark Claude Code 5-hour segments",
-          "render": "system.dark",
+          "render": "(system.dark) && !(claude.weekly.available && !claude.session.available)",
           "parent": "claude-provider",
           "y": "11",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
@@ -264,7 +264,7 @@
         {
           "id": "claude-session-value-dark",
           "name": "dark Claude Code 5-hour value",
-          "render": "system.dark",
+          "render": "(system.dark) && !(claude.weekly.available && !claude.session.available)",
           "parent": "claude-provider",
           "x": "ceil(10 / max(1, providers.count)) * 11 - 1 + 4",
           "y": "9",
@@ -287,7 +287,7 @@
         {
           "id": "claude-session-segments-light",
           "name": "light Claude Code 5-hour segments",
-          "render": "1 - system.dark",
+          "render": "(1 - system.dark) && !(claude.weekly.available && !claude.session.available)",
           "parent": "claude-provider",
           "y": "11",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
@@ -311,7 +311,7 @@
         {
           "id": "claude-session-value-light",
           "name": "light Claude Code 5-hour value",
-          "render": "1 - system.dark",
+          "render": "(1 - system.dark) && !(claude.weekly.available && !claude.session.available)",
           "parent": "claude-provider",
           "x": "ceil(10 / max(1, providers.count)) * 11 - 1 + 4",
           "y": "9",
@@ -336,7 +336,7 @@
           "name": "dark Claude Code 7-day segments",
           "render": "system.dark",
           "parent": "claude-provider",
-          "y": "27",
+          "y": "27 - 8 * (providers.count == 1 && providers.claude.enabled && claude.weekly.available && !claude.session.available)",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
           "height": "9",
           "content": {
@@ -361,7 +361,7 @@
           "render": "(system.dark) && !claude.credits.available",
           "parent": "claude-provider",
           "x": "ceil(10 / max(1, providers.count)) * 11 - 1 + 4",
-          "y": "25",
+          "y": "25 - 8 * (providers.count == 1 && providers.claude.enabled && claude.weekly.available && !claude.session.available)",
           "width": "62",
           "height": "13",
           "content": {
@@ -383,7 +383,7 @@
           "name": "light Claude Code 7-day segments",
           "render": "1 - system.dark",
           "parent": "claude-provider",
-          "y": "27",
+          "y": "27 - 8 * (providers.count == 1 && providers.claude.enabled && claude.weekly.available && !claude.session.available)",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
           "height": "9",
           "content": {
@@ -408,7 +408,7 @@
           "render": "(1 - system.dark) && !claude.credits.available",
           "parent": "claude-provider",
           "x": "ceil(10 / max(1, providers.count)) * 11 - 1 + 4",
-          "y": "25",
+          "y": "25 - 8 * (providers.count == 1 && providers.claude.enabled && claude.weekly.available && !claude.session.available)",
           "width": "62",
           "height": "13",
           "content": {
@@ -1214,7 +1214,7 @@
           "name": "dark claude credit overlay",
           "render": "(system.dark) && claude.credits.available",
           "parent": "claude-provider",
-          "y": "27",
+          "y": "27 - 8 * (providers.count == 1 && providers.claude.enabled && claude.weekly.available && !claude.session.available)",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
           "height": "9",
           "content": {
@@ -1240,7 +1240,7 @@
           "render": "(system.dark) && claude.credits.available",
           "parent": "claude-provider",
           "x": "ceil(10 / max(1, providers.count)) * 11 - 1 + 4",
-          "y": "25",
+          "y": "25 - 8 * (providers.count == 1 && providers.claude.enabled && claude.weekly.available && !claude.session.available)",
           "width": "62",
           "height": "13",
           "content": {
@@ -1262,7 +1262,7 @@
           "name": "light claude credit overlay",
           "render": "(1 - system.dark) && claude.credits.available",
           "parent": "claude-provider",
-          "y": "27",
+          "y": "27 - 8 * (providers.count == 1 && providers.claude.enabled && claude.weekly.available && !claude.session.available)",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
           "height": "9",
           "content": {
@@ -1288,7 +1288,7 @@
           "render": "(1 - system.dark) && claude.credits.available",
           "parent": "claude-provider",
           "x": "ceil(10 / max(1, providers.count)) * 11 - 1 + 4",
-          "y": "25",
+          "y": "25 - 8 * (providers.count == 1 && providers.claude.enabled && claude.weekly.available && !claude.session.available)",
           "width": "62",
           "height": "13",
           "content": {
