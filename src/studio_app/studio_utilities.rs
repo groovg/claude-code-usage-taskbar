@@ -19,12 +19,12 @@ pub(super) fn language_name(language: LanguageId, code: &str) -> &str {
 pub(super) fn unique_id(prefix: &str) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(1);
-    format!(
-        "{}-{}-{}",
-        prefix,
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    )
+    // The clock, unlike a process id, is not reused by a later session, so new
+    // ids cannot match the saved themes and layers of an earlier one.
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis());
+    format!("{prefix}-{millis}-{}", NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
 pub(super) fn blank_theme(name: &str) -> ThemeDocument {
@@ -111,11 +111,21 @@ pub(super) fn safe_file_name(value: &str, fallback: &str) -> String {
     }
 }
 
+#[derive(Clone)]
 pub(super) struct AvailableTheme {
     pub(super) path: PathBuf,
     pub(super) name: String,
-    pub(super) label: String,
     pub(super) read_only: bool,
+}
+
+impl AvailableTheme {
+    pub(super) fn label(&self, language: LanguageId) -> String {
+        if self.read_only {
+            format!("{} ({})", self.name, language.text("built-in"))
+        } else {
+            self.name.clone()
+        }
+    }
 }
 
 pub(super) fn available_themes(
@@ -134,34 +144,21 @@ pub(super) fn available_themes(
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
         })
         .filter_map(|path| {
-            theme_engine::load_theme(&path).ok().map(|theme| {
-                let read_only = theme.is_builtin();
-                let label = if read_only {
-                    format!("{} (built-in)", theme.name)
-                } else {
-                    theme.name.clone()
-                };
-                AvailableTheme {
+            theme_engine::load_theme(&path)
+                .ok()
+                .map(|theme| AvailableTheme {
                     path,
+                    read_only: theme.is_builtin(),
                     name: theme.name,
-                    label,
-                    read_only,
-                }
-            })
+                })
         })
         .collect();
     if let Some(path) = current_path {
         if !themes.iter().any(|theme| theme.path == path) {
-            let read_only = current_theme.is_builtin();
             themes.push(AvailableTheme {
                 path: path.to_path_buf(),
                 name: current_theme.name.clone(),
-                label: if read_only {
-                    format!("{} (built-in)", current_theme.name)
-                } else {
-                    current_theme.name.clone()
-                },
-                read_only,
+                read_only: current_theme.is_builtin(),
             });
         }
     }

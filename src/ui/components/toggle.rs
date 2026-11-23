@@ -11,18 +11,16 @@ pub(crate) struct Toggle<'a> {
 }
 
 impl<'a> Toggle<'a> {
-    pub(crate) fn new(value: &'a mut bool) -> Self {
+    pub(crate) fn new(
+        value: &'a mut bool,
+        enabled_label: &'a str,
+        disabled_label: &'a str,
+    ) -> Self {
         Self {
             value,
-            enabled_label: "On",
-            disabled_label: "Off",
+            enabled_label,
+            disabled_label,
         }
-    }
-
-    pub(crate) fn labels(mut self, enabled: &'a str, disabled: &'a str) -> Self {
-        self.enabled_label = enabled;
-        self.disabled_label = disabled;
-        self
     }
 
     pub(crate) fn show(self, ui: &mut egui::Ui) -> egui::Response {
@@ -79,7 +77,7 @@ mod tests {
         let mut output = context.run_ui(egui::RawInput::default(), |ui| {
             let mut value = false;
             let top = ui.cursor().top();
-            Toggle::new(&mut value).labels("Yes", "No").show(ui);
+            Toggle::new(&mut value, "Yes", "No").show(ui);
             let consumed_height = ui.cursor().top() - top - ui.spacing().item_spacing.y;
 
             assert_eq!(consumed_height, CONTROL_HEIGHT);

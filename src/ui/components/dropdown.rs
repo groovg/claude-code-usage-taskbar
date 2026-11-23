@@ -1,6 +1,7 @@
 use eframe::egui;
 
-use crate::ui::theme::{ACCENT, SELECTED_MENU_FILL};
+use crate::ui::components::navigation::paint_selected_marker;
+use crate::ui::theme::SELECTED_MENU_FILL;
 use crate::ui::tokens::{CONTROL_CORNER_RADIUS, CONTROL_HEIGHT, DROPDOWN_CORNER_RADIUS};
 
 const MAX_VISIBLE_OPTIONS: usize = 6;
@@ -95,21 +96,7 @@ impl Dropdown {
         let text_right = icon_rect.left() - ui.spacing().icon_spacing;
         let text_width = (text_right - button_rect.left() - text_inset).max(1.0);
         let current_text = selected_text.text().to_owned();
-        let natural_text_width = ui
-            .painter()
-            .layout_no_wrap(
-                current_text.clone(),
-                egui::TextStyle::Button.resolve(ui.style()),
-                visuals.text_color(),
-            )
-            .size()
-            .x;
-        let galley = selected_text.into_galley(
-            ui,
-            Some(egui::TextWrapMode::Truncate),
-            text_width,
-            egui::TextStyle::Button,
-        );
+        let (galley, truncated) = truncated_text(ui, selected_text, text_width);
         let text_rect = egui::Rect::from_min_max(
             egui::pos2(button_rect.left() + text_inset, button_rect.top()),
             egui::pos2(text_right, button_rect.bottom()),
@@ -123,7 +110,7 @@ impl Dropdown {
             info.current_text_value = Some(current_text.clone());
             info
         });
-        if natural_text_width > text_width {
+        if truncated {
             button_response.clone().on_hover_text(current_text);
         }
 
@@ -164,6 +151,30 @@ impl Dropdown {
             response: button_response,
         }
     }
+}
+
+/// `text` on one line, cut to `width`, and whether it had to be cut.
+fn truncated_text(
+    ui: &egui::Ui,
+    text: egui::WidgetText,
+    width: f32,
+) -> (std::sync::Arc<egui::Galley>, bool) {
+    let natural_width = ui
+        .painter()
+        .layout_no_wrap(
+            text.text().to_owned(),
+            egui::TextStyle::Button.resolve(ui.style()),
+            egui::Color32::PLACEHOLDER,
+        )
+        .size()
+        .x;
+    let galley = text.into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        width,
+        egui::TextStyle::Button,
+    );
+    (galley, natural_width > width)
 }
 
 pub(crate) fn dropdown_scroll_height(ui: &egui::Ui) -> f32 {
@@ -298,21 +309,7 @@ pub(crate) fn dropdown_selectable_label(
     }
     let text_inset = 12.0;
     let text_width = (rect.width() - text_inset * 2.0).max(1.0);
-    let natural_text_width = ui
-        .painter()
-        .layout_no_wrap(
-            label.clone(),
-            egui::TextStyle::Button.resolve(ui.style()),
-            visuals.text_color(),
-        )
-        .size()
-        .x;
-    let galley = egui::WidgetText::from(label.clone()).into_galley(
-        ui,
-        Some(egui::TextWrapMode::Truncate),
-        text_width,
-        egui::TextStyle::Button,
-    );
+    let (galley, truncated) = truncated_text(ui, label.clone().into(), text_width);
     let text_rect = egui::Rect::from_min_max(
         egui::pos2(rect.left() + text_inset, rect.top()),
         egui::pos2(rect.right() - text_inset, rect.bottom()),
@@ -328,15 +325,9 @@ pub(crate) fn dropdown_selectable_label(
         },
     );
     if selected {
-        let marker_clip = egui::Rect::from_min_max(
-            response.rect.min,
-            egui::pos2(response.rect.left() + 6.0, response.rect.bottom()),
-        );
-        ui.painter()
-            .with_clip_rect(marker_clip)
-            .rect_filled(response.rect, 4.0, ACCENT);
+        paint_selected_marker(ui, response.rect);
     }
-    if natural_text_width > text_width {
+    if truncated {
         response.on_hover_text(label)
     } else {
         response

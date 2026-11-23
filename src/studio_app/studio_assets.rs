@@ -10,13 +10,7 @@ impl StudioApp {
                 "Add images once, reuse them across themes, or drop image files here to import them.",
             ),
         );
-        let assets = match theme_engine::list_assets() {
-            Ok(assets) => assets,
-            Err(error) => {
-                self.asset_error = Some(error);
-                Vec::new()
-            }
-        };
+        let assets = self.assets();
         self.ensure_asset_thumbnails(ui.ctx(), &assets);
         if self
             .asset_page_selected
@@ -117,8 +111,10 @@ impl StudioApp {
                     if theme_engine::remove_asset_references(&mut self.theme, path) > 0 {
                         self.theme.prepare_runtime();
                         self.preview_dirty = true;
-                        self.reset_history();
                     }
+                    // Any undo step may still name the deleted file.
+                    self.reset_history();
+                    self.refresh_library();
                     self.asset_error = None;
                     self.asset_thumbnails.remove(path);
                     if self.asset_page_selected.as_deref() == Some(path) {

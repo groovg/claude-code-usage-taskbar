@@ -20,11 +20,7 @@ pub(crate) fn navigation_item(ui: &mut egui::Ui, selected: bool, title: &str) ->
         ui.painter().rect_filled(rect, 4.0, fill);
     }
     if selected {
-        let marker_clip =
-            egui::Rect::from_min_max(rect.min, egui::pos2(rect.left() + 6.0, rect.bottom()));
-        ui.painter()
-            .with_clip_rect(marker_clip)
-            .rect_filled(rect, 4.0, ACCENT);
+        paint_selected_marker(ui, rect);
     }
     ui.painter().text(
         egui::pos2(rect.left() + 18.0, rect.center().y),
@@ -34,6 +30,15 @@ pub(crate) fn navigation_item(ui: &mut egui::Ui, selected: bool, title: &str) ->
         MENU_TEXT,
     );
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// The accent bar on the left edge of a selected row.
+pub(crate) fn paint_selected_marker(ui: &egui::Ui, rect: egui::Rect) {
+    let marker_clip =
+        egui::Rect::from_min_max(rect.min, egui::pos2(rect.left() + 6.0, rect.bottom()));
+    ui.painter()
+        .with_clip_rect(marker_clip)
+        .rect_filled(rect, 4.0, ACCENT);
 }
 
 pub(crate) fn github_link(ui: &mut egui::Ui, url: &str) -> egui::Response {

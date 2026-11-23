@@ -14,9 +14,7 @@ pub(super) fn toggle_labeled_control(
                 egui::vec2(width, CONTROL_HEIGHT),
                 egui::Layout::right_to_left(egui::Align::Center),
                 |ui| {
-                    Toggle::new(value)
-                        .labels(language.text("Enabled"), language.text("Disabled"))
-                        .show(ui)
+                    Toggle::new(value, language.text("Enabled"), language.text("Disabled")).show(ui)
                 },
             )
             .inner
@@ -44,6 +42,7 @@ pub(super) fn text_template_editor_control(
     template: &mut String,
     context: &DataContext,
     width: f32,
+    language: LanguageId,
 ) -> bool {
     let has_expression = template_has_expression(template);
     let preview = if has_expression {
@@ -58,8 +57,9 @@ pub(super) fn text_template_editor_control(
         &preview,
         width,
         has_expression,
-        "text helper",
+        language.text("Open text helper"),
         egui::Align::Min,
+        language,
     );
     if action.remove {
         *template = ui
@@ -79,6 +79,7 @@ pub(super) fn numeric_expression_control(
     label: &str,
     value: &mut Expression,
     context: &DataContext,
+    language: LanguageId,
 ) -> bool {
     let is_simple = value
         .0
@@ -92,7 +93,7 @@ pub(super) fn numeric_expression_control(
             .ok()
             .filter(|number| number.is_finite())
             .map(format_number_for_ui)
-            .unwrap_or_else(|| "Invalid expression".into())
+            .unwrap_or_else(|| language.text("Invalid expression").into())
     });
     // Keep DragValue's live keyboard buffer tied to this exact property.
     ui.push_id(id, |ui| {
@@ -103,11 +104,14 @@ pub(super) fn numeric_expression_control(
                 id,
                 available_width,
                 preview.as_deref().map(|value| (value, egui::Align::Center)),
-                "an expression",
+                language,
                 |ui, width| {
                     let mut number = value.0.trim().parse::<f64>().unwrap_or_default();
-                    if NumberField::new(&mut number).show(ui, width).changed() {
-                        value.0 = format_number_for_ui(number);
+                    // The field also parses "inf" and "NaN", which no theme can use.
+                    if NumberField::new(&mut number).show(ui, width).changed() && number.is_finite()
+                    {
+                        // The formatter rounds to two decimals; it is only for display.
+                        value.0 = number.to_string();
                     }
                 },
             );
@@ -262,7 +266,7 @@ pub(super) fn expression_control(
                         },
                     )
                 }),
-                language.text("an expression"),
+                language,
                 |ui, width| match kind {
                     ExpressionControlKind::Boolean => {
                         let mut enabled =
@@ -323,6 +327,7 @@ pub(super) fn optional_expression_control<N: egui::emath::Numeric + std::fmt::Di
     expression: &mut Option<Expression>,
     context: &DataContext,
     format_preview: fn(f64) -> String,
+    language: LanguageId,
 ) -> bool {
     let mut edit_clicked = false;
     let preview = expression.as_ref().map(|formula| {
@@ -330,7 +335,7 @@ pub(super) fn optional_expression_control<N: egui::emath::Numeric + std::fmt::Di
             .ok()
             .filter(|number| number.is_finite())
             .map(format_preview)
-            .unwrap_or_else(|| "Invalid expression".into())
+            .unwrap_or_else(|| language.text("Invalid expression").into())
     });
     ui.push_id(id, |ui| {
         labeled(ui, label, |ui| {
@@ -340,22 +345,26 @@ pub(super) fn optional_expression_control<N: egui::emath::Numeric + std::fmt::Di
                 id,
                 available_width,
                 preview.as_deref().map(|value| (value, egui::Align::Center)),
-                "an expression",
+                language,
                 |ui, width| {
-                    let field = NumberField::new(value);
-                    match range {
+                    let mut number = *value;
+                    let field = NumberField::new(&mut number);
+                    let changed = match range {
                         Some(range) => field.range(range),
                         None => field,
                     }
-                    .show(ui, width);
+                    .show(ui, width)
+                    .changed();
+                    // The field also parses "inf" and "NaN", which no theme can use.
+                    if changed && number.to_f64().is_finite() {
+                        *value = number;
+                    }
                 },
             );
             if action.remove {
                 *expression = None;
             } else if action.open {
-                if expression.is_none() {
-                    *expression = Some(Expression(value.to_string()));
-                }
+                // The helper starts from the plain value; the theme changes on Apply.
                 edit_clicked = true;
             }
         });
@@ -373,7 +382,7 @@ pub(super) fn paint_control(ui: &mut egui::Ui, label: &str, paint: &mut Paint) {
 pub(super) fn asset_grid(
     ui: &mut egui::Ui,
     assets: &[theme_engine::ManagedAsset],
-    thumbnails: &HashMap<String, egui::TextureHandle>,
+    thumbnails: &HashMap<String, Option<egui::TextureHandle>>,
     filter: &str,
     selected_path: &mut Option<String>,
     theme: &ThemeDocument,
@@ -400,7 +409,9 @@ pub(super) fn asset_grid(
             let response = asset_card(
                 ui,
                 asset,
-                thumbnails.get(&asset.relative_path),
+                thumbnails
+                    .get(&asset.relative_path)
+                    .and_then(Option::as_ref),
                 selected,
                 theme_engine::theme_asset_usage(theme, &asset.relative_path),
                 language,
@@ -460,12 +471,13 @@ pub(super) fn format_asset_size(bytes: u64) -> String {
         format!("{bytes} B")
     }
 }
+/// Returns whether the user picked a point.
 pub(super) fn anchor_point_picker(
     ui: &mut egui::Ui,
     id: impl std::hash::Hash + std::fmt::Debug,
     horizontal: &mut HorizontalAnchor,
     vertical: &mut VerticalAnchor,
-) {
+) -> bool {
     ui.push_id(id, |ui| {
         let mut selected = AnchorPoint::new(
             match horizontal {
@@ -479,11 +491,11 @@ pub(super) fn anchor_point_picker(
                 VerticalAnchor::Bottom => 2,
             },
         );
-        if AnchorPointPicker::new(&mut selected)
+        let changed = AnchorPointPicker::new(&mut selected)
             .width(inspector_control_width(ui))
             .show(ui)
-            .changed()
-        {
+            .changed();
+        if changed {
             *horizontal = [
                 HorizontalAnchor::Left,
                 HorizontalAnchor::Center,
@@ -495,7 +507,9 @@ pub(super) fn anchor_point_picker(
                 VerticalAnchor::Bottom,
             ][selected.row];
         }
-    });
+        changed
+    })
+    .inner
 }
 
 pub(super) fn object_anchor_picker(
@@ -595,6 +609,7 @@ pub(super) fn appearance_inspector(
                 language.text("Angle"),
                 angle,
                 context,
+                language,
             ) {
                 requested_expression = Some(ExpressionField::BackgroundGradientAngle);
             }
@@ -644,6 +659,7 @@ pub(super) fn appearance_inspector(
             language.text("Border width"),
             &mut border.width,
             context,
+            language,
         ) {
             requested_expression = Some(ExpressionField::ObjectBorderWidth);
         }
@@ -654,6 +670,7 @@ pub(super) fn appearance_inspector(
         language.text("Corner radius"),
         &mut object.corner_radius,
         context,
+        language,
     ) {
         requested_expression = Some(ExpressionField::ObjectCornerRadius);
     }
@@ -690,8 +707,9 @@ pub(super) fn mouse_events_inspector(
                 preview,
                 inspector_control_width(ui),
                 !value.trim().is_empty(),
-                language.text("action helper"),
+                language.text("Open action helper"),
                 egui::Align::Min,
+                language,
             );
             if action.remove {
                 value.clear();
@@ -702,6 +720,59 @@ pub(super) fn mouse_events_inspector(
         });
     }
     requested
+}
+
+/// The Layer and Appearance sections shared by the surface and object inspectors.
+pub(super) fn layer_sections(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    render_controls_id: egui::Id,
+    context: &DataContext,
+    object: &mut SceneObject,
+    language: LanguageId,
+) -> Option<LayerInspectorRequest> {
+    let mut request = None;
+    egui::CollapsingHeader::new(language.text("Layer"))
+        .id_salt(id.with("layer-section"))
+        .default_open(true)
+        .show(ui, |ui| {
+            request = layer_properties_inspector(ui, id.with("layer"), context, object, language);
+        });
+    egui::CollapsingHeader::new(language.text("Appearance"))
+        .id_salt(id.with("appearance-section"))
+        .default_open(true)
+        .show(ui, |ui| {
+            if let Some(field) = render_controls(
+                ui,
+                render_controls_id,
+                &mut object.render,
+                &mut object.visibility,
+                context,
+                language,
+            ) {
+                request = Some(LayerInspectorRequest::Expression(field));
+            }
+            let mut asset_requested = false;
+            if let Some(field) = appearance_inspector(
+                ui,
+                id.with("appearance"),
+                context,
+                object,
+                &mut asset_requested,
+                language,
+            ) {
+                request = Some(LayerInspectorRequest::Expression(field));
+            }
+            if asset_requested {
+                request = Some(LayerInspectorRequest::Asset);
+            }
+            if let Some(field) =
+                mouse_events_inspector(ui, id.with("mouse-events"), object, language)
+            {
+                request = Some(LayerInspectorRequest::MouseEvent(field));
+            }
+        });
+    request
 }
 
 pub(super) fn layer_properties_inspector(
@@ -790,6 +861,7 @@ pub(super) fn layer_properties_inspector(
             language.text("Gap"),
             &mut object.gap,
             context,
+            language,
         ) {
             requested = Some(LayerInspectorRequest::Expression(ExpressionField::ChildGap));
         }
@@ -825,6 +897,7 @@ pub(super) fn content_inspector(
                     template,
                     context,
                     width,
+                    language,
                 ) {
                     requested = Some(LayerInspectorRequest::TextTemplate);
                 }
@@ -846,6 +919,7 @@ pub(super) fn content_inspector(
                 language.text("Size"),
                 font_size,
                 context,
+                language,
             ) {
                 requested = Some(LayerInspectorRequest::Expression(
                     ExpressionField::TextFontSize,
@@ -873,6 +947,7 @@ pub(super) fn content_inspector(
                 language.text("Edge contrast"),
                 contrast,
                 context,
+                language,
             ) {
                 requested = Some(LayerInspectorRequest::Expression(
                     ExpressionField::TextFontContrast,
@@ -904,6 +979,7 @@ pub(super) fn content_inspector(
                 language.text("Value"),
                 value,
                 context,
+                language,
             ) {
                 requested = Some(LayerInspectorRequest::Expression(
                     ExpressionField::ProgressValue,
@@ -925,6 +1001,7 @@ pub(super) fn content_inspector(
                 language.text("Radius"),
                 corner_radius,
                 context,
+                language,
             ) {
                 requested = Some(LayerInspectorRequest::Expression(
                     ExpressionField::ProgressCornerRadius,
@@ -939,6 +1016,7 @@ pub(super) fn content_inspector(
                 segments_expression,
                 context,
                 |number| format!("{number:.0}"),
+                language,
             ) {
                 requested = Some(LayerInspectorRequest::Expression(
                     ExpressionField::ProgressSegments,
@@ -950,6 +1028,7 @@ pub(super) fn content_inspector(
                 language.text("Segment gap"),
                 segment_gap,
                 context,
+                language,
             ) {
                 requested = Some(LayerInspectorRequest::Expression(
                     ExpressionField::ProgressSegmentGap,

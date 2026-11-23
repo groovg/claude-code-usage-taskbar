@@ -7,7 +7,7 @@ impl StudioApp {
         let mut changed = false;
         let mut requested_theme = None;
         let mut open_theme_studio = false;
-        let themes = available_themes(self.theme_path.as_deref(), &self.theme);
+        let themes = self.themes();
         if let Some(error) = &self.settings_error {
             ui.colored_label(egui::Color32::from_rgb(196, 64, 64), error);
             ui.add_space(8.0);
@@ -48,12 +48,17 @@ impl StudioApp {
                     language.text("Start with Windows"),
                     language.text("Launch the monitor when you sign in"),
                     |ui| {
-                        if Toggle::new(&mut self.startup_enabled)
-                            .labels(language.text("Enabled"), language.text("Disabled"))
-                            .show(ui)
-                            .changed()
+                        if Toggle::new(
+                            &mut self.startup_enabled,
+                            language.text("Enabled"),
+                            language.text("Disabled"),
+                        )
+                        .show(ui)
+                        .changed()
                         {
                             crate::window::set_startup_enabled(self.startup_enabled);
+                            // The Run key write can fail silently; show what Windows has.
+                            self.startup_enabled = crate::window::is_startup_enabled();
                         }
                     },
                 );
@@ -69,10 +74,13 @@ impl StudioApp {
                         language.text(descriptor.settings_description),
                         |ui| {
                             let mut enabled = self.settings.provider_enabled(descriptor.id);
-                            if Toggle::new(&mut enabled)
-                                .labels(language.text("Enabled"), language.text("Disabled"))
-                                .show(ui)
-                                .changed()
+                            if Toggle::new(
+                                &mut enabled,
+                                language.text("Enabled"),
+                                language.text("Disabled"),
+                            )
+                            .show(ui)
+                            .changed()
                             {
                                 changed |= self.settings.toggle_provider(descriptor.id);
                             }
@@ -104,10 +112,13 @@ impl StudioApp {
                     language.text("Usage direction"),
                     language.text("Count down what is left in supported themes"),
                     |ui| {
-                        changed |= Toggle::new(&mut self.settings.usage_countdown)
-                            .labels(language.text("Remaining"), language.text("Used"))
-                            .show(ui)
-                            .changed();
+                        changed |= Toggle::new(
+                            &mut self.settings.usage_countdown,
+                            language.text("Remaining"),
+                            language.text("Used"),
+                        )
+                        .show(ui)
+                        .changed();
                     },
                 );
                 setting_separator(ui);
@@ -173,8 +184,12 @@ impl StudioApp {
                                 for theme in &themes {
                                     let selected =
                                         self.theme_path.as_deref() == Some(theme.path.as_path());
-                                    if dropdown_selectable_label(ui, selected, &theme.label)
-                                        .clicked()
+                                    if dropdown_selectable_label(
+                                        ui,
+                                        selected,
+                                        theme.label(language),
+                                    )
+                                    .clicked()
                                     {
                                         requested_theme = Some(theme.path.clone());
                                     }

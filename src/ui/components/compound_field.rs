@@ -1,5 +1,6 @@
 use eframe::egui;
 
+use crate::localization::LanguageId;
 use crate::ui::components::expression_button::expression_button;
 use crate::ui::components::helper_field::{helper_preview_field, HelperFieldAction};
 use crate::ui::tokens::CONTROL_HEIGHT;
@@ -9,7 +10,7 @@ pub(crate) fn expression_or_value(
     id: egui::Id,
     available_width: f32,
     expression_preview: Option<(&str, egui::Align)>,
-    helper_name: &str,
+    language: LanguageId,
     render_value: impl FnOnce(&mut egui::Ui, f32),
 ) -> HelperFieldAction {
     if let Some((preview, align)) = expression_preview {
@@ -19,15 +20,16 @@ pub(crate) fn expression_or_value(
             preview,
             available_width,
             true,
-            helper_name,
+            language.text("Open an expression"),
             align,
+            language,
         )
     } else {
         let width = (available_width - CONTROL_HEIGHT - ui.spacing().item_spacing.x).max(64.0);
         render_value(ui, width);
         HelperFieldAction {
             open: expression_button(ui, false)
-                .on_hover_text(format!("Use {helper_name}"))
+                .on_hover_text(language.text("Use an expression"))
                 .clicked(),
             remove: false,
         }
