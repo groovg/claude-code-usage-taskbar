@@ -60,6 +60,16 @@ impl LanguageId {
             .unwrap_or(english)
     }
 
+    /// Whether `english` is a catalogue key; `text()` hides a missing one.
+    #[cfg(test)]
+    pub(crate) fn has_text(english: &str) -> bool {
+        Self::English
+            .locale()
+            .translations
+            .binary_search_by(|(key, _)| (*key).cmp(english))
+            .is_ok()
+    }
+
     pub fn provider_auth_error(self, provider: ProviderId) -> (&'static str, &'static str) {
         let strings = self.strings();
         match provider {
@@ -240,7 +250,6 @@ mod tests {
             "Delete theme",
             "Delete asset?",
             "Delete",
-            "Scene",
             "Add layer",
             "Background",
             "Content type",
@@ -301,10 +310,9 @@ mod tests {
     #[test]
     fn untranslated_specialist_text_falls_back_to_english() {
         let japanese = LanguageId::from_code("ja").unwrap();
-        assert_eq!(
-            japanese.text("A future specialist label"),
-            "A future specialist label"
-        );
+        // Not a literal argument: build.rs rejects literal keys missing from en.toml.
+        let key = "A future specialist label";
+        assert_eq!(japanese.text(key), key);
     }
 
     #[test]
@@ -341,5 +349,207 @@ mod tests {
                 .iter()
                 .all(|(_, value)| !value.trim().is_empty()));
         }
+    }
+
+    /// Every typed string by field name. The destructuring stops compiling
+    /// when a field is added and not listed here.
+    fn typed_strings(strings: Strings) -> Vec<(&'static str, &'static str)> {
+        macro_rules! fields {
+            ($($field:ident),+ $(,)?) => {{
+                let Strings { $($field),+ } = strings;
+                vec![$((stringify!($field), $field)),+]
+            }};
+        }
+        fields!(
+            window_title,
+            updates,
+            update_in_progress,
+            up_to_date,
+            update_failed,
+            update_available,
+            update_prompt_now,
+            session_window,
+            weekly_window,
+            cursor_auto_window,
+            cursor_api_window,
+            now,
+            day_suffix,
+            hour_suffix,
+            minute_suffix,
+            second_suffix,
+            token_expired_title,
+            token_expired_body,
+            codex_token_expired_title,
+            codex_token_expired_body,
+            antigravity_token_expired_title,
+            antigravity_token_expired_body,
+            opencode_token_expired_title,
+            opencode_token_expired_body,
+            cursor_token_expired_title,
+            cursor_token_expired_body,
+        )
+    }
+
+    #[test]
+    fn non_english_locales_translate_every_value() {
+        // Brand and product names (Cursor's "Auto" and "API" pools included).
+        const EVERY_LOCALE: &[&str] = &[
+            "Antigravity",
+            "Claude Code",
+            "ClearType",
+            "Codex",
+            "Cursor",
+            "OpenCode",
+            "URL",
+            "X",
+            "Y",
+            "window_title",
+            "cursor_auto_window",
+            "cursor_api_window",
+            // The Classic widget gives these 18 px; longer labels are cut to "5…".
+            "session_window",
+            "weekly_window",
+        ];
+        // The same word in that language, or unit letters the locale already uses.
+        const PER_LOCALE: &[(&str, &[&str])] = &[
+            (
+                "de",
+                &[
+                    "Desktop",
+                    "Exponent",
+                    "Format",
+                    "Host",
+                    "Layout",
+                    "Monitor",
+                    "Name",
+                    "Radius",
+                    "Text",
+                    "Theme",
+                    "updates",
+                    "hour_suffix",
+                    "minute_suffix",
+                    "second_suffix",
+                ],
+            ),
+            (
+                "es",
+                &[
+                    "General",
+                    "Host",
+                    "Monitor",
+                    "Original",
+                    "Variables",
+                    "day_suffix",
+                    "hour_suffix",
+                    "minute_suffix",
+                    "second_suffix",
+                ],
+            ),
+            (
+                "fr",
+                &[
+                    "Action",
+                    "Actions",
+                    "actions",
+                    "Angle",
+                    "Application",
+                    "Direction",
+                    "Format",
+                    "Guide",
+                    "Image",
+                    "Options",
+                    "Original",
+                    "Rotation",
+                    "Segments",
+                    "Session",
+                    "Variables",
+                    "hour_suffix",
+                    "minute_suffix",
+                    "second_suffix",
+                ],
+            ),
+            (
+                "nl",
+                &[
+                    "Accounts",
+                    "Exponent",
+                    "Host",
+                    "Item",
+                    "Label",
+                    "Labels",
+                    "Medium",
+                    "Monitor",
+                    "Percentage",
+                    "Provider",
+                    "Providers",
+                    "Rendering",
+                    "updates",
+                    "day_suffix",
+                    "minute_suffix",
+                    "second_suffix",
+                ],
+            ),
+            (
+                "pl",
+                &[
+                    "Format",
+                    "Gradient",
+                    "Host",
+                    "Monitor",
+                    "Separator",
+                    "day_suffix",
+                    "hour_suffix",
+                    "minute_suffix",
+                    "second_suffix",
+                ],
+            ),
+            (
+                "pt-BR",
+                &[
+                    "Host",
+                    "Item",
+                    "Layout",
+                    "Monitor",
+                    "Original",
+                    "Regular",
+                    "day_suffix",
+                    "hour_suffix",
+                    "minute_suffix",
+                    "second_suffix",
+                ],
+            ),
+        ];
+
+        let english = LanguageId::English;
+        let mut untranslated = Vec::new();
+        for language in LanguageId::ALL
+            .into_iter()
+            .filter(|language| *language != english)
+        {
+            let allowed = PER_LOCALE
+                .iter()
+                .find(|(code, _)| *code == language.code())
+                .map_or(&[][..], |(_, keys)| keys);
+            let translations = language
+                .locale()
+                .translations
+                .iter()
+                .map(|(key, value)| (*key, *value, english.text(key)));
+            let typed = typed_strings(language.strings())
+                .into_iter()
+                .zip(typed_strings(english.strings()))
+                .map(|((field, value), (_, english_value))| (field, value, english_value));
+            for (key, value, english_value) in translations.chain(typed) {
+                if value == english_value && !EVERY_LOCALE.contains(&key) && !allowed.contains(&key)
+                {
+                    untranslated.push(format!("{}: {key}", language.code()));
+                }
+            }
+        }
+        assert!(
+            untranslated.is_empty(),
+            "Values still equal to English:\n{}",
+            untranslated.join("\n")
+        );
     }
 }

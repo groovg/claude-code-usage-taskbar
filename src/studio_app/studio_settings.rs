@@ -248,7 +248,7 @@ fn account_settings(
         ui.label(language.text("Themes use the default account unless they specify an account. Custom themes can display multiple accounts."));
         ui.horizontal(|ui| {
             ui.label(language.text("Default account"));
-            let selected = accounts.selected().map(|p| p.name.as_str()).unwrap_or("None");
+            let selected = accounts.selected().map(|p| p.name.as_str()).unwrap_or(language.text("None"));
             Dropdown::from_id_salt("widget_account")
                 .width(220.0)
                 .selected_text(selected)
@@ -279,7 +279,7 @@ fn account_settings(
                         .hint_text(language.text("Optional; overrides the config directory")));
                     changed |= file.lost_focus();
                     if ui.button(language.text("Browse...")).clicked() {
-                        if let Some(path) = choose_file(owner, language.text("Select credentials file"), "JSON files\0*.json\0All files\0*.*\0\0", None) {
+                        if let Some(path) = choose_file(owner, language.text("Select credentials file"), &format!("{}\0*.json\0{}\0*.*\0\0", language.text("JSON files"), language.text("All files")), None) {
                             profile.credentials_path = path.to_string_lossy().into_owned();
                             changed = true;
                         }
@@ -316,7 +316,8 @@ fn account_settings(
                                     ui.label(format!("{}: {:.0}%", language.text(label), section.percentage));
                                     if let Some(reset) = section.resets_at {
                                         let minutes = reset.duration_since(std::time::SystemTime::now()).unwrap_or_default().as_secs() / 60;
-                                        ui.weak(format!("{} {}h {}m", language.text("Resets in"), minutes / 60, minutes % 60));
+                                        let strings = language.strings();
+                                        ui.weak(format!("{} {}{} {}{}", language.text("Resets in"), minutes / 60, strings.hour_suffix, minutes % 60, strings.minute_suffix));
                                     }
                                 }
                             }
