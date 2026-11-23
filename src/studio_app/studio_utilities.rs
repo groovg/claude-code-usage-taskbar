@@ -92,22 +92,13 @@ pub(super) fn choose_file(
 }
 
 pub(super) fn safe_file_name(value: &str, fallback: &str) -> String {
-    let mut result = String::new();
-    let mut separator = false;
-    for character in value.trim().chars() {
-        if character.is_alphanumeric() || matches!(character, '-' | '_') {
-            result.push(character);
-            separator = false;
-        } else if !separator && !result.is_empty() {
-            result.push('-');
-            separator = true;
-        }
-    }
-    let result = result.trim_matches('-');
+    let result = app_settings::file_stem(value, |character| {
+        character.is_alphanumeric() || matches!(character, '-' | '_')
+    });
     if result.is_empty() {
         fallback.into()
     } else {
-        result.into()
+        result
     }
 }
 

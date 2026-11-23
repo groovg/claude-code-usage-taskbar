@@ -633,18 +633,9 @@ pub fn unique_document_id(name: &str) -> String {
 }
 
 fn safe_file_stem(value: &str) -> String {
-    let mut result = String::new();
-    let mut separator = false;
-    for character in value.trim().chars() {
-        if character.is_ascii_alphanumeric() {
-            result.push(character.to_ascii_lowercase());
-            separator = false;
-        } else if !separator && !result.is_empty() {
-            result.push('-');
-            separator = true;
-        }
-    }
-    result.trim_matches('-').to_string()
+    crate::app_settings::file_stem(&value.to_ascii_lowercase(), |character| {
+        character.is_ascii_alphanumeric()
+    })
 }
 
 fn schema_version() -> u32 {
@@ -828,6 +819,19 @@ mod tests {
         ] {
             item.render = Expression(render.into());
             assert_eq!(item.should_render(&context), visible);
+        }
+    }
+
+    #[test]
+    fn menu_file_names_keep_their_current_spelling() {
+        for (id, stem) in [
+            ("My Menu!", "my-menu"),
+            ("  \u{dc}n\u{ef}code  Men\u{fc}  ", "n-code-men"),
+            ("a--b__c", "a-b-c"),
+            ("Weekly (Fable) v2", "weekly-fable-v2"),
+            ("---", ""),
+        ] {
+            assert_eq!(safe_file_stem(id), stem, "{id}");
         }
     }
 

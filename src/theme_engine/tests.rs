@@ -1554,6 +1554,21 @@ fn bundled_minecraft_install_preserves_user_edits() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
+/// Theme files are named per character, unlike menus, so ids with runs of
+/// symbols keep their existing file names.
+#[test]
+fn theme_file_names_keep_their_current_spelling() {
+    for (id, stem) in [
+        ("My Menu!", "My-Menu-"),
+        ("  \u{dc}n\u{ef}code  Men\u{fc}  ", "---n-code--Men---"),
+        ("a--b__c", "a--b__c"),
+        ("---", "---"),
+        ("", "custom-theme"),
+    ] {
+        assert_eq!(safe_file_stem(id), stem, "{id}");
+    }
+}
+
 #[test]
 fn theme_deletion_is_limited_to_managed_writable_themes() {
     let _app_data = crate::app_settings::TestAppData::new();

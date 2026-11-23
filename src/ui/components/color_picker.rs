@@ -82,27 +82,9 @@ fn format_color([red, green, blue, alpha]: [u8; 4]) -> String {
     format!("#{red:02X}{green:02X}{blue:02X}{alpha:02X}")
 }
 
+/// The renderer's rules, so the swatch shows what the widget will draw.
 fn parse_color(value: &str) -> Option<[u8; 4]> {
-    let raw = value.trim().trim_start_matches('#');
-    match raw.len() {
-        8 => u32::from_str_radix(raw, 16).ok().map(|value| {
-            [
-                ((value >> 24) & 255) as u8,
-                ((value >> 16) & 255) as u8,
-                ((value >> 8) & 255) as u8,
-                (value & 255) as u8,
-            ]
-        }),
-        6 => u32::from_str_radix(raw, 16).ok().map(|value| {
-            [
-                ((value >> 16) & 255) as u8,
-                ((value >> 8) & 255) as u8,
-                (value & 255) as u8,
-                255,
-            ]
-        }),
-        _ => None,
-    }
+    crate::theme_engine::parse_color(value).map(|color| [color.r, color.g, color.b, color.a])
 }
 
 /// The picker's hue, saturation and value for `color`. The remembered ones
@@ -379,6 +361,9 @@ mod tests {
         assert_eq!(parse_color("#112233"), Some([0x11, 0x22, 0x33, 0xFF]));
         assert_eq!(parse_color("#11223380"), Some([0x11, 0x22, 0x33, 0x80]));
         assert_eq!(parse_color("invalid"), None);
+        // The renderer draws these magenta, so the swatch must not show a colour.
+        assert_eq!(parse_color("112233"), None);
+        assert_eq!(parse_color("##112233"), None);
         assert_eq!(format_color([0x11, 0x22, 0x33, 0x80]), "#11223380");
     }
 }

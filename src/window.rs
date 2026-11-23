@@ -2086,6 +2086,7 @@ use positioning::*;
 mod mouse;
 use mouse::*;
 mod window_context_menu;
+pub(crate) use window_context_menu::context_menu_action_checked;
 use window_context_menu::*;
 
 #[cfg(test)]
