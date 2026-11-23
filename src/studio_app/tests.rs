@@ -771,10 +771,12 @@ fn save_failure_remains_dirty_and_surfaces_the_error() {
 
     assert!(!app.save_theme());
     assert!(app.dirty);
+    // The app follows the system language, so expect the translated title.
+    let title = app.language().text("Unable to save theme");
     assert!(app
         .theme_error
         .as_deref()
-        .is_some_and(|error| error.contains("Unable to save theme")));
+        .is_some_and(|error| error.contains(title)));
 }
 
 #[test]
@@ -1325,5 +1327,24 @@ fn export_file_names_keep_their_current_spelling() {
         ("", "theme"),
     ] {
         assert_eq!(safe_file_name(name, "theme"), file_name, "{name}");
+    }
+}
+
+#[test]
+fn every_template_format_and_provider_label_has_a_catalogue_key() {
+    let labels = TEXT_TEMPLATE_VALUES
+        .iter()
+        .flat_map(|value| [value.group, value.label])
+        .chain(TEXT_TEMPLATE_FORMAT_INFO.iter().map(|(_, label, _)| *label))
+        .chain(
+            crate::providers::PROVIDER_DESCRIPTORS
+                .iter()
+                .flat_map(|descriptor| [descriptor.display_name, descriptor.settings_description]),
+        );
+    for label in labels {
+        assert!(
+            LanguageId::has_text(label),
+            "{label:?} is missing from en.toml"
+        );
     }
 }

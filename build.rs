@@ -2,15 +2,15 @@ use epaint_default_fonts::UBUNTU_LIGHT;
 use heck::ToKebabCase;
 use lucide_icons::{Icon as LucideIcon, LUCIDE_FONT_BYTES};
 use oxifont_subset::{subset_font_with_options, SubsetOptions};
-use proc_macro2::{TokenStream, TokenTree};
+use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use winres::{VersionInfo, WindowsResource};
 
 fn main() {
-    build_locales();
-    build_lucide_subset();
+    let translation_keys = build_locales();
+    build_lucide_subset(&translation_keys);
     build_ui_fallback_subset();
 
     let version = env!("CARGO_PKG_VERSION");
@@ -48,7 +48,7 @@ struct LocaleSource {
     translations: BTreeMap<String, String>,
 }
 
-fn build_locales() {
+fn build_locales() -> BTreeSet<String> {
     let locale_dir = Path::new("src/localization/locales");
     let mut paths = fs::read_dir(locale_dir)
         .unwrap_or_else(|error| panic!("Failed to read {}: {error}", locale_dir.display()))
@@ -119,6 +119,11 @@ fn build_locales() {
     write_if_changed(&output, generated.as_bytes())
         .unwrap_or_else(|error| panic!("Failed to write {}: {error}", output.display()));
     println!("cargo:rerun-if-changed={}", locale_dir.display());
+    locales[english_index]
+        .translations
+        .keys()
+        .cloned()
+        .collect()
 }
 
 fn read_locale(path: &Path) -> LocaleSource {
@@ -377,7 +382,9 @@ fn build_ui_fallback_subset() {
     );
 }
 
-fn build_lucide_subset() {
+/// The same scan fails the build when a `.text("literal")` call names a key
+/// that en.toml lacks, because `text()` would silently show English.
+fn build_lucide_subset(translation_keys: &BTreeSet<String>) {
     println!("cargo:rerun-if-changed=src");
 
     let mut source_files = Vec::new();
@@ -385,14 +392,20 @@ fn build_lucide_subset() {
         .expect("Failed to enumerate Rust source files for Lucide icons");
 
     let mut variants = BTreeSet::new();
+    let mut text_keys = BTreeSet::new();
     for path in source_files {
         let source = fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("Failed to read {}: {error}", path.display()));
         let tokens = source
             .parse::<TokenStream>()
             .unwrap_or_else(|error| panic!("Failed to tokenize {}: {error}", path.display()));
-        collect_lucide_variants(tokens, &mut variants);
+        collect_source_references(tokens, &mut variants, &mut text_keys);
     }
+    let missing = text_keys.difference(translation_keys).collect::<Vec<_>>();
+    assert!(
+        missing.is_empty(),
+        "text() keys missing from src/localization/locales/en.toml: {missing:?}"
+    );
 
     assert!(
         !variants.is_empty(),
@@ -468,7 +481,11 @@ fn write_if_changed(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     fs::write(path, contents)
 }
 
-fn collect_lucide_variants(tokens: TokenStream, variants: &mut BTreeSet<String>) {
+fn collect_source_references(
+    tokens: TokenStream,
+    variants: &mut BTreeSet<String>,
+    text_keys: &mut BTreeSet<String>,
+) {
     let tokens = tokens.into_iter().collect::<Vec<_>>();
     for window in tokens.windows(4) {
         if let (
@@ -486,10 +503,30 @@ fn collect_lucide_variants(tokens: TokenStream, variants: &mut BTreeSet<String>)
             }
         }
     }
+    for window in tokens.windows(3) {
+        if let (TokenTree::Punct(dot), TokenTree::Ident(name), TokenTree::Group(arguments)) =
+            (&window[0], &window[1], &window[2])
+        {
+            if dot.as_char() == '.'
+                && name == "text"
+                && arguments.delimiter() == Delimiter::Parenthesis
+            {
+                if let Some(TokenTree::Literal(literal)) = arguments.stream().into_iter().next() {
+                    let literal = literal.to_string();
+                    if let Some(key) = literal
+                        .strip_prefix('"')
+                        .and_then(|key| key.strip_suffix('"'))
+                    {
+                        text_keys.insert(key.to_owned());
+                    }
+                }
+            }
+        }
+    }
 
     for token in tokens {
         if let TokenTree::Group(group) = token {
-            collect_lucide_variants(group.stream(), variants);
+            collect_source_references(group.stream(), variants, text_keys);
         }
     }
 }

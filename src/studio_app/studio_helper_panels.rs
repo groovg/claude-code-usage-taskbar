@@ -192,7 +192,7 @@ pub(super) fn default_text_template_format(kind: TextTemplateValueKind) -> TextT
 
 /// Each format's English label and the token suffix it inserts.
 #[rustfmt::skip]
-const TEXT_TEMPLATE_FORMAT_INFO: &[(TextTemplateFormat, &str, Option<&str>)] = &[
+pub(super) const TEXT_TEMPLATE_FORMAT_INFO: &[(TextTemplateFormat, &str, Option<&str>)] = &[
     (Format::Automatic, "Automatic number", Some("0.##")),
     (Format::WholeNumber, "Whole number", Some("0")),
     (Format::OneDecimal, "One decimal", Some("0.0")),
