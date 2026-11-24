@@ -302,9 +302,9 @@ fn account_settings(
                 })) {
                     if let Some(error) = account.error {
                         let message = match error {
-                            crate::poller::PollError::AuthRequired | crate::poller::PollError::TokenExpired => "Sign in again for this account",
-                            crate::poller::PollError::NoCredentials => "Credentials missing or invalid",
-                            crate::poller::PollError::RequestFailed => "Usage request failed; retrying at the next refresh",
+                            crate::models::PollError::AuthRequired | crate::models::PollError::TokenExpired => "Sign in again for this account",
+                            crate::models::PollError::NoCredentials => "Credentials missing or invalid",
+                            crate::models::PollError::RequestFailed => "Usage request failed; retrying at the next refresh",
                         };
                         ui.colored_label(egui::Color32::from_rgb(196, 112, 32), language.text(message));
                     }

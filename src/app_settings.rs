@@ -247,6 +247,12 @@ pub fn load_settings() -> SettingsFile {
     })
 }
 
+/// The UI language chosen in settings, or the system language.
+pub(crate) fn settings_language(settings: &SettingsFile) -> crate::localization::LanguageId {
+    use crate::localization::{resolve_language, LanguageId};
+    resolve_language(settings.language.as_deref().and_then(LanguageId::from_code))
+}
+
 /// The settings file, or the defaults when it is missing or is not JSON at
 /// all (a copy of such a file is kept as `settings.json.bad`). `Err` only when
 /// the file exists but can't be read.
@@ -343,10 +349,10 @@ fn settings_fields(settings: &SettingsFile) -> serde_json::Map<String, serde_jso
     }
 }
 
+/// Callers drop readings whose login changed since with
+/// `cache.data.invalidate_changed_credentials(poller::source_signature)`.
 pub fn load_usage_cache() -> Option<UsageCache> {
-    let mut cache: UsageCache = read_json(&usage_cache_path())?;
-    cache.data.invalidate_changed_credentials();
-    Some(cache)
+    read_json(&usage_cache_path())
 }
 
 pub fn save_usage_cache(data: &AppUsageData, poll_ok: bool) -> Result<(), String> {

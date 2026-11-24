@@ -8,35 +8,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
 use crate::diagnose;
-use crate::models::{AppUsageData, UsageData, UsageSection};
+use crate::models::{AppUsageData, PollError, UsageData, UsageSection};
 use crate::providers::{ProviderId, ProviderSet};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PollError {
-    AuthRequired,
-    NoCredentials,
-    TokenExpired,
-    RequestFailed,
-}
-
-impl PollError {
-    pub fn is_auth(self) -> bool {
-        matches!(self, Self::AuthRequired | Self::TokenExpired)
-    }
-
-    /// One line for a tooltip: what went wrong and what fixes it.
-    pub fn description(self) -> &'static str {
-        match self {
-            Self::AuthRequired => "the service rejected the login; sign in again",
-            Self::NoCredentials => "no login found; sign in with the CLI or desktop app",
-            Self::TokenExpired => {
-                "the login expired and could not be renewed; run the CLI once to refresh it"
-            }
-            Self::RequestFailed => "the usage service could not be reached; retrying",
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CredentialWatchMode {

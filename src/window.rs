@@ -27,7 +27,7 @@ use crate::app_settings::{
 use crate::context_menu::{self, ContextMenuAction, ContextMenuItem, ContextMenuItemKind};
 use crate::diagnose;
 use crate::localization::{self, LanguageId, Strings};
-use crate::models::AppUsageData;
+use crate::models::{AppUsageData, PollError};
 use crate::native_interop::{
     self, TIMER_CLOCK, TIMER_CONTEXT, TIMER_COUNTDOWN, TIMER_MOUSE_CLICK, TIMER_POLL,
     TIMER_RESET_POLL, TIMER_TRAY_HOVER, TIMER_UPDATE_CHECK, TIMER_WINDOW_STATE,
@@ -171,7 +171,7 @@ fn language_from_menu_command_id(command: u16) -> Option<LanguageId> {
 }
 
 fn open_web_url(url: &str, failure_message: &'static str) {
-    if !context_menu::supported_url(url) {
+    if !theme_engine::supported_url(url) {
         return;
     }
     unsafe {
@@ -1842,15 +1842,15 @@ fn do_poll_once(hwnd: HWND) {
                 return;
             }
             let auth_watch = match failure.error {
-                poller::PollError::AuthRequired | poller::PollError::TokenExpired => {
+                PollError::AuthRequired | PollError::TokenExpired => {
                     let mode = poller::CredentialWatchMode::ActiveSource(failure.provider);
                     Some((mode, poller::credential_watch_snapshot(mode)))
                 }
-                poller::PollError::NoCredentials => {
+                PollError::NoCredentials => {
                     let mode = poller::CredentialWatchMode::AllSources(failure.provider);
                     Some((mode, poller::credential_watch_snapshot(mode)))
                 }
-                poller::PollError::RequestFailed => None,
+                PollError::RequestFailed => None,
             };
             // Distinguish auth-required errors from transient errors.
             let (notify_auth_error, cache_data, cache_poll_ok) = {
@@ -1863,7 +1863,7 @@ fn do_poll_once(hwnd: HWND) {
                 }
                 let mut should_notify = false;
                 if let Some(s) = state.as_mut() {
-                    if matches!(failure.error, poller::PollError::RequestFailed) {
+                    if matches!(failure.error, PollError::RequestFailed) {
                         if let Some(previous) = s.data.as_ref() {
                             let carried = poller::carry_forward_failures(
                                 AppUsageData::default(),

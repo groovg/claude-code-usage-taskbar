@@ -306,7 +306,7 @@ pub(super) fn parse_context_menu_action_script(script: &str) -> Result<ContextMe
     }
     if call_arg("open_url").is_some() {
         let url = string_arg("open_url")?;
-        if !context_menu::supported_url(&url) {
+        if !theme_engine::supported_url(&url) {
             return Err("URL must start with http:// or https://".into());
         }
         return Ok(ContextMenuAction::OpenUrl { url });

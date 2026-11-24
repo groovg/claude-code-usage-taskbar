@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::providers::ProviderId;
-use crate::theme_engine::{self, DataContext, Expression};
+use crate::theme_engine::{self, supported_url, DataContext, Expression};
 
 pub const CONTEXT_MENU_SCHEMA_VERSION: u32 = 1;
 pub const CLASSIC_CONTEXT_MENU_ID: &str = "classic-v1";
@@ -260,11 +260,6 @@ fn validate_item_label(
     for error in crate::theme_engine::validate_template(&item.label, context) {
         errors.push(format!("{}.label: {error}", item.id));
     }
-}
-
-pub fn supported_url(url: &str) -> bool {
-    let url = url.trim().to_ascii_lowercase();
-    url.starts_with("https://") || url.starts_with("http://")
 }
 
 pub fn rendered_label(

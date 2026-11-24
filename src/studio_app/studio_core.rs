@@ -84,6 +84,9 @@ impl StudioApp {
             .and_then(|path| context_menu::load_context_menu(path).ok())
             .unwrap_or_else(context_menu::classic_context_menu);
         let usage_cache = app_settings::load_usage_cache().map(|mut cache| {
+            cache
+                .data
+                .invalidate_changed_credentials(crate::poller::source_signature);
             cache.data.select_accounts(&settings.accounts);
             cache
         });
@@ -830,8 +833,12 @@ impl StudioApp {
         let now = Instant::now();
         self.last_cache_read = now;
         self.sync_poll_interval(app_settings::load_settings().poll_interval_ms);
-        let usage_changed =
-            app_settings::load_usage_cache().is_some_and(|cache| self.update_usage_cache(cache));
+        let usage_changed = app_settings::load_usage_cache().is_some_and(|mut cache| {
+            cache
+                .data
+                .invalidate_changed_credentials(crate::poller::source_signature);
+            self.update_usage_cache(cache)
+        });
         let countdown_due = self
             .next_preview_countdown_refresh
             .is_some_and(|deadline| now >= deadline);

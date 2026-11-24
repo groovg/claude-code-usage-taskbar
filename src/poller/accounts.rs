@@ -592,7 +592,7 @@ mod tests {
             .starts_with(&file_signature(&path)));
         let mut cached = data;
         std::fs::write(&path, "another login").unwrap();
-        cached.invalidate_changed_credentials();
+        cached.invalidate_changed_credentials(source_signature);
         cached.select_accounts(&settings);
         assert!(cached.get(ProviderId::Claude).is_none());
         assert!(cached.accounts[0].usage.is_none());

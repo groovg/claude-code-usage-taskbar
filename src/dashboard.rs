@@ -23,7 +23,7 @@ const DASHBOARD_MUTEX: &str = "Local\\ClaudeCodeUsageTaskbarDashboard";
 const DASHBOARD_REQUEST_EVENT: &str = "Local\\ClaudeCodeUsageTaskbarOpenDashboard";
 
 fn language() -> crate::localization::LanguageId {
-    crate::studio_app::settings_language(&crate::app_settings::load_settings())
+    crate::app_settings::settings_language(&crate::app_settings::load_settings())
 }
 
 pub fn show(owner: HWND) {

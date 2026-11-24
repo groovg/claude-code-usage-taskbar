@@ -139,6 +139,33 @@ pub struct AppUsageData {
     pub accounts: Vec<AccountUsage>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PollError {
+    AuthRequired,
+    NoCredentials,
+    TokenExpired,
+    RequestFailed,
+}
+
+impl PollError {
+    pub fn is_auth(self) -> bool {
+        matches!(self, Self::AuthRequired | Self::TokenExpired)
+    }
+
+    /// One line for a tooltip: what went wrong and what fixes it.
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::AuthRequired => "the service rejected the login; sign in again",
+            Self::NoCredentials => "no login found; sign in with the CLI or desktop app",
+            Self::TokenExpired => {
+                "the login expired and could not be renewed; run the CLI once to refresh it"
+            }
+            Self::RequestFailed => "the usage service could not be reached; retrying",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AccountUsage {
     pub provider: ProviderId,
@@ -147,7 +174,7 @@ pub struct AccountUsage {
     #[serde(default)]
     pub source_path: Option<std::path::PathBuf>,
     pub usage: Option<UsageData>,
-    pub error: Option<crate::poller::PollError>,
+    pub error: Option<PollError>,
     #[serde(default)]
     pub selected: bool,
 }
@@ -160,7 +187,7 @@ impl AppUsageData {
         provider: ProviderId,
         profile: &crate::accounts::AccountProfile,
         signature: &str,
-    ) -> Option<crate::poller::PollError> {
+    ) -> Option<PollError> {
         self.accounts.iter().find_map(|account| {
             (account.provider == provider
                 && account.profile.same_source(profile)
@@ -175,7 +202,7 @@ impl AppUsageData {
         self.accounts
             .iter()
             .filter(|account| {
-                account.error.is_some_and(crate::poller::PollError::is_auth)
+                account.error.is_some_and(PollError::is_auth)
                     && (force
                         || previous
                             .and_then(|previous| {
@@ -309,7 +336,11 @@ impl AppUsageData {
 
     /// A cached reading must not outlive a login change or a different inherited
     /// config directory. This only stats files; it never starts a CLI or WSL.
-    pub fn invalidate_changed_credentials(&mut self) {
+    /// `source_signature` is the poller's, passed in so the model does not depend on it.
+    pub fn invalidate_changed_credentials(
+        &mut self,
+        source_signature: fn(ProviderId, &std::path::Path) -> String,
+    ) {
         for account in &mut self.accounts {
             let expected = account
                 .profile
@@ -321,8 +352,7 @@ impl AppUsageData {
                 Some(path) => {
                     expected.as_ref().is_none_or(|expected| {
                         crate::accounts::source_key(expected) != crate::accounts::source_key(path)
-                    }) || crate::poller::source_signature(account.provider, path)
-                        != account.source_signature
+                    }) || source_signature(account.provider, path) != account.source_signature
                 }
                 None => crate::accounts::environment_directory(account.provider).is_some(),
             };

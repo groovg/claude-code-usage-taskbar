@@ -142,7 +142,7 @@ fn named_account_bindings_show_independent_usage_and_errors() {
             source_path: None,
             selected: false,
             usage: None,
-            error: Some(crate::poller::PollError::AuthRequired),
+            error: Some(crate::models::PollError::AuthRequired),
         },
     ];
     data.select_accounts(&settings);

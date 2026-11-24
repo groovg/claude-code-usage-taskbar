@@ -487,7 +487,7 @@ pub(super) fn action_reference_panels(
                     );
                     if ui
                         .add_enabled(
-                            context_menu::supported_url(url),
+                            theme_engine::supported_url(url),
                             egui::Button::new(language.text("Open URL")),
                         )
                         .on_disabled_hover_text(

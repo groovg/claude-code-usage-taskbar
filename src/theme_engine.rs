@@ -515,6 +515,11 @@ pub enum MouseActionEffect {
 }
 
 /// Parse the deliberately small, line-or-semicolon separated action language.
+pub fn supported_url(url: &str) -> bool {
+    let url = url.trim().to_ascii_lowercase();
+    url.starts_with("https://") || url.starts_with("http://")
+}
+
 /// Supported forms include `show_dashboard()`, `toggle_dashboard()`,
 /// `open_url("https://example.com")`, `show_context_menu()`,
 /// `show_context_menu("menu-id")`, `set(self.render, false)`,
@@ -539,7 +544,7 @@ pub fn parse_mouse_actions(source: &str) -> Result<Vec<MouseAction>, String> {
             "toggle_dashboard" => return Err("toggle_dashboard() does not take arguments".into()),
             "open_url" if args.len() == 1 => {
                 let url = parse_quoted_action_string(&args[0], "URL")?;
-                if !crate::context_menu::supported_url(&url) {
+                if !supported_url(&url) {
                     return Err("open_url URL must start with http:// or https://".into());
                 }
                 actions.push(MouseAction::OpenUrl { url });

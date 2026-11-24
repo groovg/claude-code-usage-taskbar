@@ -34,15 +34,16 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::app_settings::{
-    self, SettingsFile, UsageCache, POLL_15_MIN, POLL_15_MIN_SECONDS, POLL_1_HOUR,
-    POLL_1_HOUR_SECONDS, POLL_1_MIN, POLL_1_MIN_SECONDS, POLL_5_MIN, POLL_5_MIN_SECONDS,
+    self, settings_language, SettingsFile, UsageCache, POLL_15_MIN, POLL_15_MIN_SECONDS,
+    POLL_1_HOUR, POLL_1_HOUR_SECONDS, POLL_1_MIN, POLL_1_MIN_SECONDS, POLL_5_MIN,
+    POLL_5_MIN_SECONDS,
 };
 use crate::context_menu::{
     self, ContextMenuAction, ContextMenuDocument, ContextMenuItem, ContextMenuItemKind,
     ContextMenuProvider,
 };
 use crate::font_catalog::installed_font_families;
-use crate::localization::{self, LanguageId};
+use crate::localization::LanguageId;
 use crate::models::AppUsageData;
 use crate::native_interop::{self, WM_APP_REFRESH_NOW, WM_APP_SETTINGS_UPDATED};
 use crate::providers::PROVIDER_DESCRIPTORS;
@@ -145,11 +146,6 @@ pub fn handle_cli_mode(args: &[String]) -> bool {
         ));
     }
     true
-}
-
-/// The UI language chosen in settings, or the system language.
-pub(crate) fn settings_language(settings: &SettingsFile) -> LanguageId {
-    localization::resolve_language(settings.language.as_deref().and_then(LanguageId::from_code))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
